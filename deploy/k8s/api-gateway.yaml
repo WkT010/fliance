@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexa-api-gateway
+  namespace: nexa
+  labels: {app: nexa-api}
+spec:
+  replicas: 3
+  selector: {matchLabels: {app: nexa-api}}
+  template:
+    metadata: {labels: {app: nexa-api}}
+    spec:
+      containers:
+        - name: api-gateway
+          image: nexa/api-gateway:latest
+          ports: [{containerPort: 8080}]
+          envFrom: [{configMapRef: {name: nexa-config}}]
+          env:
+            - {name: JWT_SECRET, valueFrom: {secretKeyRef: {name: nexa-secrets, key: jwt-secret}}}
+          livenessProbe:
+            httpGet: {path: /api/v2/health, port: 8080}
+            initialDelaySeconds: 10; periodSeconds: 15
+          readinessProbe:
+            httpGet: {path: /api/v2/health, port: 8080}
+            initialDelaySeconds: 5; periodSeconds: 10
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexa-api-gateway
+  namespace: nexa
+spec:
+  selector: {app: nexa-api}
+  ports: [{port: 8080, targetPort: 8080}]
+  type: ClusterIP

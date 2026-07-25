@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: nexa
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - api-gateway.yaml
+  - matching-engine.yaml
+  - wallet-service.yaml
+secretGenerator:
+  - name: nexa-secrets
+    literals:
+      - jwt-secret=nexa-production-secret-change-me
+      - alchemy-api-key=owtgBOQy-6ABQ9Pzd_7Nz

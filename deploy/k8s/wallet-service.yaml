@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexa-wallet-service
+  namespace: nexa
+  labels: {app: nexa-wallet}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: nexa-wallet}}
+  template:
+    metadata: {labels: {app: nexa-wallet}}
+    spec:
+      containers:
+        - name: wallet-service
+          image: nexa/wallet-service:latest
+          envFrom: [{configMapRef: {name: nexa-config}}]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexa-wallet-service
+  namespace: nexa
+spec:
+  selector: {app: nexa-wallet}
+  ports: [{port: 9091, targetPort: 9091}]
+  type: ClusterIP

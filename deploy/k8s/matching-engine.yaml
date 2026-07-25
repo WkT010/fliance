@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nexa-matching-engine
+  namespace: nexa
+  labels: {app: nexa-engine}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: nexa-engine}}
+  template:
+    metadata: {labels: {app: nexa-engine}}
+    spec:
+      containers:
+        - name: matching-engine
+          image: nexa/matching-engine:latest
+          envFrom: [{configMapRef: {name: nexa-config}}]
+          resources:
+            requests: {cpu: 500m, memory: 512Mi}
+            limits: {cpu: "2", memory: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nexa-matching-engine
+  namespace: nexa
+spec:
+  selector: {app: nexa-engine}
+  ports: [{port: 9090, targetPort: 9090}]
+  type: ClusterIP
