@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE TABLE IF NOT EXISTS wallets (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), asset TEXT NOT NULL, balance NUMERIC(40,18) NOT NULL DEFAULT 0, locked NUMERIC(40,18) NOT NULL DEFAULT 0, address TEXT, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, UNIQUE(user_id, asset));
+CREATE INDEX IF NOT EXISTS idx_wallets_user ON wallets(user_id);
+CREATE TABLE IF NOT EXISTS transactions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), wallet_id TEXT NOT NULL REFERENCES wallets(id), type SMALLINT NOT NULL, asset TEXT NOT NULL, amount NUMERIC(40,18) NOT NULL, fee NUMERIC(40,18) NOT NULL DEFAULT 0, status SMALLINT NOT NULL DEFAULT 1, tx_hash TEXT, confirmations INT DEFAULT 0, created_at BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_tx_wallet ON transactions(wallet_id);
+CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, client_order_id TEXT, user_id TEXT NOT NULL REFERENCES users(id), pair TEXT NOT NULL, side SMALLINT NOT NULL, type SMALLINT NOT NULL, price NUMERIC(40,18), stop_price NUMERIC(40,18), quantity NUMERIC(40,18) NOT NULL, filled_qty NUMERIC(40,18) NOT NULL DEFAULT 0, remaining_qty NUMERIC(40,18) NOT NULL, iceberg_qty NUMERIC(40,18), visible_qty NUMERIC(40,18), time_in_force SMALLINT NOT NULL DEFAULT 0, status SMALLINT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id);
+CREATE INDEX IF NOT EXISTS idx_orders_pair ON orders(pair);
+CREATE TABLE IF NOT EXISTS trades (id TEXT PRIMARY KEY, buy_order_id TEXT NOT NULL REFERENCES orders(id), sell_order_id TEXT NOT NULL REFERENCES orders(id), buyer_id TEXT NOT NULL REFERENCES users(id), seller_id TEXT NOT NULL REFERENCES users(id), pair TEXT NOT NULL, price NUMERIC(40,18) NOT NULL, quantity NUMERIC(40,18) NOT NULL, taker_side SMALLINT NOT NULL, fee NUMERIC(40,18) NOT NULL DEFAULT 0, created_at BIGINT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_trades_pair ON trades(pair);
+CREATE TABLE IF NOT EXISTS api_keys (key_id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), permissions TEXT[] DEFAULT '{}', expires_at TIMESTAMPTZ, active BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS idx_apikeys_user ON api_keys(user_id);
