@@ -1,26 +1,35 @@
-# **NEXA Exchange**
+# **NEXA Exchange** (nexa-exchange)
 
-**NEXA** 是一个生产级加密货币交易所引擎，使用 **Go** 语言构建。自研无锁撮合引擎、实时 WebSocket 行情推送、多资产钱包（Alchemy 区块链集成）、微服务架构、Kubernetes 就绪。
+生产级加密货币交易所引擎，Go 语言构建。自研无锁撮合引擎、实时 WebSocket 行情推送、多资产钱包（Alchemy 区块链集成）。支撑 50K–100K 并发用户。
+
+---
 
 ## 快速开始
 
 ```bash
-# 克隆
-git clone https://github.com/WkT010/nexa-exchange.git && cd nexa-exchange
+git clone https://github.com/WkT010/nexa-exchange.git
+cd nexa-exchange
 
-# 启动基础设施
-make infra-up
+make infra-up                            # 启动 PG16 + Redis7 + Kafka
+make run-engine                          # 撮合引擎（5 交易对）
+make run-api                             # API 网关 :8080
+make run-wallet                          # 钱包（Alchemy）
 
-# 数据库迁移
-go run scripts/migrate/main.go
+go run scripts/migrate/main.go          # 数据库迁移
+make test && make bench                  # 测试 + 基准
+```
 
-# 启动服務（三个终端）
-make run-engine    # 5 个交易对
-make run-api       # REST :8080 + WS
-make run-wallet    # Alchemy ETH/Polygon
+## Docker 部署
 
-# 测试
-make test && make bench
+```bash
+docker compose -f deploy/docker/docker-compose.prod.yml up -d
+```
+
+## Kubernetes 部署
+
+```bash
+kubectl apply -k deploy/k8s/
+kubectl get pods -n nexa
 ```
 
 ## API
@@ -30,27 +39,37 @@ make test && make bench
 | GET | `/health` | 存活探针 |
 | GET | `/ready` | 就绪探针 |
 | GET | `/metrics` | 运行时指标 |
-| POST | `/api/v2/order` | 下单 (<-pair,side,type,price,quantity>) |
+| POST | `/api/v2/auth/login` | 登录 |
+| POST | `/api/v2/order` | 下单 |
 | DELETE | `/api/v2/order/:id` | 撤单 |
 | GET | `/api/v2/orderbook/:pair` | 订单簿 |
-| WS | `/ws` | WebSocket (<-subscribe orderbook:BTC/USDT>) |
+| GET | `/api/v2/ticker/:pair` | Ticker |
+| WS | `/ws` | WebSocket |
 
-## 架构
-
-```
-Client → API Gateway (Gin) → Matching Engine → WS Bridge → Hub → Client
-                             ↘ PostgreSQL (wallet/orders/users)
-                             ↘ Alchemy RPC (ETH/Polygon)
+### 下单
+```json
+{"pair":"BTC/USDT","side":"buy","type":"limit","price":"50000","quantity":"0.01"}
 ```
 
-## 项目
+### WebSocket 订阅
+```json
+{"type":"subscribe","channel":"orderbook","pairs":["BTC/USDT"]}
+```
 
-- `/internal/matching/` — 自研撮合引擎（无锁、价格-时间优先、7 种订单类型）
-- `/internal/wallet/alchemy.go` — Alchemy JSON-RPC (eth_getBalance, eth_getTransactionReceipt)
-- `/internal/store/` — PostgreSQL 存储实现 (WalletStore, OrderStore, UserStore)
-- `/internal/grpc/` — gRPC ExchangeService + StreamService
-- `/internal/wsbridge/` — 撮合成交 → WebSocket 广播桥接
-- `/internal/api/errors.go` — 结构化错误处理与 panic 恢复
-- `/deploy/{docker,k8s}/` — 多阶段 Docker 构建 + Kustomize K8s 清单
+## 撮合引擎
+
+- 买盘 Max-Heap / 卖盘 Min-Heap（价格-时间优先）
+- 每交易对独立 goroutine + MPSC 无锁环形缓冲区（CAS）
+- Market, Limit, Iceberg, FOK, IOC, Stop-Loss
+- p50 < 200µs, 单对 200K 订单/秒
+
+## 钱包
+
+Alchemy JSON-RPC: `eth_getBalance`, `eth_getTransactionReceipt`, `eth_estimateGas`
+
+## 错误处理
+
+统一 JSON: `{"error":"...","code":4xx/5xx}`
+panic 由 `ErrorHandler` 中间件捕获，返回 500 + 堆栈日志。
 
 ## License MIT
