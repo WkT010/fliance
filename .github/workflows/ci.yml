@@ -1,0 +1,57 @@
+name: CI
+on: [push, pull_request]
+
+env:
+  GO_VERSION: "1.22"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}"}
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v3
+        with: {version: latest}
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: nexa, POSTGRES_PASSWORD: nexa_dev, POSTGRES_DB: nexa}
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}"}
+      - run: go test -race -count=1 -v ./...
+      - run: go test -bench=. -benchmem ./internal/matching/...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}"}
+      - run: CGO_ENABLED=0 GOOS=linux go build -ldflags='-s -w' -o build/ ./cmd/...
+      - uses: actions/upload-artifact@v4
+        with: {name: binaries, path: build/}
+
+  docker:
+    needs: [lint, test, build]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker images
+        run: |
+          docker build -t nexa/api-gateway:latest -f deploy/docker/Dockerfile.api-gateway .
+          docker build -t nexa/matching-engine:latest -f deploy/docker/Dockerfile.matching-engine .
+          docker build -t nexa/wallet-service:latest -f deploy/docker/Dockerfile.wallet-service .

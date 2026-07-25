@@ -1,0 +1,10 @@
+.git
+node_modules
+build/
+*.md
+coverage.out
+coverage.html
+.vscode
+.idea
+.env
+.env.local
