@@ -1,29 +1,29 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nexa-wallet-service
+  name: wallet-service
   namespace: nexa
-  labels: {app: nexa-wallet}
 spec:
   replicas: 2
-  selector: {matchLabels: {app: nexa-wallet}}
+  selector: {matchLabels: {app: wallet-service}}
   template:
-    metadata: {labels: {app: nexa-wallet}}
+    metadata:
+      labels: {app: wallet-service}
     spec:
       containers:
         - name: wallet-service
           image: nexa/wallet-service:latest
-          envFrom: [{configMapRef: {name: nexa-config}}]
-          resources:
-            requests: {cpu: 100m, memory: 128Mi}
-            limits: {cpu: 500m, memory: 512Mi}
+          ports: [{containerPort: 8082, name: http}]
+          envFrom: [{configMapRef: {name: nexa-config}}, {secretRef: {name: nexa-secrets}}]
+          livenessProbe: {httpGet: {path: /health, port: 8082}, initialDelaySeconds: 10, periodSeconds: 30}
+          resources: {limits: {cpu: "0.5", memory: 256Mi}, requests: {cpu: "0.25", memory: 128Mi}}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: nexa-wallet-service
+  name: wallet-service
   namespace: nexa
 spec:
-  selector: {app: nexa-wallet}
-  ports: [{port: 9091, targetPort: 9091}]
+  selector: {app: wallet-service}
+  ports: [{port: 8082, targetPort: 8082}]
   type: ClusterIP

@@ -4,8 +4,23 @@ metadata:
   name: nexa-config
   namespace: nexa
 data:
-  JWT_ISSUER: nexa-exchange
+  JWT_ISSUER: "nexa-exchange"
   LISTEN_ADDR: ":8080"
-  ENVIRONMENT: production
-  ALCHEMY_ETH_URL: "https://eth-mainnet.g.alchemy.com/v2/owtgBOQy-6ABQ9Pzd_7Nz"
-  ALCHEMY_POLYGON_URL: "https://polygon-mainnet.g.alchemy.com/v2/owtgBOQy-6ABQ9Pzd_7Nz"
+  ENVIRONMENT: "production"
+  POSTGRES_DSN: "postgres://nexa:nexa_prod@postgres:5432/nexa?sslmode=disable"
+  REDIS_ADDR: "redis:6379"
+  KAFKA_BROKERS: "kafka:9092"
+  TRADING_PAIRS: "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT"
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nexa-secrets
+  namespace: nexa
+type: Opaque
+stringData:
+  JWT_SECRET: "change-me-in-production"
+  POSTGRES_PASSWORD: "nexa_prod"
+  ALCHEMY_API_KEY: ""

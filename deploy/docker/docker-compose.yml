@@ -5,10 +5,12 @@ services:
     environment: { POSTGRES_USER: nexa, POSTGRES_PASSWORD: nexa_dev, POSTGRES_DB: nexa }
     ports: ["5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U nexa"], interval: 5s, timeout: 3s, retries: 5 }
   redis:
     image: redis:7-alpine
     ports: ["6379:6379"]
     volumes: [redisdata:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 5 }
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5
     environment: { ZOOKEEPER_CLIENT_PORT: 2181, ZOOKEEPER_TICK_TIME: 2000 }

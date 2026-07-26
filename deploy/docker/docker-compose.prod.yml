@@ -1,108 +1,56 @@
 version: "3.9"
-
-networks:
-  nexa-net:
-    driver: bridge
-
-volumes:
-  pgdata:
-  redisdata:
-  kafka-data:
-
+networks: { nexa-net: { driver: bridge } }
+volumes: { pgdata:, redisdata:, kafka-data: }
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     networks: [nexa-net]
-    environment:
-      POSTGRES_USER: nexa
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexa_prod}
-      POSTGRES_DB: nexa
+    environment: { POSTGRES_USER: nexa, POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexa_prod}, POSTGRES_DB: nexa }
     ports: ["5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nexa"]
-      interval: 10s; timeout: 5s; retries: 5
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U nexa"], interval: 10s, timeout: 5s, retries: 5 }
     deploy: {resources: {limits: {memory: 1G}}}
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     networks: [nexa-net]
     command: redis-server --appendonly yes
-    ports: ["6379:6379"]
-    volumes: [redisdata:/data]
-    healthcheck: {test: ["CMD", "redis-cli", "ping"], interval: 10s, timeout: 3s, retries: 5}
+    ports: ["6379:6379"]; volumes: [redisdata:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 10s, timeout: 3s, retries: 5 }
     deploy: {resources: {limits: {memory: 512M}}}
-
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5
     restart: unless-stopped
     networks: [nexa-net]
     environment: {ZOOKEEPER_CLIENT_PORT: 2181, ZOOKEEPER_TICK_TIME: 2000}
     ports: ["2181:2181"]
-
   kafka:
     image: confluentinc/cp-kafka:7.5
     restart: unless-stopped
     networks: [nexa-net]
     depends_on: [zookeeper]
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_LOG_RETENTION_HOURS: 168
-    ports: ["9092:9092"]
-    volumes: [kafka-data:/var/lib/kafka/data]
+    environment: { KAFKA_BROKER_ID: 1, KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181, KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092, KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1, KAFKA_LOG_RETENTION_HOURS: 168 }
+    ports: ["9092:9092"]; volumes: [kafka-data:/var/lib/kafka/data]
     deploy: {resources: {limits: {memory: 1G}}}
-
   api-gateway:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.api-gateway
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.api-gateway }
     restart: unless-stopped
     networks: [nexa-net]
     ports: ["8080:8080"]
-    environment:
-      JWT_SECRET: ${JWT_SECRET:-nexa-dev}
-      JWT_ISSUER: nexa-exchange
-      LISTEN_ADDR: ":8080"
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      POSTGRES_DSN: postgres://nexa:${POSTGRES_PASSWORD:-nexa_prod}@postgres:5432/nexa?sslmode=disable
-      REDIS_ADDR: redis:6379
-      KAFKA_BROKERS: kafka:9092
-    depends_on:
-      postgres: {condition: service_healthy}
-      redis: {condition: service_healthy}
-      kafka: {condition: service_started}
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/v2/health"]
-      interval: 30s; timeout: 5s; retries: 3; start_period: 15s
+    environment: { JWT_SECRET: ${JWT_SECRET:-nexa-prod-secret}, JWT_ISSUER: nexa-exchange, LISTEN_ADDR: ":8080", ENVIRONMENT: ${ENVIRONMENT:-production}, POSTGRES_DSN: postgres://nexa:${POSTGRES_PASSWORD:-nexa_prod}@postgres:5432/nexa?sslmode=disable, REDIS_ADDR: "redis:6379", KAFKA_BROKERS: "kafka:9092", TRADING_PAIRS: ${TRADING_PAIRS:-BTC/USDT,ETH/USDT,SOL/USDT} }
+    depends_on: { postgres: {condition: service_healthy}, redis: {condition: service_healthy}, kafka: {condition: service_started} }
+    healthcheck: { test: ["CMD", "curl", "-f", "http://localhost:8080/health"], interval: 30s, timeout: 5s, retries: 3, start_period: 15s }
     deploy: {replicas: 2, resources: {limits: {cpus: "1", memory: 512M}}}
-
   matching-engine:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.matching-engine
-    restart: unless-stopped
-    networks: [nexa-net]
-    environment:
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      KAFKA_BROKERS: kafka:9092
-      REDIS_ADDR: redis:6379
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.matching-engine }
+    restart: unless-stopped; networks: [nexa-net]
+    environment: { ENVIRONMENT: ${ENVIRONMENT:-production}, KAFKA_BROKERS: "kafka:9092", REDIS_ADDR: "redis:6379", TRADING_PAIRS: ${TRADING_PAIRS:-BTC/USDT,ETH/USDT,SOL/USDT} }
     depends_on: [kafka, redis]
     deploy: {replicas: 1, resources: {limits: {cpus: "2", memory: 1G}}}
-
   wallet-service:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.wallet-service
-    restart: unless-stopped
-    networks: [nexa-net]
-    environment:
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}
-      POSTGRES_DSN: postgres://nexa:${POSTGRES_PASSWORD:-nexa_prod}@postgres:5432/nexa?sslmode=disable
+    build: { context: ../.., dockerfile: deploy/docker/Dockerfile.wallet-service }
+    restart: unless-stopped; networks: [nexa-net]
+    environment: { ENVIRONMENT: ${ENVIRONMENT:-production}, ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}, POSTGRES_DSN: postgres://nexa:${POSTGRES_PASSWORD:-nexa_prod}@postgres:5432/nexa?sslmode=disable }
     depends_on: [postgres]
     deploy: {replicas: 2, resources: {limits: {cpus: "0.5", memory: 256M}}}
