@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+
 	"github.com/WkT010/nexa-exchange/internal/matching"
 	"github.com/WkT010/nexa-exchange/pkg/websocket"
 )
@@ -28,7 +29,7 @@ func (b *Bridge) Start() {
 	log.Printf("[wsbridge] started (%d engines)", len(b.engines))
 }
 
-func (b *Bridge) Stop() { close(b.done); b.wg.Wait() }
+func (b *Bridge) Stop() { close(b.done); b.wg.Wait(); log.Println("[wsbridge] stopped") }
 
 func (b *Bridge) consumeTrades(pair string, e *matching.MatchingEngine) {
 	defer b.wg.Done()
@@ -36,8 +37,8 @@ func (b *Bridge) consumeTrades(pair string, e *matching.MatchingEngine) {
 		select {
 		case <-b.done: return
 		case t := <-e.Trades:
-			d,_ := json.Marshal(map[string]interface{}{"type":"trade","pair":pair,"price":t.Price.String(),"qty":t.Quantity.String(),"time":t.CreatedAt})
-			b.hub.BroadcastToRoom(websocket.ChannelTrades+":"+pair, d)
+			data, _ := json.Marshal(map[string]interface{}{"type":"trade","pair":pair,"price":t.Price.String(),"qty":t.Quantity.String(),"time":t.CreatedAt})
+			b.hub.BroadcastToRoom(websocket.ChannelTrades+":"+pair, data)
 		}
 	}
 }
@@ -48,8 +49,8 @@ func (b *Bridge) consumeFills(pair string, e *matching.MatchingEngine) {
 		select {
 		case <-b.done: return
 		case <-e.Fills:
-			d := e.OrderBook.Depth(10)
-			data,_ := json.Marshal(map[string]interface{}{"type":"snapshot","pair":pair,"bids":d.Bids,"asks":d.Asks,"seq":d.SeqNo})
+			depth := e.OrderBook.Depth(10)
+			data, _ := json.Marshal(map[string]interface{}{"type":"snapshot","pair":pair,"bids":depth.Bids,"asks":depth.Asks,"seq":depth.SeqNo})
 			b.hub.BroadcastToRoom(websocket.ChannelOrderbook+":"+pair, data)
 		}
 	}

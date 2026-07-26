@@ -15,7 +15,6 @@ type BlockchainClient interface {
 }
 
 type MockBlockchainClient struct{ Asset string }
-
 func NewMockBlockchainClient(asset string) *MockBlockchainClient { return &MockBlockchainClient{Asset: asset} }
 func (m *MockBlockchainClient) GenerateAddress() (string, error) { b := make([]byte, 20); rand.Read(b); return m.Asset + "_" + hex.EncodeToString(b), nil }
 func (m *MockBlockchainClient) GetBalance(_ string) (*big.Float, error) { return big.NewFloat(1000.0), nil }

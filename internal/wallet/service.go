@@ -34,7 +34,6 @@ type Service struct {
 func NewService(store WalletStore, clients map[string]BlockchainClient) *Service {
 	return &Service{store: store, clients: clients, confThresholds: map[string]int{"BTC": 12, "ETH": 24, "POLYGON": 24}}
 }
-
 func (s *Service) clientFor(asset string) BlockchainClient { return s.clients[asset] }
 func (s *Service) RegisterClient(asset string, c BlockchainClient) { s.clients[asset] = c }
 
@@ -57,7 +56,7 @@ func (s *Service) Deposit(userID, asset string, amount *big.Float, txHash string
 func (s *Service) Withdraw(userID, asset, address string, amount *big.Float) error {
 	if amount == nil || amount.Sign() <= 0 { return ErrNegativeAmount }
 	c := s.clientFor(asset)
-	if c == nil { return fmt.Errorf("unsupported: %s", asset) }
+	if c == nil { return fmt.Errorf("unsupported asset: %s", asset) }
 	if !c.IsValidAddress(address) { return ErrInvalidAddress }
 	w, err := s.store.GetWallet(userID, asset)
 	if err != nil { return ErrWalletNotFound }
@@ -71,9 +70,8 @@ func (s *Service) SettleTrade(buyerID, sellerID, asset string, amount, price *bi
 	if amount.Sign() <= 0 { return ErrNegativeAmount }
 	total := new(big.Float).Mul(amount, price)
 	bw, _ := s.store.GetWallet(buyerID, asset)
-	s.store.UnlockBalance(bw.ID, total)
-	s.store.UpdateBalance(bw.ID, new(big.Float).Neg(total))
+	if bw != nil { s.store.UnlockBalance(bw.ID, total); s.store.UpdateBalance(bw.ID, new(big.Float).Neg(total)) }
 	sw, _ := s.store.GetWallet(sellerID, "USDT")
-	s.store.UpdateBalance(sw.ID, amount)
+	if sw != nil { s.store.UpdateBalance(sw.ID, amount) }
 	return nil
 }
