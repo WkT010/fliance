@@ -1,1 +1,2 @@
 CREATE TABLE IF NOT EXISTS candles (id BIGSERIAL, pair TEXT NOT NULL, interval TEXT NOT NULL, open NUMERIC(40,18) NOT NULL, high NUMERIC(40,18) NOT NULL, low NUMERIC(40,18) NOT NULL, close NUMERIC(40,18) NOT NULL, volume NUMERIC(40,18) NOT NULL DEFAULT 0, timestamp BIGINT NOT NULL, PRIMARY KEY(pair, interval, timestamp));
+CREATE INDEX IF NOT EXISTS idx_candles_lookup ON candles(pair, interval, timestamp DESC);

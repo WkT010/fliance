@@ -1,0 +1,28 @@
+syntax = "proto3";
+package exchange.v1;
+option go_package = "github.com/WkT010/nexa-exchange/proto/exchange/v1;exchangev1";
+
+enum Side { SIDE_UNSPECIFIED = 0; BUY = 1; SELL = 2; }
+enum OrderType { ORDER_TYPE_UNSPECIFIED = 0; LIMIT = 1; MARKET = 2; STOP_LOSS = 3; STOP_LIMIT = 4; ICEBERG = 5; FOK = 6; IOC = 7; }
+enum TimeInForce { TIME_IN_FORCE_UNSPECIFIED = 0; GTC = 1; IOC = 2; FOK = 3; GTD = 4; }
+enum OrderStatus { ORDER_STATUS_UNSPECIFIED = 0; NEW = 1; PARTIALLY_FILLED = 2; FILLED = 3; CANCELLED = 4; REJECTED = 5; }
+enum TakerSide { TAKER_SIDE_UNSPECIFIED = 0; TAKER_BUY = 1; TAKER_SELL = 2; }
+
+message Order { string id = 1; string client_order_id = 2; string user_id = 3; string pair = 4; Side side = 5; OrderType type = 6; string price = 7; string stop_price = 8; string quantity = 9; string filled_qty = 10; string remaining_qty = 11; string iceberg_qty = 12; string visible_qty = 13; TimeInForce time_in_force = 14; OrderStatus status = 15; int64 created_at = 16; int64 updated_at = 17; }
+message Trade { string id = 1; string buy_order_id = 2; string sell_order_id = 3; string buyer_id = 4; string seller_id = 5; string pair = 6; string price = 7; string quantity = 8; TakerSide taker_side = 9; string fee = 10; int64 created_at = 11; }
+message PriceLevel { string price = 1; string quantity = 2; int64 count = 3; }
+message OrderBookDepth { string pair = 1; repeated PriceLevel bids = 2; repeated PriceLevel asks = 3; int64 seq_no = 4; }
+
+message PlaceOrderRequest { string client_order_id = 1; string user_id = 2; string pair = 3; Side side = 4; OrderType type = 5; string price = 6; string stop_price = 7; string quantity = 8; string iceberg_qty = 9; string visible_qty = 10; TimeInForce time_in_force = 11; }
+message PlaceOrderResponse { Order order = 1; repeated Trade fills = 2; }
+message CancelOrderRequest { string order_id = 1; string user_id = 2; string pair = 3; }
+message CancelOrderResponse { bool success = 1; }
+message GetOrderbookRequest { string pair = 1; int32 limit = 2; }
+message GetOrderbookResponse { OrderBookDepth depth = 1; }
+message StreamTradesRequest { string pair = 1; }
+message StreamTradesResponse { Trade trade = 1; }
+message StreamOrderbookRequest { string pair = 1; }
+message StreamOrderbookResponse { OrderBookDepth depth = 1; }
+
+service ExchangeService { rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse); rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse); rpc GetOrderbook(GetOrderbookRequest) returns (GetOrderbookResponse); }
+service StreamService { rpc StreamTrades(StreamTradesRequest) returns (stream StreamTradesResponse); rpc StreamOrderbook(StreamOrderbookRequest) returns (stream StreamOrderbookResponse); }
