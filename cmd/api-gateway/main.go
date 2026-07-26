@@ -35,9 +35,6 @@ func main() {
 	hub := websocket.NewHub()
 	go hub.Run()
 
-	bridge := wsbridge.NewBridge(hub, engines)
-	bridge.Start()
-
 	var orderStore api.OrderStore
 	var userStore api.UserStore
 
@@ -53,6 +50,9 @@ func main() {
 		}
 	}
 
+	bridge := wsbridge.NewBridge(hub, engines, orderStore)
+	bridge.Start()
+
 	mgr := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTIssuer)
 	ah := api.NewAuthHandler(mgr, userStore)
 	oh := api.NewOrderHandler(engines, orderStore)
@@ -60,11 +60,8 @@ func main() {
 
 	router := api.NewRouter(oh, ah, wh, ah.AuthMiddleware()).Setup()
 	srv := &http.Server{
-		Addr:         cfg.ListenAddr,
-		Handler:      router,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr: cfg.ListenAddr, Handler: router,
+		ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 
 	go func() {
@@ -73,9 +70,7 @@ func main() {
 		<-sig
 		log.Println("[NEXA] shutting down...")
 		bridge.Stop()
-		for _, e := range engines {
-			e.Stop()
-		}
+		for _, e := range engines { e.Stop() }
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		srv.Shutdown(ctx)
