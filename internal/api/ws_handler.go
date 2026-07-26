@@ -1,22 +1,39 @@
 package api
 
 import (
+	"log"
 	"net/http"
+
 	"github.com/gin-gonic/gin"
 	gorilla "github.com/gorilla/websocket"
 	"github.com/WkT010/nexa-exchange/pkg/websocket"
 )
 
-type WSHandler struct{ hub *websocket.Hub }
-func NewWSHandler(hub *websocket.Hub) *WSHandler { return &WSHandler{hub: hub} }
+type WSHandler struct {
+	hub *websocket.Hub
+}
 
-var upgrader = gorilla.Upgrader{ReadBufferSize: 4096, WriteBufferSize: 4096, CheckOrigin: func(r *http.Request) bool { return true }}
+func NewWSHandler(hub *websocket.Hub) *WSHandler {
+	return &WSHandler{hub: hub}
+}
+
+var upgrader = gorilla.Upgrader{
+	ReadBufferSize: 4096, WriteBufferSize: 4096,
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 func (h *WSHandler) HandleWebSocket(c *gin.Context) {
-	uid := c.Query("user_id"); if uid == "" { uid = "anon" }
+	uid := c.Query("user_id")
+	if uid == "" {
+		uid = "anon"
+	}
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil { return }
+	if err != nil {
+		log.Printf("ws upgrade error: %v", err)
+		return
+	}
 	cl := websocket.NewClient(conn, h.hub, uid)
 	h.hub.Register(cl)
-	go cl.WritePump(); go cl.ReadPump()
+	go cl.WritePump()
+	go cl.ReadPump()
 }
