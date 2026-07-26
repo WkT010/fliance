@@ -3,23 +3,25 @@ build/
 *.exe
 *.test
 *.out
-
+tmp/
+# Go
+vendor/
 # IDE
 .idea/
 .vscode/
-
+*.swp
+*.swo
 # OS
 .DS_Store
 Thumbs.db
-
 # Env
 .env
 .env.local
-
+.env.production
 # Coverage
 coverage.out
 coverage.html
-
-# Misc
+coverage.xml
+# Logs
 *.log
-tmp/
+logs/

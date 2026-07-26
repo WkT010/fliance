@@ -1,4 +1,6 @@
 .git
+.gitignore
+.gitattributes
 node_modules
 build/
 *.md
@@ -8,3 +10,5 @@ coverage.html
 .idea
 .env
 .env.local
+*.log
+logs/
