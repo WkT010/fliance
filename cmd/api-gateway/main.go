@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
 	"github.com/WkT010/nexa-exchange/internal/api"
 	"github.com/WkT010/nexa-exchange/internal/auth"
 	"github.com/WkT010/nexa-exchange/internal/config"
@@ -20,35 +21,69 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	cfg := config.Load()
-	log.Printf("[NEXA] api-gateway starting (env=%s)", cfg.Environment)
+	log.Printf("[NEXA] api-gateway starting (env=%s, version=2.0.0)", cfg.Environment)
 
-	engines := map[string]*matching.MatchingEngine{"BTC/USDT": matching.NewMatchingEngine("BTC/USDT", 1_000_000)}
-	engines["BTC/USDT"].Start()
+	engines := make(map[string]*matching.MatchingEngine)
+	for _, pair := range cfg.TradingPairs {
+		e := matching.NewMatchingEngine(pair, 1_000_000)
+		e.Start()
+		engines[pair] = e
+		log.Printf("[NEXA] engine started: %s", pair)
+	}
+	log.Printf("[NEXA] %d matching engines running", len(engines))
 
-	hub := websocket.NewHub(); go hub.Run()
-	bridge := wsbridge.NewBridge(hub, engines); bridge.Start()
+	hub := websocket.NewHub()
+	go hub.Run()
+
+	bridge := wsbridge.NewBridge(hub, engines)
+	bridge.Start()
+
+	var orderStore api.OrderStore
+	var userStore api.UserStore
 
 	if dsn := cfg.PostgresDSN; dsn != "" {
-		if db, err := store.NewPG(dsn); err == nil {
+		db, err := store.NewPG(dsn)
+		if err != nil {
+			log.Printf("[NEXA] postgres connection failed: %v (running without persistence)", err)
+		} else {
 			defer db.Close()
-			store.NewPGWalletStore(db)
-			store.NewPGOrderStore(db)
-			store.NewPGUserStore(db)
+			orderStore = store.NewPGOrderStore(db)
+			userStore = store.NewPGUserStore(db)
 			log.Println("[NEXA] postgres connected")
 		}
 	}
 
 	mgr := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTIssuer)
-	ah := api.NewAuthHandler(mgr, nil)
-	r := api.NewRouter(api.NewOrderHandler(engines["BTC/USDT"], nil), ah, api.NewWSHandler(hub), ah.AuthMiddleware()).Setup()
+	ah := api.NewAuthHandler(mgr, userStore)
+	oh := api.NewOrderHandler(engines, orderStore)
+	wh := api.NewWSHandler(hub)
 
-	srv := &http.Server{Addr: cfg.ListenAddr, Handler: r, ReadTimeout: 15*time.Second, WriteTimeout: 15*time.Second, IdleTimeout: 60*time.Second}
+	router := api.NewRouter(oh, ah, wh, ah.AuthMiddleware()).Setup()
+	srv := &http.Server{
+		Addr:         cfg.ListenAddr,
+		Handler:      router,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
 	go func() {
-		c := make(chan os.Signal,1); signal.Notify(c, syscall.SIGINT, syscall.SIGTERM); <-c
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
 		log.Println("[NEXA] shutting down...")
-		bridge.Stop(); engines["BTC/USDT"].Stop()
-		srv.Shutdown(context.Background())
+		bridge.Stop()
+		for _, e := range engines {
+			e.Stop()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(ctx)
 	}()
+
 	log.Printf("[NEXA] listening on %s", cfg.ListenAddr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed { log.Fatalf("failed: %v", err) }
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("[NEXA] server failed: %v", err)
+	}
+	log.Println("[NEXA] api-gateway stopped")
 }

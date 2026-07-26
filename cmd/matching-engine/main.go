@@ -15,25 +15,39 @@ import (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	cfg := config.Load()
-	log.Printf("[NEXA] matching-engine starting (env=%s)", cfg.Environment)
+	log.Printf("[NEXA] matching-engine starting (env=%s, version=2.0.0)", cfg.Environment)
 
-	pairs := []string{"BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT"}
-	engines := make(map[string]*matching.MatchingEngine)
+	pairs := cfg.TradingPairs
+	if len(pairs) == 0 {
+		pairs = []string{"BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT"}
+	}
+
+	engines := make(map[string]*matching.MatchingEngine, len(pairs))
 	for _, pair := range pairs {
 		e := matching.NewMatchingEngine(pair, 1_000_000)
 		e.Start()
 		engines[pair] = e
+		log.Printf("[NEXA] engine started: %s", pair)
 	}
+	log.Printf("[NEXA] all %d engines running", len(engines))
 
-	sig := <-signalNotify()
-	log.Printf("[NEXA] received %v, stopping %d engines", sig, len(engines))
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	s := <-sig
+	log.Printf("[NEXA] received %v, stopping %d engines", s, len(engines))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	for pair, e := range engines {
 		e.Stop()
-		select { case <-ctx.Done(): os.Exit(1); default: }
+		log.Printf("[NEXA] engine stopped: %s", pair)
+		select {
+		case <-ctx.Done():
+			log.Println("[NEXA] shutdown timeout, exiting")
+			return
+		default:
+		}
 	}
-	log.Println("[NEXA] matching-engine stopped")
+	log.Println("[NEXA] matching-engine stopped gracefully")
 }
-
-func signalNotify() chan os.Signal { c := make(chan os.Signal, 1); signal.Notify(c, syscall.SIGINT, syscall.SIGTERM); return c }
