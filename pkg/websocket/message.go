@@ -7,6 +7,7 @@ const (
 	ChannelTrades      = "trades"
 	ChannelUserOrders  = "user.orders"
 	ChannelUserBalance = "user.balance"
+	ChannelUser        = "user"
 	ChannelTicker      = "ticker"
 )
 

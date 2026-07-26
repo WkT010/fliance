@@ -26,10 +26,23 @@ type Config struct {
 	LogFormat       string
 	Environment     string
 	DevMode         bool
+
+	// Security
+	CORSAllowOrigins []string
+	CORSAllowCreds   bool
+	RateLimitPerSec  int
+	RateLimitBurst   int
+	AccountLockoutThreshold int
+	AccountLockoutDurationMin int
+
+	// Feature flags
+	EnableAPIKeyAuth bool
+	EnableRedisRateLimit bool
 }
 
 func Load() *Config {
 	key := getEnv("ALCHEMY_API_KEY", "")
+	env := getEnv("ENVIRONMENT", "development")
 	cfg := &Config{
 		JWTSecret:  getEnv("JWT_SECRET", "nexa-dev-secret"),
 		JWTIssuer:  getEnv("JWT_ISSUER", "nexa-exchange"),
@@ -46,12 +59,32 @@ func Load() *Config {
 		AlchemyPolygonURL: getEnv("ALCHEMY_POLYGON_URL", "https://polygon-mainnet.g.alchemy.com/v2/"+key),
 		LogLevel:    getEnv("LOG_LEVEL", "info"),
 		LogFormat:   getEnv("LOG_FORMAT", "text"),
-		Environment: getEnv("ENVIRONMENT", "development"),
+		Environment: env,
 		TradingPairs: strings.Split(getEnv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT"), ","),
-		DevMode: getEnv("ENVIRONMENT", "development") == "development",
+		DevMode: env == "development",
+
+		CORSAllowOrigins: strings.Split(getEnv("CORS_ALLOW_ORIGINS", "*"), ","),
+		CORSAllowCreds:   getEnv("CORS_ALLOW_CREDENTIALS", "false") == "true",
+		RateLimitPerSec:  getEnvAsInt("RATE_LIMIT_PER_SEC", 100),
+		RateLimitBurst:   getEnvAsInt("RATE_LIMIT_BURST", 200),
+		AccountLockoutThreshold: getEnvAsInt("ACCOUNT_LOCKOUT_THRESHOLD", 5),
+		AccountLockoutDurationMin: getEnvAsInt("ACCOUNT_LOCKOUT_DURATION_MIN", 15),
+
+		EnableAPIKeyAuth:    getEnv("ENABLE_API_KEY_AUTH", "true") == "true",
+		EnableRedisRateLimit: getEnv("ENABLE_REDIS_RATE_LIMIT", "false") == "true",
 	}
 	if cfg.JWTSecret == "nexa-dev-secret" && !cfg.DevMode {
 		fmt.Println("[WARN] JWT_SECRET is set to default in non-development environment!")
+	}
+	if env == "production" {
+		// In production, refuse to start with wildcard CORS unless explicitly
+		// overridden.
+		for _, o := range cfg.CORSAllowOrigins {
+			if o == "*" {
+				fmt.Println("[WARN] CORS_ALLOW_ORIGINS=* in production; refusing to enable credentials")
+				cfg.CORSAllowCreds = false
+			}
+		}
 	}
 	return cfg
 }
@@ -68,6 +101,13 @@ func getEnvAsInt(key string, fallback int) int {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
 		}
+	}
+	return fallback
+}
+
+func getEnvAsBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		return v == "true" || v == "1" || v == "yes"
 	}
 	return fallback
 }

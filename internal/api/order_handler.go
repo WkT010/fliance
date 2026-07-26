@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/WkT010/nexa-exchange/internal/matching"
 )
 
+// OrderStore is the persistence interface for orders and trades.
 type OrderStore interface {
 	Save(*matching.Order) error
 	Get(string) (*matching.Order, error)
@@ -18,38 +20,74 @@ type OrderStore interface {
 	GetTrades(pair string, limit int) ([]*matching.Trade, error)
 }
 
-type OrderHandler struct {
-	engines map[string]*matching.MatchingEngine
-	store   OrderStore
+// OrderReserver locks funds for an order before it enters the matching engine.
+// Implemented by wallet.Service. Returns ErrInsufficientBalance (wrapped) if the
+// user does not have enough available funds for the order.
+type OrderReserver interface {
+	ReserveOrder(orderID, userID, pair string, side int, orderType int, price, qty *big.Float) error
 }
 
+// OrderReleaser releases leftover reserved funds for an order (e.g. on cancel
+// or after the order has fully filled).
+type OrderReleaser interface {
+	ReleaseOrder(orderID, userID string) error
+}
+
+// ErrInsufficientBalance is returned by ReserveOrder when the user lacks funds.
+// It mirrors wallet.ErrInsufficientBalance but is re-declared here to avoid
+// importing the wallet package (which would create a layering violation from
+// the api package). Handlers compare via errors.Is on the wrapped error.
+var ErrInsufficientBalance = errors.New("insufficient balance")
+
+type OrderHandler struct {
+	engines  map[string]*matching.MatchingEngine
+	store    OrderStore
+	reserver OrderReserver
+	releaser OrderReleaser
+}
+
+// NewOrderHandler constructs an order handler. reserver/releaser are optional
+// (nil disables pre-trade reservation, falling back to best-effort matching).
 func NewOrderHandler(engines map[string]*matching.MatchingEngine, store OrderStore) *OrderHandler {
 	return &OrderHandler{engines: engines, store: store}
+}
+
+// SetWallet wires the wallet service (or any type implementing both OrderReserver
+// and OrderReleaser). Pass nil to disable wallet integration.
+func (h *OrderHandler) SetWallet(r OrderReserver, rel OrderReleaser) {
+	h.reserver = r
+	h.releaser = rel
 }
 
 type placeOrderReq struct {
 	Pair        string `json:"pair" binding:"required"`
 	Side        string `json:"side" binding:"required,oneof=buy sell"`
-	Type        string `json:"type" binding:"required,oneof=limit market fok ioc iceberg stop_loss stop_limit"`
+	Type        string `json:"type" binding:"required,oneof=limit market fok ioc iceberg stop_loss stop_limit post_only"`
 	Price       string `json:"price"`
 	StopPrice   string `json:"stop_price"`
-	Quantity    string `json:"quantity" binding:"required"`
+	Quantity    string `json:"quantity"`
 	TimeInForce string `json:"time_in_force"`
 	IcebergQty  string `json:"iceberg_qty"`
+	ClientOrderID string `json:"client_order_id"`
 }
 
 func (h *OrderHandler) PlaceOrder(c *gin.Context) {
 	var r placeOrderReq
 	if err := c.ShouldBindJSON(&r); err != nil {
-		c.JSON(400, gin.H{"error": "invalid order: " + err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order: " + err.Error()})
 		return
 	}
 	engine, ok := h.engines[r.Pair]
 	if !ok {
-		c.JSON(400, gin.H{"error": "unsupported trading pair: " + r.Pair})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported trading pair: " + r.Pair})
 		return
 	}
 	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
 	side := matching.Buy
 	if r.Side == "sell" {
 		side = matching.Sell
@@ -70,15 +108,17 @@ func (h *OrderHandler) PlaceOrder(c *gin.Context) {
 		ot = matching.StopLoss
 	case "stop_limit":
 		ot = matching.StopLimit
+	case "post_only":
+		ot = matching.PostOnly
 	default:
-		c.JSON(400, gin.H{"error": "invalid order type"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order type"})
 		return
 	}
 	var price *big.Float
 	if r.Price != "" {
 		price = new(big.Float)
 		if _, _, err := price.Parse(r.Price, 10); err != nil || price.Sign() <= 0 {
-			c.JSON(400, gin.H{"error": "invalid price"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid price"})
 			return
 		}
 	}
@@ -86,25 +126,30 @@ func (h *OrderHandler) PlaceOrder(c *gin.Context) {
 	if r.StopPrice != "" {
 		stopPrice = new(big.Float)
 		if _, _, err := stopPrice.Parse(r.StopPrice, 10); err != nil || stopPrice.Sign() <= 0 {
-			c.JSON(400, gin.H{"error": "invalid stop price"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid stop price"})
 			return
 		}
 	}
-	qty := new(big.Float)
-	if _, _, err := qty.Parse(r.Quantity, 10); err != nil || qty.Sign() <= 0 {
-		c.JSON(400, gin.H{"error": "invalid quantity"})
+	if r.Quantity == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity required"})
 		return
 	}
-	if (ot == matching.Limit || ot == matching.Iceberg || ot == matching.StopLimit) && (price == nil || price.Sign() <= 0) {
-		c.JSON(400, gin.H{"error": "price required for limit/iceberg/stop-limit orders"})
+	qty := new(big.Float)
+	if _, _, err := qty.Parse(r.Quantity, 10); err != nil || qty.Sign() <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid quantity"})
+		return
+	}
+	if (ot == matching.Limit || ot == matching.Iceberg || ot == matching.StopLimit || ot == matching.PostOnly) && (price == nil || price.Sign() <= 0) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "price required for limit/iceberg/stop-limit/post-only orders"})
 		return
 	}
 	if (ot == matching.StopLoss || ot == matching.StopLimit) && (stopPrice == nil || stopPrice.Sign() <= 0) {
-		c.JSON(400, gin.H{"error": "stop price required for stop orders"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stop price required for stop orders"})
 		return
 	}
-	o := matching.NewOrder(uid.(string), r.Pair, side, ot, price, qty)
+	o := matching.NewOrder(userID, r.Pair, side, ot, price, qty)
 	o.StopPrice = stopPrice
+	o.ClientOrderID = r.ClientOrderID
 	if r.TimeInForce == "ioc" {
 		o.TimeInForce = matching.IOC
 	}
@@ -115,7 +160,7 @@ func (h *OrderHandler) PlaceOrder(c *gin.Context) {
 		if r.IcebergQty != "" {
 			iceQty := new(big.Float)
 			if _, _, err := iceQty.Parse(r.IcebergQty, 10); err != nil || iceQty.Sign() <= 0 {
-				c.JSON(400, gin.H{"error": "invalid iceberg quantity"})
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid iceberg quantity"})
 				return
 			}
 			o.IcebergQty = iceQty
@@ -129,55 +174,128 @@ func (h *OrderHandler) PlaceOrder(c *gin.Context) {
 			o.VisibleQty = new(big.Float).Copy(half)
 		}
 	}
+
+	// Pre-trade reservation: lock the funds required for this order before it
+	// enters the matching engine. If reservation fails the order is rejected
+	// and no funds are touched. Market buys are not pre-locked (price unknown).
+	if h.reserver != nil {
+		if err := h.reserver.ReserveOrder(o.ID, userID, r.Pair, int(side), int(ot), price, qty); err != nil {
+			// Release any partial reservation if the order fails to submit.
+			if h.releaser != nil {
+				_ = h.releaser.ReleaseOrder(o.ID, userID)
+			}
+			c.JSON(http.StatusPaymentRequired, gin.H{
+				"error":     "insufficient balance",
+				"order_id":  o.ID,
+				"detail":    err.Error(),
+			})
+			return
+		}
+	}
+
 	if !engine.SubmitOrder(o) {
-		c.JSON(503, gin.H{"error": "matching engine busy"})
+		// Engine buffer full: release the reservation we just made.
+		if h.releaser != nil {
+			_ = h.releaser.ReleaseOrder(o.ID, userID)
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "matching engine busy"})
 		return
 	}
 	if h.store != nil {
 		go h.store.Save(o)
 	}
-	c.JSON(200, gin.H{"order_id": o.ID, "status": o.Status.String()})
+	c.JSON(http.StatusOK, gin.H{"order_id": o.ID, "client_order_id": o.ClientOrderID, "status": o.Status.String()})
 }
 
 func (h *OrderHandler) CancelOrder(c *gin.Context) {
 	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
 	pair := c.Query("pair")
 	if pair == "" {
-		c.JSON(400, gin.H{"error": "pair query parameter required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair query parameter required"})
 		return
 	}
 	engine, ok := h.engines[pair]
 	if !ok {
-		c.JSON(400, gin.H{"error": "unsupported pair"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pair"})
 		return
 	}
-	o := engine.OrderBook.Get(c.Param("id"))
-	if o == nil {
-		c.JSON(404, gin.H{"error": "order not found"})
+	orderID := c.Param("id")
+	// Use the engine's serialised cancel path so the cancel races neither
+	// matching nor other cancels.
+	o, err := engine.Cancel(orderID, userID)
+	if err != nil {
+		// Not in the live book: maybe it already filled or was cancelled.
+		// Fall back to the store so we can confirm ownership and update status.
+		if h.store != nil {
+			if so, serr := h.store.Get(orderID); serr == nil && so != nil {
+				if so.UserID != userID {
+					c.JSON(http.StatusForbidden, gin.H{"error": "order does not belong to user"})
+					return
+				}
+				if so.Status == matching.Cancelled || so.Status == matching.Filled {
+					c.JSON(http.StatusOK, gin.H{"order_id": so.ID, "status": so.Status.String()})
+					return
+				}
+				c.JSON(http.StatusNotFound, gin.H{"error": "order not active"})
+				return
+			}
+		}
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		return
 	}
-	if o.UserID != uid.(string) {
-		c.JSON(403, gin.H{"error": "order does not belong to user"})
-		return
+	// Release any remaining reservation so the user's funds return to available
+	// immediately. The bridge handles releases for fully-filled orders, but a
+	// cancel leaves a leftover reservation that only the API path can release.
+	if h.releaser != nil {
+		if rerr := h.releaser.ReleaseOrder(o.ID, userID); rerr != nil {
+			// Non-fatal: log via response field but don't fail the cancel.
+			c.JSON(http.StatusOK, gin.H{"order_id": o.ID, "status": "cancelled", "warning": "release failed"})
+			if h.store != nil {
+				go h.store.Save(o)
+			}
+			return
+		}
 	}
-	engine.OrderBook.Remove(o.ID)
-	o.Status = matching.Cancelled
-	o.UpdatedAt = time.Now().UnixNano()
 	if h.store != nil {
 		go h.store.Save(o)
 	}
-	c.JSON(200, gin.H{"order_id": o.ID, "status": "cancelled"})
+	c.JSON(http.StatusOK, gin.H{"order_id": o.ID, "status": "cancelled"})
+}
+
+// CancelAllOrders cancels every active order for the authenticated user on the
+// given pair (or all pairs if no pair is given). Returns the per-pair counts.
+func (h *OrderHandler) CancelAllOrders(c *gin.Context) {
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	pair := c.Query("pair")
+	total := 0
+	results := gin.H{}
+	if pair != "" {
+		if engine, ok := h.engines[pair]; ok {
+			n := engine.CancelAll(userID)
+			total += n
+			results[pair] = n
+		}
+	} else {
+		for p, engine := range h.engines {
+			n := engine.CancelAll(userID)
+			total += n
+			results[p] = n
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"cancelled": total, "by_pair": results})
 }
 
 func (h *OrderHandler) GetOrder(c *gin.Context) {
 	pair := c.Query("pair")
 	if pair == "" {
-		c.JSON(400, gin.H{"error": "pair query parameter required"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair query parameter required"})
 		return
 	}
 	engine, ok := h.engines[pair]
 	if !ok {
-		c.JSON(400, gin.H{"error": "unsupported pair"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pair"})
 		return
 	}
 	o := engine.OrderBook.Get(c.Param("id"))
@@ -185,29 +303,48 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 		var err error
 		o, err = h.store.Get(c.Param("id"))
 		if err != nil {
-			c.JSON(404, gin.H{"error": "order not found"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 			return
 		}
 	}
 	if o == nil {
-		c.JSON(404, gin.H{"error": "order not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		return
 	}
-	c.JSON(200, orderToJSON(o))
+	uid, _ := c.Get("user_id")
+	if o.UserID != uid.(string) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "order does not belong to user"})
+		return
+	}
+	c.JSON(http.StatusOK, orderToJSON(o))
 }
 
 func (h *OrderHandler) ListOrders(c *gin.Context) {
 	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
 	pair := c.Query("pair")
+	statusStr := c.Query("status")
+	var status matching.OrderStatus = -1
+	if statusStr != "" {
+		if s, ok := parseOrderStatus(statusStr); ok {
+			status = s
+		}
+	}
 	if h.store == nil {
-		c.JSON(200, gin.H{"orders": []interface{}{}})
+		c.JSON(http.StatusOK, gin.H{"orders": []interface{}{}})
 		return
 	}
-	orders, err := h.store.ListByUser(uid.(string), pair, -1, limit, offset)
+	orders, err := h.store.ListByUser(userID, pair, status, limit, offset)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "failed to list orders"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list orders"})
 		return
 	}
 	if orders == nil {
@@ -217,31 +354,48 @@ func (h *OrderHandler) ListOrders(c *gin.Context) {
 	for i, o := range orders {
 		result[i] = orderToJSON(o)
 	}
-	c.JSON(200, gin.H{"orders": result})
+	c.JSON(http.StatusOK, gin.H{"orders": result, "limit": limit, "offset": offset})
 }
 
 func (h *OrderHandler) GetOrderbook(c *gin.Context) {
 	pair := c.Param("pair")
 	engine, ok := h.engines[pair]
 	if !ok {
-		c.JSON(400, gin.H{"error": "unsupported pair: " + pair})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pair: " + pair})
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
-	c.JSON(200, engine.OrderBook.Depth(limit))
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	c.JSON(http.StatusOK, engine.OrderBook.Depth(limit))
 }
 
 func (h *OrderHandler) GetTrades(c *gin.Context) {
 	pair := c.Param("pair")
 	if _, ok := h.engines[pair]; !ok {
-		c.JSON(400, gin.H{"error": "unsupported pair"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pair"})
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	// Prefer the in-memory market data recorder (real-time) and fall back to
+	// the persisted store when available.
+	if engine, ok := h.engines[pair]; ok && engine.MD != nil {
+		trades := engine.MD.RecentTrades(limit)
+		result := make([]gin.H, len(trades))
+		for i, t := range trades {
+			result[i] = tradeToJSON(t)
+		}
+		c.JSON(http.StatusOK, gin.H{"trades": result})
+		return
+	}
 	if h.store != nil {
 		trades, err := h.store.GetTrades(pair, limit)
 		if err != nil {
-			c.JSON(500, gin.H{"error": "failed to get trades"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get trades"})
 			return
 		}
 		if trades == nil {
@@ -251,17 +405,31 @@ func (h *OrderHandler) GetTrades(c *gin.Context) {
 		for i, t := range trades {
 			result[i] = tradeToJSON(t)
 		}
-		c.JSON(200, gin.H{"trades": result})
+		c.JSON(http.StatusOK, gin.H{"trades": result})
 		return
 	}
-	c.JSON(200, gin.H{"trades": []interface{}{}})
+	c.JSON(http.StatusOK, gin.H{"trades": []interface{}{}})
 }
 
 func (h *OrderHandler) GetTicker(c *gin.Context) {
 	pair := c.Param("pair")
 	engine, ok := h.engines[pair]
 	if !ok {
-		c.JSON(400, gin.H{"error": "unsupported pair: " + pair})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pair: " + pair})
+		return
+	}
+	// Prefer the rich 24h ticker from the market data recorder, fall back to a
+	// minimal top-of-book snapshot if the recorder is unavailable.
+	if engine.MD != nil {
+		var bid, ask *big.Float
+		if b := engine.OrderBook.BestBid(); b != nil {
+			bid = b.Price
+		}
+		if a := engine.OrderBook.BestAsk(); a != nil {
+			ask = a.Price
+		}
+		t := engine.MD.Ticker(bid, ask)
+		c.JSON(http.StatusOK, tickerToJSON(t))
 		return
 	}
 	r := gin.H{"pair": pair, "timestamp": time.Now().UnixNano()}
@@ -283,31 +451,97 @@ func (h *OrderHandler) GetTicker(c *gin.Context) {
 		}
 	}
 	r["spread"] = spread
-	c.JSON(200, r)
+	c.JSON(http.StatusOK, r)
+}
+
+// GetTicker24h returns the full 24h rolling ticker. Same payload as GetTicker
+// when the market data recorder is wired.
+func (h *OrderHandler) GetTicker24h(c *gin.Context) {
+	h.GetTicker(c)
+}
+
+// ListTickers returns a 24h ticker for every active pair (Binance-style).
+func (h *OrderHandler) ListTickers(c *gin.Context) {
+	out := make([]gin.H, 0, len(h.engines))
+	for _, engine := range h.engines {
+		if engine.MD == nil {
+			continue
+		}
+		var bid, ask *big.Float
+		if b := engine.OrderBook.BestBid(); b != nil {
+			bid = b.Price
+		}
+		if a := engine.OrderBook.BestAsk(); a != nil {
+			ask = a.Price
+		}
+		t := engine.MD.Ticker(bid, ask)
+		out = append(out, tickerToJSON(t))
+	}
+	c.JSON(http.StatusOK, gin.H{"tickers": out})
 }
 
 func (h *OrderHandler) GetCandles(c *gin.Context) {
 	pair := c.Param("pair")
-	if _, ok := h.engines[pair]; !ok {
-		c.JSON(400, gin.H{"error": "unsupported pair"})
+	engine, ok := h.engines[pair]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pair"})
 		return
 	}
-	c.JSON(200, gin.H{"candles": []interface{}{}})
+	if engine.MD == nil {
+		c.JSON(http.StatusOK, gin.H{"candles": []interface{}{}})
+		return
+	}
+	interval := c.DefaultQuery("interval", "1m")
+	if matching.IntervalSeconds(interval) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported interval"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "500"))
+	if limit <= 0 || limit > 1500 {
+		limit = 500
+	}
+	var start, end int64
+	if s := c.Query("start_time"); s != "" {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
+			start = v
+		}
+	}
+	if e := c.Query("end_time"); e != "" {
+		if v, err := strconv.ParseInt(e, 10, 64); err == nil {
+			end = v
+		}
+	}
+	candles := engine.MD.Candles(interval, limit, start, end)
+	result := make([]gin.H, len(candles))
+	for i, cd := range candles {
+		result[i] = candleToJSON(cd)
+	}
+	c.JSON(http.StatusOK, gin.H{"candles": result, "interval": interval, "pair": pair})
+}
+
+// ListCandleIntervals returns the supported candle intervals.
+func (h *OrderHandler) ListCandleIntervals(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"intervals": []string{"1s", "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"},
+	})
 }
 
 func orderToJSON(o *matching.Order) gin.H {
 	return gin.H{
-		"id": o.ID, "user_id": o.UserID, "pair": o.Pair,
-		"side":       map[bool]string{true: "buy", false: "sell"}[o.Side == matching.Buy],
-		"type":       orderTypeStr(o.Type),
-		"price":      safeFloatStr(o.Price),
-		"stop_price": safeFloatStr(o.StopPrice),
-		"quantity":   safeFloatStr(o.Quantity),
-		"filled_qty": safeFloatStr(o.FilledQty),
-		"remaining":  safeFloatStr(o.RemainingQty),
-		"status":     o.Status.String(),
-		"created_at": o.CreatedAt,
-		"updated_at": o.UpdatedAt,
+		"id": o.ID, "client_order_id": o.ClientOrderID, "user_id": o.UserID, "pair": o.Pair,
+		"side":         sideStr(o.Side),
+		"type":         o.Type.String(),
+		"price":        safeFloatStr(o.Price),
+		"stop_price":   safeFloatStr(o.StopPrice),
+		"quantity":     safeFloatStr(o.Quantity),
+		"filled_qty":   safeFloatStr(o.FilledQty),
+		"remaining":    safeFloatStr(o.RemainingQty),
+		"iceberg_qty":  safeFloatStr(o.IcebergQty),
+		"visible_qty":  safeFloatStr(o.VisibleQty),
+		"time_in_force": tifStr(o.TimeInForce),
+		"status":       o.Status.String(),
+		"created_at":   o.CreatedAt,
+		"updated_at":   o.UpdatedAt,
 	}
 }
 
@@ -315,29 +549,77 @@ func tradeToJSON(t *matching.Trade) gin.H {
 	return gin.H{
 		"id": t.ID, "buy_order": t.BuyOrderID, "sell_order": t.SellOrderID,
 		"pair": t.Pair, "price": safeFloatStr(t.Price),
-		"quantity": safeFloatStr(t.Quantity), "created_at": t.CreatedAt,
+		"quantity": safeFloatStr(t.Quantity), "taker_side": t.TakerSide.String(),
+		"created_at": t.CreatedAt,
 	}
 }
 
-func orderTypeStr(t matching.OrderType) string {
+func tickerToJSON(t *matching.Ticker) gin.H {
+	return gin.H{
+		"pair":             t.Pair,
+		"last_price":       safeFloatStr(t.LastPrice),
+		"bid":              safeFloatStr(t.Bid),
+		"ask":              safeFloatStr(t.Ask),
+		"spread":           safeFloatStr(t.Spread),
+		"volume_24h":       safeFloatStr(t.Volume24H),
+		"quote_volume_24h": safeFloatStr(t.QuoteVolume24H),
+		"high_24h":         safeFloatStr(t.High24H),
+		"low_24h":          safeFloatStr(t.Low24H),
+		"open_24h":         safeFloatStr(t.Open24H),
+		"change_24h":       safeFloatStr(t.Change24H),
+		"change_pct_24h":   safeFloatStr(t.ChangePct24H),
+		"timestamp":        t.Timestamp,
+	}
+}
+
+func candleToJSON(c *matching.Candle) gin.H {
+	return gin.H{
+		"pair": c.Pair, "interval": c.Interval,
+		"open": safeFloatStr(c.Open), "high": safeFloatStr(c.High),
+		"low": safeFloatStr(c.Low), "close": safeFloatStr(c.Close),
+		"volume": safeFloatStr(c.Volume),
+		"timestamp": c.Timestamp, "close_time": c.CloseTime,
+	}
+}
+
+func sideStr(s matching.Side) string {
+	if s == matching.Buy {
+		return "buy"
+	}
+	return "sell"
+}
+
+func tifStr(t matching.TimeInForce) string {
 	switch t {
-	case matching.Limit:
-		return "limit"
-	case matching.Market:
-		return "market"
-	case matching.StopLoss:
-		return "stop_loss"
-	case matching.StopLimit:
-		return "stop_limit"
-	case matching.Iceberg:
-		return "iceberg"
-	case matching.FillOrKill:
-		return "fok"
-	case matching.ImmediateOrCancel:
+	case matching.GTC:
+		return "gtc"
+	case matching.IOC:
 		return "ioc"
+	case matching.FOK:
+		return "fok"
+	case matching.GTD:
+		return "gtd"
 	default:
 		return "unknown"
 	}
+}
+
+func parseOrderStatus(s string) (matching.OrderStatus, bool) {
+	switch s {
+	case "new":
+		return matching.New, true
+	case "partially_filled":
+		return matching.PartiallyFilled, true
+	case "filled":
+		return matching.Filled, true
+	case "cancelled", "canceled":
+		return matching.Cancelled, true
+	case "rejected":
+		return matching.Rejected, true
+	case "expired":
+		return matching.Expired, true
+	}
+	return -1, false
 }
 
 func safeFloatStr(f *big.Float) string {

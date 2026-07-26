@@ -2,11 +2,10 @@ package api
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -29,13 +28,44 @@ type UserStore interface {
 	Create(*User) error
 }
 
+// lockoutEntry tracks consecutive failed login attempts per user (by email).
+// After the threshold is reached the account is locked for the configured
+// duration. Successful login resets the counter.
+type lockoutEntry struct {
+	failures int
+	lockedUntil time.Time
+}
+
 type AuthHandler struct {
 	m     *auth.JWTManager
 	store UserStore
+
+	lockoutMu       sync.Mutex
+	lockouts        map[string]*lockoutEntry
+	lockoutMax      int
+	lockoutDuration time.Duration
 }
 
+// NewAuthHandler constructs an auth handler with default lockout policy
+// (5 failures => 15-minute lockout). Use SetLockoutPolicy to override.
 func NewAuthHandler(m *auth.JWTManager, store UserStore) *AuthHandler {
-	return &AuthHandler{m: m, store: store}
+	return &AuthHandler{
+		m:               m,
+		store:           store,
+		lockouts:        make(map[string]*lockoutEntry),
+		lockoutMax:      5,
+		lockoutDuration: 15 * time.Minute,
+	}
+}
+
+// SetLockoutPolicy configures the account-lockout threshold and duration.
+func (h *AuthHandler) SetLockoutPolicy(maxFailures int, lockDuration time.Duration) {
+	if maxFailures > 0 {
+		h.lockoutMax = maxFailures
+	}
+	if lockDuration > 0 {
+		h.lockoutDuration = lockDuration
+	}
 }
 
 type loginReq struct {
@@ -53,18 +83,66 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "authentication unavailable"})
 		return
 	}
+	// Account lockout check.
+	if h.isLocked(r.Email) {
+		c.JSON(423, gin.H{"error": "account locked due to repeated failures", "retry_after_seconds": int(h.lockoutDuration.Seconds())})
+		return
+	}
 	u, err := h.store.GetByEmail(r.Email)
 	if err != nil {
+		h.recordFailure(r.Email)
 		c.JSON(401, gin.H{"error": "invalid email or password"})
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(r.Password)); err != nil {
+		h.recordFailure(r.Email)
 		c.JSON(401, gin.H{"error": "invalid email or password"})
 		return
 	}
+	h.resetFailures(r.Email)
 	t, _ := h.m.GenerateToken(u.ID, u.Role, 24*time.Hour)
 	rt, _ := h.m.GenerateToken(u.ID, u.Role, 7*24*time.Hour)
-	c.JSON(200, gin.H{"token": t, "refresh_token": rt, "user_id": u.ID, "role": u.Role, "expires_in": 86400})
+	c.JSON(200, gin.H{
+		"token":         t,
+		"refresh_token": rt,
+		"user_id":       u.ID,
+		"role":          u.Role,
+		"expires_in":    86400,
+	})
+}
+
+// isLocked reports whether the email is currently in a lockout window.
+func (h *AuthHandler) isLocked(email string) bool {
+	h.lockoutMu.Lock()
+	defer h.lockoutMu.Unlock()
+	e, ok := h.lockouts[email]
+	if !ok {
+		return false
+	}
+	return time.Now().Before(e.lockedUntil)
+}
+
+// recordFailure increments the failure counter and locks the account if the
+// threshold is reached.
+func (h *AuthHandler) recordFailure(email string) {
+	h.lockoutMu.Lock()
+	defer h.lockoutMu.Unlock()
+	e, ok := h.lockouts[email]
+	if !ok {
+		e = &lockoutEntry{}
+		h.lockouts[email] = e
+	}
+	e.failures++
+	if e.failures >= h.lockoutMax {
+		e.lockedUntil = time.Now().Add(h.lockoutDuration)
+	}
+}
+
+// resetFailures clears the failure counter on successful login.
+func (h *AuthHandler) resetFailures(email string) {
+	h.lockoutMu.Lock()
+	defer h.lockoutMu.Unlock()
+	delete(h.lockouts, email)
 }
 
 type regReq struct {
@@ -94,7 +172,8 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	idBytes := make([]byte, 8)
 	rand.Read(idBytes)
 	uid := fmt.Sprintf("usr_%s", hex.EncodeToString(idBytes))
-	u := &User{ID: uid, Email: r.Email, PasswordHash: string(hash), Role: "user", CreatedAt: time.Now().UnixNano(), UpdatedAt: time.Now().UnixNano()}
+	now := time.Now().UnixNano()
+	u := &User{ID: uid, Email: r.Email, PasswordHash: string(hash), Role: "user", CreatedAt: now, UpdatedAt: now}
 	if err := h.store.Create(u); err != nil {
 		if strings.Contains(err.Error(), "duplicate") || strings.Contains(err.Error(), "unique") {
 			c.JSON(409, gin.H{"error": "email already registered"})
@@ -126,21 +205,36 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	c.JSON(200, gin.H{"token": t, "refresh_token": rt, "expires_in": 86400})
 }
 
+// Logout is a stateless no-op: clients simply discard their token. The endpoint
+// exists so that future server-side token revocation (e.g. a Redis blacklist)
+// can be wired in without changing the API surface.
+func (h *AuthHandler) Logout(c *gin.Context) {
+	c.JSON(200, gin.H{"status": "logged out"})
+}
+
+// AuthMiddleware validates a Bearer JWT and sets user_id/role on the context.
+// If an X-API-Key header is present and was already validated by
+// APIKeyMiddleware (user_id already set), the JWT check is skipped.
 func (h *AuthHandler) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// If API-key middleware already authenticated the request, honour it.
+		if uid, ok := c.Get("user_id"); ok && uid != nil && uid.(string) != "" {
+			c.Next()
+			return
+		}
 		a := c.GetHeader("Authorization")
 		if a == "" {
-			c.AbortWithStatusJSON(401, gin.H{"error": "authorization header required"})
+			c.AbortWithStatusJSON(401, gin.H{"error": "authorization header required", "request_id": c.GetString("request_id")})
 			return
 		}
 		p := strings.SplitN(a, " ", 2)
 		if len(p) != 2 || !strings.EqualFold(p[0], "bearer") {
-			c.AbortWithStatusJSON(401, gin.H{"error": "bearer token required"})
+			c.AbortWithStatusJSON(401, gin.H{"error": "bearer token required", "request_id": c.GetString("request_id")})
 			return
 		}
 		cl, err := h.m.ValidateToken(p[1])
 		if err != nil {
-			c.AbortWithStatusJSON(401, gin.H{"error": "invalid or expired token"})
+			c.AbortWithStatusJSON(401, gin.H{"error": "invalid or expired token", "request_id": c.GetString("request_id")})
 			return
 		}
 		c.Set("user_id", cl.UserID)
