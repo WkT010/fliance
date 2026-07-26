@@ -12,10 +12,13 @@ import (
 var ErrAPIKeyNotFound = errors.New("api key not found")
 
 type APIKey struct {
-	KeyID, Secret, UserID string
+	KeyID       string
+	Secret      string
+	UserID      string
 	Permissions []string
-	CreatedAt, ExpiresAt time.Time
-	Active bool
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+	Active      bool
 }
 
 type APIKeyStore interface {
@@ -27,9 +30,13 @@ type APIKeyStore interface {
 
 func GenerateAPIKey() (keyID, secret string, err error) {
 	kb := make([]byte, 32)
-	if _, e := rand.Read(kb); e != nil { return "", "", fmt.Errorf("key: %w", e) }
+	if _, e := rand.Read(kb); e != nil {
+		return "", "", fmt.Errorf("key: %w", e)
+	}
 	sb := make([]byte, 64)
-	if _, e := rand.Read(sb); e != nil { return "", "", fmt.Errorf("secret: %w", e) }
+	if _, e := rand.Read(sb); e != nil {
+		return "", "", fmt.Errorf("secret: %w", e)
+	}
 	return hex.EncodeToString(kb), hex.EncodeToString(sb), nil
 }
 
