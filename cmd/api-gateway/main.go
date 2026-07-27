@@ -33,8 +33,8 @@ func main() {
 
 	mgr := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTIssuer)
 	authH := api.NewAuthHandler(mgr, nil)
-	priceH := api.NewPriceHandler(api.NewPriceCache())
-	log.Println("[NEXA] Binance price feed: active")
+	priceH := api.NewPriceHandler(api.NewPriceCache(cfg.AlchemyAPIKey))
+	if cfg.AlchemyAPIKey != "" { log.Println("[NEXA] Alchemy price feed: active") } else { log.Println("[NEXA] Alchemy price feed: disabled (no API key)") }
 
 	r := api.NewRouter(api.NewOrderHandler(engines["BTC/USDT"], nil), authH, api.NewWSHandler(hub), priceH, authH.AuthMiddleware()).Setup()
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: r, ReadTimeout: 15*time.Second, WriteTimeout: 15*time.Second, IdleTimeout: 60*time.Second}
