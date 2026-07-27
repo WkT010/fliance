@@ -74,7 +74,7 @@ func main() {
 	// ── Router ────────────────────────────────────────────────────────
 	router := api.NewRouter(
 		orderHandler, authHandler, wsHandler, walletHandler,
-		accountHandler, feeHandler,
+		accountHandler, legalH, feeHandler,
 		authSvc.AuthMiddleware(), pgStore, redisCache, cfg,
 	).Setup()
 
