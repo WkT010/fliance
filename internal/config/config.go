@@ -35,6 +35,11 @@ type Config struct {
 	AccountLockoutThreshold int
 	AccountLockoutDurationMin int
 
+	// TLS / SSL
+	TLSCertFile string
+	TLSKeyFile  string
+	TLSAutoCert bool
+
 	// Feature flags
 	EnableAPIKeyAuth bool
 	EnableRedisRateLimit bool
@@ -70,6 +75,10 @@ func Load() *Config {
 		AccountLockoutThreshold: getEnvAsInt("ACCOUNT_LOCKOUT_THRESHOLD", 5),
 		AccountLockoutDurationMin: getEnvAsInt("ACCOUNT_LOCKOUT_DURATION_MIN", 15),
 
+		TLSCertFile: getEnv("TLS_CERT_FILE", ""),
+		TLSKeyFile:  getEnv("TLS_KEY_FILE", ""),
+		TLSAutoCert: getEnv("TLS_AUTO_CERT", "false") == "true",
+
 		EnableAPIKeyAuth:    getEnv("ENABLE_API_KEY_AUTH", "true") == "true",
 		EnableRedisRateLimit: getEnv("ENABLE_REDIS_RATE_LIMIT", "false") == "true",
 	}
@@ -77,8 +86,6 @@ func Load() *Config {
 		fmt.Println("[WARN] JWT_SECRET is set to default in non-development environment!")
 	}
 	if env == "production" {
-		// In production, refuse to start with wildcard CORS unless explicitly
-		// overridden.
 		for _, o := range cfg.CORSAllowOrigins {
 			if o == "*" {
 				fmt.Println("[WARN] CORS_ALLOW_ORIGINS=* in production; refusing to enable credentials")
@@ -89,18 +96,18 @@ func Load() *Config {
 	return cfg
 }
 
+func (c *Config) HasTLS() bool {
+	return (c.TLSCertFile != "" && c.TLSKeyFile != "") || c.TLSAutoCert
+}
+
 func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
+	if v := os.Getenv(key); v != "" { return v }
 	return fallback
 }
 
 func getEnvAsInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
-		}
+		if i, err := strconv.Atoi(v); err == nil { return i }
 	}
 	return fallback
 }
