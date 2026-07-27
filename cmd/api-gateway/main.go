@@ -86,7 +86,8 @@ func main() {
 	}
 	accountH = api.NewAccountHandler(userStore, walletSvcIface, apiKeyStore)
 
-	router := api.NewRouter(oh, ah, wh, walletH, accountH, ah.AuthMiddleware(), apiKeyStore, cfg).Setup()
+	legalH := api.NewLegalHandler()
+	router := api.NewRouter(oh, ah, wh, walletH, accountH, legalH, ah.AuthMiddleware(), apiKeyStore, cfg).Setup()
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
 		Handler:      router,
