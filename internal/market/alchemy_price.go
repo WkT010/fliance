@@ -9,17 +9,13 @@ import (
 	"time"
 )
 
-type AlchemyPriceResponse struct {
-	Data []AlchemyTokenPrice `json:"data"`
-}
+type AlchemyPriceResponse struct{ Data []AlchemyTokenPrice `json:"data"` }
 type AlchemyTokenPrice struct {
 	Symbol string         `json:"symbol"`
 	Prices []AlchemyPrice `json:"prices"`
 }
 type AlchemyPrice struct {
-	Currency       string `json:"currency"`
-	Value          string `json:"value"`
-	LastUpdatedAt string `json:"lastUpdatedAt"`
+	Currency, Value, LastUpdatedAt string
 }
 
 type AlchemyPriceFeed struct {
@@ -30,15 +26,17 @@ type AlchemyPriceFeed struct {
 
 func NewAlchemyPriceFeed(apiKey string) *AlchemyPriceFeed {
 	return &AlchemyPriceFeed{
-		client:  &http.Client{Timeout: 10 * time.Second},
-		apiKey:  apiKey,
-		baseURL: "https://api.g.alchemy.com/prices/v1",
+		client: &http.Client{Timeout: 10 * time.Second},
+		apiKey: apiKey, baseURL: "https://api.g.alchemy.com/prices/v1",
 	}
 }
 
 var alchemyPairs = map[string]string{
 	"BTC/USDT": "BTC", "ETH/USDT": "ETH", "SOL/USDT": "SOL",
-	"BNB/USDT": "BNB", "ADA/USDT": "ADA",
+	"BNB/USDT": "BNB", "ADA/USDT": "ADA", "DOGE/USDT": "DOGE",
+	"XRP/USDT": "XRP", "UNI/USDT": "UNI", "LINK/USDT": "LINK",
+	"MATIC/USDT": "MATIC", "ARB/USDT": "ARB", "OP/USDT": "OP",
+	"AAVE/USDT": "AAVE", "CRV/USDT": "CRV",
 }
 
 func (a *AlchemyPriceFeed) FetchAllTickers() (map[string]*Ticker, error) {
@@ -48,7 +46,7 @@ func (a *AlchemyPriceFeed) FetchAllTickers() (map[string]*Ticker, error) {
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/tokens/by-symbol?symbols=%s", a.baseURL, strings.Join(syms, ",")), nil)
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	resp, err := a.client.Do(req)
-	if err != nil { return nil, fmt.Errorf("alchemy: %w", err) }
+	if err != nil { return nil, err }
 	defer resp.Body.Close()
 	var r AlchemyPriceResponse
 	json.NewDecoder(resp.Body).Decode(&r)
@@ -71,7 +69,7 @@ func (a *AlchemyPriceFeed) FetchTicker(pair string) (*Ticker, error) {
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/tokens/by-symbol?symbols=%s", a.baseURL, s), nil)
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	resp, err := a.client.Do(req)
-	if err != nil { return nil, fmt.Errorf("alchemy: %w", err) }
+	if err != nil { return nil, err }
 	defer resp.Body.Close()
 	var r AlchemyPriceResponse
 	json.NewDecoder(resp.Body).Decode(&r)
