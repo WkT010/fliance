@@ -7,5 +7,8 @@ resources:
   - api-gateway.yaml
   - matching-engine.yaml
   - wallet-service.yaml
-commonLabels:
-  app.kubernetes.io/part-of: nexa-exchange
+  - hpa.yaml
+secretGenerator:
+  - name: nexa-secrets
+    literals:
+      - jwt-secret=nexa-production-secret-change-me
