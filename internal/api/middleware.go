@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/WkT010/nexa-exchange/internal/cache"
 )
 
 type rateEntry struct {
@@ -16,14 +17,10 @@ type rateEntry struct {
 	resetAt time.Time
 }
 
-// RateLimiter implements a simple in-memory token-bucket-style limiter keyed by
-// client IP. For multi-instance deployments the Redis-backed limiter in
-// internal/cache/redis.go should be used instead (gated by
-// cfg.EnableRedisRateLimit).
+// RateLimiter implements an in-memory token-bucket-style limiter keyed by
+// client IP. For multi-instance deployments, use RedisRateLimiter instead.
 func RateLimiter(requests int, window time.Duration) gin.HandlerFunc {
-	if requests <= 0 {
-		requests = 100
-	}
+	if requests <= 0 { requests = 100 }
 	var mu sync.Mutex
 	clients := make(map[string]*rateEntry)
 	go func() {
@@ -32,9 +29,7 @@ func RateLimiter(requests int, window time.Duration) gin.HandlerFunc {
 			mu.Lock()
 			now := time.Now()
 			for ip, e := range clients {
-				if now.After(e.resetAt) {
-					delete(clients, ip)
-				}
+				if now.After(e.resetAt) { delete(clients, ip) }
 			}
 			mu.Unlock()
 		}
@@ -53,12 +48,7 @@ func RateLimiter(requests int, window time.Duration) gin.HandlerFunc {
 		e.count++
 		if e.count > requests {
 			mu.Unlock()
-			c.Header("Retry-After", strconvFormatInt(int64(window.Seconds())))
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error":       "rate limit exceeded",
-				"retry_after": window.Seconds(),
-				"request_id":  c.GetString("request_id"),
-			})
+			abortRateLimit(c, window)
 			return
 		}
 		mu.Unlock()
@@ -66,14 +56,52 @@ func RateLimiter(requests int, window time.Duration) gin.HandlerFunc {
 	}
 }
 
-// CORSMiddleware is the legacy wildcard CORS middleware. New code should use
-// CORSMiddlewareConfig (router.go) which is driven by configuration.
+// RedisRateLimiter uses Redis sorted sets for distributed rate limiting.
+// It should be used when EnableRedisRateLimit is true in config.
+func RedisRateLimiter(rc *cache.RedisCache, requests int, window time.Duration) gin.HandlerFunc {
+	if requests <= 0 { requests = 100 }
+	if window <= 0 { window = time.Second }
+	return func(c *gin.Context) {
+		key := "ip:" + c.ClientIP()
+		allowed, err := rc.RateLimit(c.Request.Context(), key, requests, window)
+		if err != nil || !allowed {
+			abortRateLimit(c, window)
+			return
+		}
+		c.Next()
+	}
+}
+
+func abortRateLimit(c *gin.Context, window time.Duration) {
+	c.Header("Retry-After", strconvFormatInt(int64(window.Seconds())))
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+		"error":       "rate limit exceeded",
+		"retry_after": window.Seconds(),
+		"request_id":  c.GetString("request_id"),
+	})
+}
+
+// CORSMiddleware is the legacy wildcard CORS middleware.
 func CORSMiddleware() gin.HandlerFunc {
 	return CORSMiddlewareConfig([]string{"*"}, false)
 }
 
-// LoggerMiddleware logs each request in Apache-style format with the request
-// ID for traceability.
+// CORSMiddlewareConfig returns a CORS middleware driven by configuration.
+func CORSMiddlewareConfig(origins []string, allowCreds bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.Request.Header.Get("Origin")
+		if origin == "" { origin = "*" }
+		c.Header("Access-Control-Allow-Origin", origin)
+		if allowCreds { c.Header("Access-Control-Allow-Credentials", "true") }
+		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type,X-API-Key,X-Request-ID")
+		c.Header("Access-Control-Max-Age", "86400")
+		if c.Request.Method == "OPTIONS" { c.AbortWithStatus(http.StatusNoContent); return }
+		c.Next()
+	}
+}
+
+// LoggerMiddleware logs each request in Apache-style format with request ID.
 func LoggerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -90,95 +118,70 @@ func LoggerMiddleware() gin.HandlerFunc {
 	}
 }
 
-// randomID returns a hex-encoded random string of the requested byte length.
-// Used for request IDs and other ephemeral identifiers.
+// MetricsMiddleware records request count and latency into the global MetricsCollector.
+func MetricsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.URL.Path == "/metrics" || c.Request.URL.Path == "/health" || c.Request.URL.Path == "/ready" {
+			c.Next()
+			return
+		}
+		start := time.Now()
+		c.Next()
+		elapsed := time.Since(start).Seconds() * 1000
+		globalMetrics.RecordRequest()
+		globalMetrics.RecordLatency(c.Request.URL.Path, elapsed)
+		if c.Writer.Status() >= 400 { globalMetrics.RecordError() }
+	}
+}
+
 func randomID(nBytes int) string {
 	b := make([]byte, nBytes)
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
 
-// strconvFormatInt is a tiny indirection to avoid importing strconv here just
-// for one Int64 -> string conversion.
 func strconvFormatInt(n int64) string {
-	if n == 0 {
-		return "0"
-	}
+	if n == 0 { return "0" }
 	neg := n < 0
-	if neg {
-		n = -n
-	}
+	if neg { n = -n }
 	var buf [20]byte
 	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
+	for n > 0 { i--; buf[i] = byte('0' + n%10); n /= 10 }
+	if neg { i--; buf[i] = '-' }
 	return string(buf[i:])
 }
 
-// AdminOnly is a guard middleware that aborts with 403 if the authenticated
-// user is not an admin. It must run after the auth middleware.
+// AdminOnly guards endpoints for admin users only.
 func AdminOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, _ := c.Get("role")
 		if role != "admin" {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error":      "admin only",
-				"request_id": c.GetString("request_id"),
-			})
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin only", "request_id": c.GetString("request_id")})
 			return
 		}
 		c.Next()
 	}
 }
 
-// RequirePermission is a guard that ensures the authenticated principal (JWT or
-// API key) has the given permission. Permission "admin" always passes.
+// RequirePermission guards that the authenticated principal has a given permission.
 func RequirePermission(perm string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if perms, ok := c.Get("permissions"); ok {
 			if list, ok := perms.([]string); ok {
 				for _, p := range list {
-					if p == perm || p == "admin" {
-						c.Next()
-						return
-					}
+					if p == perm || p == "admin" { c.Next(); return }
 				}
-				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-					"error":      "permission denied: " + perm,
-					"request_id": c.GetString("request_id"),
-				})
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "permission denied: " + perm, "request_id": c.GetString("request_id")})
 				return
 			}
 		}
-		// JWT path has no permissions list; allow if role is admin.
-		if role, _ := c.Get("role"); role == "admin" {
-			c.Next()
-			return
-		}
-		// Default: allow read-only for any authenticated user, require
-		// explicit permission for trade/withdraw actions.
-		if perm == "read" {
-			c.Next()
-			return
-		}
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-			"error":      "permission denied: " + perm,
-			"request_id": c.GetString("request_id"),
-		})
+		if role, _ := c.Get("role"); role == "admin" { c.Next(); return }
+		if perm == "read" { c.Next(); return }
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "permission denied: " + perm, "request_id": c.GetString("request_id")})
 	}
 }
 
-// stripBearer removes a leading "Bearer " prefix from a token string.
 func stripBearer(s string) string {
-	if len(s) > 7 && strings.EqualFold(s[:7], "bearer ") {
-		return s[7:]
-	}
+	if len(s) > 7 && strings.EqualFold(s[:7], "bearer ") { return s[7:] }
 	return s
 }
