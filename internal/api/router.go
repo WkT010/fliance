@@ -17,6 +17,7 @@ type Router struct {
 	wh         *WSHandler
 	walletH    *WalletHandler
 	accountH   *AccountHandler
+	legalH     *LegalHandler
 	authMW     gin.HandlerFunc
 	apiKeyMW   gin.HandlerFunc
 	startedAt  time.Time
@@ -30,6 +31,7 @@ func NewRouter(
 	wh *WSHandler,
 	walletH *WalletHandler,
 	accountH *AccountHandler,
+	legalH *LegalHandler,
 	authMW gin.HandlerFunc,
 	apiKeyStore auth.APIKeyStore,
 	cfg *config.Config,
@@ -41,6 +43,7 @@ func NewRouter(
 		wh:        wh,
 		walletH:   walletH,
 		accountH:  accountH,
+		legalH:    legalH,
 		authMW:    authMW,
 		startedAt: time.Now(),
 	}
@@ -64,6 +67,17 @@ func (r *Router) Setup() *gin.Engine {
 	r.engine.GET("/health", r.health)
 	r.engine.GET("/ready", r.ready)
 	r.engine.GET("/metrics", r.metrics)
+
+	// Legal pages (public, no auth required).
+	legal := r.engine.Group("/legal")
+	{
+		legal.GET("/terms", r.legalH.Terms)
+		legal.GET("/privacy", r.legalH.Privacy)
+		legal.GET("/risks", r.legalH.Risks)
+		legal.GET("/aml", r.legalH.AML)
+		legal.GET("/cookies", r.legalH.Cookies)
+	}
+
 	api := r.engine.Group("/api/v2")
 	{
 		api.GET("/ping", r.ping)
