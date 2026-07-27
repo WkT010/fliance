@@ -3,115 +3,146 @@
 # NEXA Exchange — One-Click Deployment Script
 # ============================================================================
 # Usage:
-#   chmod +x deploy.sh && ./deploy.sh
-#
-# This script will:
-#   1. Check all prerequisites (docker, go, etc.)
-#   2. Configure environment variables
-#   3. Start infrastructure (PostgreSQL, Redis, Kafka)
-#   4. Run database migrations
-#   5. Build all microservices
-#   6. Start all services (matching-engine, api-gateway, wallet-service)
-#   7. Verify health of all services
+#   ./deploy.sh              Start in development mode (default)
+#   ./deploy.sh prod         Start in production mode (Docker Compose + Nginx)
+#   ./deploy.sh stop         Stop all services
+#   ./deploy.sh restart      Restart all services
+#   ./deploy.sh logs         View service logs
+#   ./deploy.sh status       Check service and infra status
+#   ./deploy.sh ssl-init     Initialize Let's Encrypt SSL certificates
+#   ./deploy.sh infra-up     Start infrastructure only
+#   ./deploy.sh infra-down   Stop infrastructure
 # ============================================================================
 
 set -euo pipefail
 
-# ── Colors ──────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log_info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
-# ── Config ──────────────────────────────────────────────────────────────
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build"
 ENV_FILE="$PROJECT_ROOT/.env"
 COMPOSE_FILE="$PROJECT_ROOT/deploy/docker/docker-compose.yml"
+PROD_COMPOSE_FILE="$PROJECT_ROOT/deploy/docker/docker-compose.prod.yml"
 
-# Defaults (override via environment)
-export JWT_SECRET="${JWT_SECRET:-nexa-deploy-secret-change-me}"
+# ── Production mode ────────────────────────────────────────────────────
+prod_deploy() {
+    log_info "=== NEXA Exchange — Production Deployment ==="
+    echo ""
+
+    if [ ! -f "$ENV_FILE" ]; then
+        log_error ".env file not found! Copy .env.example to .env and configure:"
+        echo "  cp .env.example .env"
+        echo "  # Then edit .env with your production values"
+        echo "  # Especially: JWT_SECRET, POSTGRES_PASSWORD, ALCHEMY_API_KEY, DOMAIN"
+        exit 1
+    fi
+
+    # Load .env
+    set -a; source "$ENV_FILE"; set +a
+
+    # Check required vars
+    if [ "${JWT_SECRET:-}" = "change-me-in-production" ] || [ -z "${JWT_SECRET:-}" ]; then
+        log_error "JWT_SECRET must be set in .env for production!"
+        exit 1
+    fi
+
+    # Ensure SSL certificates exist (or generate self-signed)
+    if [ ! -f "deploy/ssl/certs/fullchain.pem" ]; then
+        log_warn "No SSL certificates found at deploy/ssl/certs/"
+        log_info "Generating self-signed certificate for development..."
+        mkdir -p deploy/ssl/certs
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout deploy/ssl/certs/privkey.pem \
+            -out deploy/ssl/certs/fullchain.pem \
+            -subj "/CN=localhost" 2>/dev/null
+        log_ok "Self-signed certificate generated (for testing only)"
+        log_warn "For production, use: DOMAIN=yourdomain.com ./deploy.sh ssl-init"
+    fi
+
+    # If domain is set, update nginx config
+    if [ -n "${DOMAIN:-}" ]; then
+        log_info "Configuring Nginx for domain: $DOMAIN"
+        # Update nginx.conf with the actual domain
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s/server_name _;/server_name $DOMAIN;/g" deploy/nginx/nginx.conf
+        else
+            sed -i "s/server_name _;/server_name $DOMAIN;/g" deploy/nginx/nginx.conf
+        fi
+    fi
+
+    # Pull images and start
+    log_info "Starting production stack..."
+    docker compose -f "$PROD_COMPOSE_FILE" pull
+    docker compose -f "$PROD_COMPOSE_FILE" up -d --build --remove-orphans
+
+    echo ""
+    log_ok "Production deployment complete!"
+    echo ""
+    echo "  Access:  https://${DOMAIN:-localhost}"
+    echo "  API:     https://${DOMAIN:-localhost}/api/v2"
+    echo "  WS:      wss://${DOMAIN:-localhost}/ws"
+    echo "  Health:  https://${DOMAIN:-localhost}/health"
+    echo ""
+    echo "  To view logs:"
+    echo "    docker compose -f $PROD_COMPOSE_FILE logs -f"
+    echo ""
+}
+
+# ── Production SSL init ─────────────────────────────────────────────────
+ssl_init() {
+    if [ -z "${DOMAIN:-}" ]; then
+        log_error "DOMAIN environment variable not set."
+        echo "  Usage: DOMAIN=exchange.nexa.com $0 ssl-init"
+        exit 1
+    fi
+    EMAIL="${EMAIL:-admin@${DOMAIN}}"
+    log_info "Initializing SSL for $DOMAIN with email $EMAIL"
+    DOMAIN="$DOMAIN" EMAIL="$EMAIL" bash "$PROJECT_ROOT/deploy/ssl/init-letsencrypt.sh"
+}
+
+# ── Config defaults ────────────────────────────────────────────────────
+export JWT_SECRET="${JWT_SECRET:-nexa-dev-secret-change-me}"
 export JWT_ISSUER="${JWT_ISSUER:-nexa-exchange}"
 export LISTEN_ADDR="${LISTEN_ADDR:-:8080}"
 export GRPC_ADDR="${GRPC_ADDR:-:50051}"
-export ENVIRONMENT="${ENVIRONMENT:-production}"
+export ENVIRONMENT="${ENVIRONMENT:-development}"
 export POSTGRES_DSN="${POSTGRES_DSN:-postgres://nexa:nexa_dev@localhost:5432/nexa?sslmode=disable}"
 export REDIS_ADDR="${REDIS_ADDR:-localhost:6379}"
 export REDIS_PASSWORD="${REDIS_PASSWORD:-}"
-export REDIS_DB="${REDIS_DB:-0}"
 export KAFKA_BROKERS="${KAFKA_BROKERS:-localhost:9092}"
-export KAFKA_TOPIC="${KAFKA_TOPIC:-nexa-exchange}"
 export TRADING_PAIRS="${TRADING_PAIRS:-BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT}"
-export ALCHEMY_API_KEY="${ALCHEMY_API_KEY:-}"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 export LOG_FORMAT="${LOG_FORMAT:-text}"
 
-# ── Pre-flight checks ───────────────────────────────────────────────────
+# ── Pre-flight ─────────────────────────────────────────────────────────
 preflight() {
     echo ""
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}   NEXA Exchange — One-Click Deployment${NC}"
+    echo -e "${BLUE}   NEXA Exchange — Deployment${NC}"
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo ""
 
     local fail=0
+    if ! command -v docker &>/dev/null; then log_error "Docker not installed"; fail=1
+    else log_ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',')"; fi
 
-    # Docker
-    if ! command -v docker &>/dev/null; then
-        log_error "Docker is not installed. Install: https://docs.docker.com/get-docker/"
-        fail=1
-    else
-        log_ok "Docker $(docker --version | cut -d' ' -f3 | tr -d ',')"
-    fi
+    if docker compose version &>/dev/null; then export COMPOSE_CMD="docker compose"
+    elif command -v docker-compose &>/dev/null; then export COMPOSE_CMD="docker-compose"
+    else log_error "Docker Compose not found"; fail=1; fi
 
-    # Docker Compose
-    if docker compose version &>/dev/null; then
-        log_ok "Docker Compose v2"
-        export COMPOSE_CMD="docker compose"
-    elif command -v docker-compose &>/dev/null; then
-        log_ok "Docker Compose v1"
-        export COMPOSE_CMD="docker-compose"
-    else
-        log_error "Docker Compose not found"
-        fail=1
-    fi
+    if ! command -v go &>/dev/null; then log_error "Go not installed"; fail=1
+    else log_ok "Go $(go version | grep -oP 'go\S+' | tr -d 'go')"; fi
 
-    # Go
-    if ! command -v go &>/dev/null; then
-        log_error "Go is not installed. Install: https://go.dev/dl/"
-        fail=1
-    else
-        log_ok "Go $(go version | grep -oP 'go\S+' | tr -d 'go')"
-    fi
-
-    # curl
-    if ! command -v curl &>/dev/null; then
-        log_warn "curl not found — health checks will be skipped"
-    fi
-
-    # Port conflicts
-    for port in 5432 6379 2181 9092 8080 8082 50051; do
-        if (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -q ":$port "; then
-            log_warn "Port $port is already in use — may cause conflicts"
-        fi
-    done
-
-    if [ "$fail" -eq 1 ]; then
-        echo ""
-        log_error "Prerequisites missing. Aborting."
-        exit 1
-    fi
+    if [ "$fail" -eq 1 ]; then echo ""; log_error "Prerequisites missing. Aborting."; exit 1; fi
     echo ""
 }
 
-# ── Write .env file ─────────────────────────────────────────────────────
 write_env() {
-    if [ -f "$ENV_FILE" ] && [ "${ENVIRONMENT}" = "production" ]; then
-        log_warn ".env already exists — backing up to .env.backup"
-        cp "$ENV_FILE" "$ENV_FILE.backup"
-    fi
-
+    [ -f "$ENV_FILE" ] && [ "${ENVIRONMENT}" = "production" ] && cp "$ENV_FILE" "$ENV_FILE.backup"
     cat > "$ENV_FILE" <<-EOF
 # NEXA Exchange — Auto-generated by deploy.sh
 JWT_SECRET=${JWT_SECRET}
@@ -122,47 +153,32 @@ ENVIRONMENT=${ENVIRONMENT}
 POSTGRES_DSN=${POSTGRES_DSN}
 REDIS_ADDR=${REDIS_ADDR}
 REDIS_PASSWORD=${REDIS_PASSWORD}
-REDIS_DB=${REDIS_DB}
 KAFKA_BROKERS=${KAFKA_BROKERS}
 KAFKA_TOPIC=${KAFKA_TOPIC}
 TRADING_PAIRS=${TRADING_PAIRS}
-ALCHEMY_API_KEY=${ALCHEMY_API_KEY}
+ALCHEMY_API_KEY=${ALCHEMY_API_KEY:-}
 LOG_LEVEL=${LOG_LEVEL}
 LOG_FORMAT=${LOG_FORMAT}
+ENABLE_REDIS_RATE_LIMIT=${ENABLE_REDIS_RATE_LIMIT:-false}
 EOF
     log_ok ".env file written"
 }
 
-# ── Start infrastructure ────────────────────────────────────────────────
 start_infra() {
     log_info "Starting infrastructure (PostgreSQL, Redis, Kafka)..."
     $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --wait --wait-timeout 120 2>&1 || {
-        log_warn "docker compose --wait timed out. Checking container health..."
+        log_warn "Timeout — checking container health..."
         $COMPOSE_CMD -f "$COMPOSE_FILE" ps
     }
     log_ok "Infrastructure services started"
-
-    # Wait for PostgreSQL to be ready
-    log_info "Waiting for PostgreSQL..."
-    for i in $(seq 1 30); do
-        if docker exec nexa-exchange-postgres-1 pg_isready -U nexa &>/dev/null 2>&1 || \
-           docker exec $(docker ps --filter name=postgres -q | head -1) pg_isready -U nexa &>/dev/null 2>&1; then
-            log_ok "PostgreSQL is ready"
-            break
-        fi
-        if [ "$i" -eq 30 ]; then log_warn "PostgreSQL readiness check timed out — continuing"; fi
-        sleep 2
-    done
 }
 
-# ── Run migrations ──────────────────────────────────────────────────────
 run_migrations() {
     log_info "Running database migrations..."
     (cd "$PROJECT_ROOT" && POSTGRES_DSN="$POSTGRES_DSN" go run ./scripts/migrate/main.go)
     log_ok "Migrations complete"
 }
 
-# ── Build services ──────────────────────────────────────────────────────
 build_services() {
     log_info "Building microservices..."
     mkdir -p "$BUILD_DIR"
@@ -173,141 +189,32 @@ build_services() {
     log_ok "All services built successfully"
 }
 
-# ── Start services ──────────────────────────────────────────────────────
 start_services() {
-    # Kill any existing instances
-    for proc in matching-engine api-gateway wallet-service; do
-        pkill -f "$BUILD_DIR/$proc" 2>/dev/null || true
-    done
+    for proc in matching-engine api-gateway wallet-service; do pkill -f "$BUILD_DIR/$proc" 2>/dev/null || true; done
     sleep 1
-
     log_info "Starting Matching Engine..."
     (cd "$PROJECT_ROOT" && "$BUILD_DIR/matching-engine" &>/tmp/nexa-engine.log) &
-    ENGINE_PID=$!
+    echo $! > /tmp/nexa-engine.pid
     sleep 2
-
     log_info "Starting API Gateway..."
     (cd "$PROJECT_ROOT" && "$BUILD_DIR/api-gateway" &>/tmp/nexa-api.log) &
-    API_PID=$!
+    echo $! > /tmp/nexa-api.pid
     sleep 1
-
     log_info "Starting Wallet Service..."
     (cd "$PROJECT_ROOT" && "$BUILD_DIR/wallet-service" &>/tmp/nexa-wallet.log) &
-    WALLET_PID=$!
-
-    echo "$ENGINE_PID" > /tmp/nexa-engine.pid
-    echo "$API_PID" > /tmp/nexa-api.pid
-    echo "$WALLET_PID" > /tmp/nexa-wallet.pid
-
+    echo $! > /tmp/nexa-wallet.pid
     log_ok "All services started"
 }
 
-# ── Health checks ───────────────────────────────────────────────────────
 health_check() {
-    echo ""
-    log_info "Running health checks..."
-    sleep 3
-
-    local all_ok=0
-    local endpoints=(
-        "http://localhost:8080/health:API Gateway"
-        "http://localhost:8082/health:Wallet Service"
-    )
-
-    for ep in "${endpoints[@]}"; do
-        local url="${ep%%:*}"
-        local name="${ep##*:}"
-        if curl -sf "$url" &>/dev/null; then
-            log_ok "$name — $url ✓"
-        else
-            log_warn "$name — $url not responding yet"
-            all_ok=1
-        fi
+    echo ""; log_info "Running health checks..."; sleep 3
+    local ok=0
+    for ep in "http://localhost:8080/health:API Gateway" "http://localhost:8082/health:Wallet Service"; do
+        local url="${ep%%:*}"; local name="${ep##*:}"
+        if curl -sf "$url" &>/dev/null; then log_ok "$name — $url"; else log_warn "$name — not ready"; ok=1; fi
     done
-
-    # Check if engine process is running
-    if [ -f /tmp/nexa-engine.pid ] && kill -0 "$(cat /tmp/nexa-engine.pid)" 2>/dev/null; then
-        log_ok "Matching Engine — running ✓"
-    else
-        log_warn "Matching Engine process check failed"
-        all_ok=1
-    fi
-
-    echo ""
-    if [ "$all_ok" -eq 0 ]; then
-        log_ok "All services are healthy!"
-    else
-        log_warn "Some services may not be fully ready — check logs in /tmp/nexa-*.log"
-    fi
-}
-
-# ── Print summary ───────────────────────────────────────────────────────
-print_summary() {
-    echo ""
-    echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}   NEXA Exchange — Deployment Complete${NC}"
-    echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
-    echo ""
-    echo "  REST API:       http://localhost:8080"
-    echo "  WebSocket:      ws://localhost:8080/ws"
-    echo "  gRPC:           localhost:50051"
-    echo "  Wallet Service: http://localhost:8082"
-    echo ""
-    echo "  Trading Pairs:  $TRADING_PAIRS"
-    echo "  Environment:    $ENVIRONMENT"
-    echo "  Data Dir:       $PROJECT_ROOT"
-    echo ""
-    echo "  Commands:"
-    echo "    ./deploy.sh stop       Stop all services"
-    echo "    ./deploy.sh restart    Restart all services"
-    echo "    ./deploy.sh logs       Tail service logs"
-    echo "    ./deploy.sh status     Check service status"
-    echo ""
-    echo -e "${YELLOW}  ┌─────────────────────────────────────────────────────┐${NC}"
-    echo -e "${YELLOW}  │ IMPORTANT: Set ALCHEMY_API_KEY for wallet service!  │${NC}"
-    echo -e "${YELLOW}  │ Get one at: https://www.alchemy.com/                │${NC}"
-    echo -e "${YELLOW}  └─────────────────────────────────────────────────────┘${NC}"
-    echo ""
-}
-
-# ── Stop services ───────────────────────────────────────────────────────
-stop_services() {
-    log_info "Stopping all services..."
-    for pid_file in /tmp/nexa-engine.pid /tmp/nexa-api.pid /tmp/nexa-wallet.pid; do
-        if [ -f "$pid_file" ]; then
-            kill "$(cat "$pid_file")" 2>/dev/null || true
-            rm -f "$pid_file"
-        fi
-    done
-    log_ok "Services stopped"
-}
-
-# ── Show logs ───────────────────────────────────────────────────────────
-show_logs() {
-    echo "=== Matching Engine ==="
-    tail -50 /tmp/nexa-engine.log 2>/dev/null || echo "(no logs)"
-    echo ""
-    echo "=== API Gateway ==="
-    tail -50 /tmp/nexa-api.log 2>/dev/null || echo "(no logs)"
-    echo ""
-    echo "=== Wallet Service ==="
-    tail -50 /tmp/nexa-wallet.log 2>/dev/null || echo "(no logs)"
-}
-
-# ── Show status ─────────────────────────────────────────────────────────
-show_status() {
-    echo "Process Status:"
-    for pid_file in /tmp/nexa-engine.pid /tmp/nexa-api.pid /tmp/nexa-wallet.pid; do
-        local name=$(basename "$pid_file" .pid)
-        if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
-            echo "  $name: RUNNING (PID $(cat "$pid_file"))"
-        else
-            echo "  $name: STOPPED"
-        fi
-    done
-    echo ""
-    echo "Docker Containers:"
-    $COMPOSE_CMD -f "$COMPOSE_FILE" ps 2>/dev/null || echo "  (not running)"
+    if [ -f /tmp/nexa-engine.pid ] && kill -0 "$(cat /tmp/nexa-engine.pid)" 2>/dev/null; then log_ok "Matching Engine — running"; else log_warn "Matching Engine — check logs"; ok=1; fi
+    [ "$ok" -eq 0 ] && log_ok "All services healthy!" || log_warn "Some services not ready — check /tmp/nexa-*.log"
 }
 
 # ── Main ────────────────────────────────────────────────────────────────
@@ -321,35 +228,59 @@ main() {
             build_services
             start_services
             health_check
-            print_summary
+            echo ""
+            echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+            echo -e "${GREEN}   NEXA Exchange — Dev Deployment Complete${NC}"
+            echo -e "${GREEN}═══════════════════════════════════════════════════════════${NC}"
+            echo ""
+            echo "  REST API:       http://localhost:8080"
+            echo "  WebSocket:      ws://localhost:8080/ws"
+            echo "  Wallet Service: http://localhost:8082"
+            echo ""
+            ;;
+        prod)
+            prod_deploy
+            ;;
+        ssl-init)
+            ssl_init
             ;;
         stop)
-            stop_services
+            log_info "Stopping all services..."
+            for pid_file in /tmp/nexa-*.pid; do [ -f "$pid_file" ] && kill "$(cat "$pid_file")" 2>/dev/null || true; rm -f "$pid_file"; done
+            log_ok "Services stopped"
             ;;
         restart)
-            stop_services
-            sleep 2
-            main start
+            main stop; sleep 2; main start
             ;;
         logs)
-            show_logs
+            for name in engine api wallet; do
+                echo "=== Matching $name ==="; tail -50 "/tmp/nexa-${name}.log" 2>/dev/null || echo "(no logs)"
+            done
             ;;
         status)
-            show_status
+            for pid_file in /tmp/nexa-*.pid; do
+                local name=$(basename "$pid_file" .pid)
+                [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null && echo "  $name: RUNNING" || echo "  $name: STOPPED"
+            done
+            echo ""
+            echo "Docker Containers:"
+            $COMPOSE_CMD -f "$COMPOSE_FILE" ps 2>/dev/null || echo "  (not running)"
             ;;
         infra-up)
-            start_infra
+            preflight; start_infra
             ;;
         infra-down)
             $COMPOSE_CMD -f "$COMPOSE_FILE" down
             ;;
         *)
-            echo "Usage: $0 {start|stop|restart|logs|status|infra-up|infra-down}"
+            echo "Usage: $0 {start|prod|stop|restart|logs|status|ssl-init|infra-up|infra-down}"
             echo ""
-            echo "  start      Full deployment (default)"
+            echo "  start      Full development deployment"
+            echo "  prod       Full production deployment (Docker + Nginx + SSL)"
+            echo "  ssl-init   Initialize Let's Encrypt SSL (requires DOMAIN= env)"
             echo "  stop       Stop all services"
             echo "  restart    Restart all services"
-            echo "  logs       View service logs"
+            echo "  logs       Tail service logs"
             echo "  status     Check service and infra status"
             echo "  infra-up   Start infrastructure only"
             echo "  infra-down Stop infrastructure"
