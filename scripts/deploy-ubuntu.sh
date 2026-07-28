@@ -7,11 +7,17 @@ set -euo pipefail
 
 REPO="https://github.com/WkT010/nexa-exchange.git"
 VERSION="v4.0.402"
-APP_DIR="/opt/nexa-exchange"
+
+# Default to the repo root (parent directory of this script).
+# Can be overridden by passing APP_DIR as environment variable.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_DIR="${APP_DIR:-$DEFAULT_APP_DIR}"
+
 APP_USER="nexa"
 SERVICE="nexa-exchange"
 GO_VERSION="1.23.4"
-LOG_FILE="/var/log/nexa-deploy.log"
+LOG_FILE="${APP_DIR}/deploy.log"
 
 DB_NAME="nexa"
 DB_USER="nexa"
@@ -80,14 +86,20 @@ fi
 systemctl enable --now postgresql || fail "Failed to start PostgreSQL"
 
 # --- 5. Clone or update source ---
-log "[NEXA] Preparing application directory..."
+log "[NEXA] Preparing application directory: $APP_DIR"
 if [ -d "$APP_DIR/.git" ]; then
     cd "$APP_DIR"
     git fetch --all --tags || fail "git fetch failed"
     git checkout "$VERSION" || fail "git checkout failed"
     git pull origin "$VERSION" || true
+elif [ -f "$APP_DIR/frontend/package.json" ]; then
+    log "[NEXA] Source already present (no .git). Building from current files..."
+    cd "$APP_DIR"
 else
-    rm -rf "$APP_DIR"
+    log "[NEXA] Source not found. Cloning repository to $APP_DIR ..."
+    if [ -d "$APP_DIR" ] && [ "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
+        fail "$APP_DIR is not empty. Please empty it or run this script from the cloned repo."
+    fi
     git clone --branch "$VERSION" "$REPO" "$APP_DIR" || fail "git clone failed"
     cd "$APP_DIR"
 fi

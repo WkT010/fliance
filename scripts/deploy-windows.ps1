@@ -3,13 +3,19 @@
 # Run in PowerShell as Administrator. If the window closes, use deploy-windows.cmd instead.
 
 param(
-    [string]$AppDir = "C:\nexa-exchange",
+    [string]$AppDir = "",
     [string]$Version = "v4.0.402"
 )
 
 $ErrorActionPreference = "Stop"
 $Repo = "https://github.com/WkT010/nexa-exchange.git"
 $Service = "NexaExchange"
+
+# Default to the parent directory of this script (the repo root).
+if ([string]::IsNullOrWhiteSpace($AppDir)) {
+    $AppDir = (Resolve-Path "$PSScriptRoot\..").Path
+}
+
 $LogFile = "$AppDir\deploy.log"
 
 function Write-Log($msg) {
@@ -64,9 +70,15 @@ try {
         git fetch --all --tags
         git checkout $Version
         git pull origin $Version
+    } elseif (Test-Path "$AppDir\frontend\package.json") {
+        Write-Log "[NEXA] Source already present (no .git). Building from current files..."
+        Set-Location $AppDir
     } else {
-        Write-Log "[NEXA] Cloning repository..."
-        if (Test-Path $AppDir) { Remove-Item -Recurse -Force $AppDir }
+        Write-Log "[NEXA] Source not found. Cloning repository to $AppDir ..."
+        if (Test-Path $AppDir) {
+            $items = Get-ChildItem $AppDir -Force
+            if ($items) { throw "$AppDir is not empty. Please empty it or run this script from the cloned repo." }
+        }
         git clone --branch $Version $Repo $AppDir
         Set-Location $AppDir
     }

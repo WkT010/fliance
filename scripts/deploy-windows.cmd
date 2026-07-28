@@ -9,7 +9,7 @@ powershell.exe -NoExit -ExecutionPolicy Bypass -File "scripts\deploy-windows.ps1
 
 if errorlevel 1 (
     echo.
-    echo [NEXA] Deploy failed. Check C:\nexa-exchange\deploy.log
+    echo [NEXA] Deploy failed. Check deploy.log in the repo root.
     pause
     exit /b 1
 )
