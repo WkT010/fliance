@@ -1,7 +1,10 @@
 package api
 
 import (
+	"net/http"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,6 +27,7 @@ type Router struct {
 	apiKeyMW  gin.HandlerFunc
 	health    *observability.HealthCollector
 	startedAt time.Time
+	staticDir string
 }
 
 // NewRouter constructs a router. apiKeyStore may be nil to disable API-key auth.
@@ -70,6 +74,9 @@ func NewRouter(
 	)
 	return r
 }
+
+// SetStaticDir enables serving of a static frontend build directory.
+func (r *Router) SetStaticDir(dir string) { r.staticDir = dir }
 
 // Setup registers all routes and returns the configured Gin engine.
 func (r *Router) Setup() *gin.Engine {
@@ -166,6 +173,31 @@ func (r *Router) Setup() *gin.Engine {
 
 	// WebSocket.
 	r.engine.GET("/ws", r.wh.HandleWebSocket)
+
+	// Static frontend (SPA) serving. API routes take precedence.
+	if r.staticDir != "" {
+		fsys := gin.Dir(r.staticDir, false)
+		fileServer := http.FileServer(fsys)
+		r.engine.NoRoute(func(c *gin.Context) {
+			path := c.Request.URL.Path
+			// Never serve static files for API/WebSocket/health/metrics routes.
+			if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws") ||
+				path == "/health" || path == "/ready" || path == "/metrics" {
+				c.AbortWithStatus(http.StatusNotFound)
+				return
+			}
+			// If a real file exists, serve it; otherwise fall back to index.html.
+			if info, err := fsys.Open(filepath.Clean("/" + path)); err == nil {
+				if stat, err := info.Stat(); err == nil && !stat.IsDir() {
+					_ = info.Close()
+					fileServer.ServeHTTP(c.Writer, c.Request)
+					return
+				}
+				_ = info.Close()
+			}
+			c.File(filepath.Join(r.staticDir, "index.html"))
+		})
+	}
 
 	return r.engine
 }

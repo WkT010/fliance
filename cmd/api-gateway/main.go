@@ -25,7 +25,7 @@ import (
 	"github.com/WkT010/nexa-exchange/pkg/websocket"
 )
 
-const version = "4.0.365"
+const version = "4.0.402"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -183,6 +183,14 @@ func main() {
 	// ── HTTP router ──
 	router := api.NewRouter(orderH, authH, wsH, priceH, walletH, accountH, adminH,
 		authH.AuthMiddleware(), apiKeyStore, cfg, health)
+	staticDir := os.Getenv("STATIC_DIR")
+	if staticDir == "" {
+		staticDir = "./frontend/dist"
+	}
+	if fi, err := os.Stat(staticDir); err == nil && fi.IsDir() {
+		router.SetStaticDir(staticDir)
+		log.Printf("[NEXA] serving static files from %s", staticDir)
+	}
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
 		Handler:      router.Setup(),

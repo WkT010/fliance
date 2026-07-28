@@ -107,3 +107,201 @@ export function heikinAshi(data: Candle[]): Candle[] {
   }
   return out;
 }
+
+export interface MACDPoint {
+  time: number;
+  macd: number;
+  signal: number;
+  histogram: number;
+}
+
+export function macd(data: Candle[], fast = 12, slow = 26, signal = 9): MACDPoint[] {
+  if (data.length < slow + signal) return [];
+  const emaFast = ema(data, fast).map((p) => p.value);
+  const emaSlow = ema(data, slow).map((p) => p.value);
+  const macdLine: number[] = [];
+  for (let i = 0; i < data.length; i++) {
+    macdLine.push(emaFast[i] - emaSlow[i]);
+  }
+  // Signal = EMA of MACD line
+  const signalLine: number[] = [];
+  let sigPrev = macdLine[0];
+  const k = 2 / (signal + 1);
+  for (let i = 0; i < macdLine.length; i++) {
+    if (i === 0) {
+      signalLine.push(sigPrev);
+    } else {
+      sigPrev = macdLine[i] * k + sigPrev * (1 - k);
+      signalLine.push(sigPrev);
+    }
+  }
+  const out: MACDPoint[] = [];
+  for (let i = slow + signal - 2; i < data.length; i++) {
+    out.push({
+      time: data[i].time,
+      macd: macdLine[i],
+      signal: signalLine[i],
+      histogram: macdLine[i] - signalLine[i],
+    });
+  }
+  return out;
+}
+
+export interface KDJPoint {
+  time: number;
+  k: number;
+  d: number;
+  j: number;
+}
+
+export function kdj(data: Candle[], n = 9, m1 = 3, m2 = 3): KDJPoint[] {
+  if (data.length < n) return [];
+  const out: KDJPoint[] = [];
+  let prevK = 50;
+  let prevD = 50;
+  for (let i = n - 1; i < data.length; i++) {
+    let low = data[i].low;
+    let high = data[i].high;
+    for (let j = 0; j < n; j++) {
+      low = Math.min(low, data[i - j].low);
+      high = Math.max(high, data[i - j].high);
+    }
+    const rsv = high === low ? 0 : ((data[i].close - low) / (high - low)) * 100;
+    const k = (2 * prevK + rsv) / (m1 + 1);
+    const d = (2 * prevD + k) / (m2 + 1);
+    const j = 3 * k - 2 * d;
+    out.push({ time: data[i].time, k, d, j });
+    prevK = k;
+    prevD = d;
+  }
+  return out;
+}
+
+export interface StochasticPoint {
+  time: number;
+  k: number;
+  d: number;
+}
+
+export function stochastic(data: Candle[], kPeriod = 14, dPeriod = 3): StochasticPoint[] {
+  if (data.length < kPeriod + dPeriod - 1) return [];
+  const rawK: number[] = [];
+  for (let i = kPeriod - 1; i < data.length; i++) {
+    let low = data[i].low;
+    let high = data[i].high;
+    for (let j = 0; j < kPeriod; j++) {
+      low = Math.min(low, data[i - j].low);
+      high = Math.max(high, data[i - j].high);
+    }
+    rawK.push(high === low ? 50 : ((data[i].close - low) / (high - low)) * 100);
+  }
+  const out: StochasticPoint[] = [];
+  for (let i = dPeriod - 1; i < rawK.length; i++) {
+    let sumK = 0;
+    for (let j = 0; j < dPeriod; j++) sumK += rawK[i - j];
+    const k = sumK / dPeriod;
+    let sumD = 0;
+    for (let j = 0; j < dPeriod; j++) {
+      let s = 0;
+      for (let x = 0; x < dPeriod; x++) s += rawK[i - j - x];
+      sumD += s / dPeriod;
+    }
+    const d = sumD / dPeriod;
+    out.push({ time: data[i + kPeriod - 1].time, k, d });
+  }
+  return out;
+}
+
+export function vwap(data: Candle[]): LinePoint[] {
+  if (data.length === 0) return [];
+  const out: LinePoint[] = [];
+  let cumTPV = 0;
+  let cumVol = 0;
+  for (const c of data) {
+    const tp = (c.high + c.low + c.close) / 3;
+    cumTPV += tp * c.volume;
+    cumVol += c.volume;
+    out.push({ time: c.time, value: cumVol === 0 ? tp : cumTPV / cumVol });
+  }
+  return out;
+}
+
+export function volumeSma(data: Candle[], period = 20): LinePoint[] {
+  if (period <= 0 || data.length < period) return [];
+  const out: LinePoint[] = [];
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) {
+    sum += data[i].volume;
+    if (i >= period) sum -= data[i - period].volume;
+    if (i >= period - 1) {
+      out.push({ time: data[i].time, value: sum / period });
+    }
+  }
+  return out;
+}
+
+export function atr(data: Candle[], period = 14): LinePoint[] {
+  if (period <= 0 || data.length < 2) return [];
+  const tr: number[] = [];
+  for (let i = 0; i < data.length; i++) {
+    const hL = data[i].high - data[i].low;
+    if (i === 0) {
+      tr.push(hL);
+    } else {
+      const hPc = Math.abs(data[i].high - data[i - 1].close);
+      const lPc = Math.abs(data[i].low - data[i - 1].close);
+      tr.push(Math.max(hL, hPc, lPc));
+    }
+  }
+  const out: LinePoint[] = [];
+  let prev = 0;
+  for (let i = 0; i < tr.length; i++) {
+    if (i < period - 1) continue;
+    if (i === period - 1) {
+      let sum = 0;
+      for (let j = 0; j < period; j++) sum += tr[j];
+      prev = sum / period;
+    } else {
+      prev = (prev * (period - 1) + tr[i]) / period;
+    }
+    out.push({ time: data[i].time, value: prev });
+  }
+  return out;
+}
+
+export function williamsR(data: Candle[], period = 14): LinePoint[] {
+  if (period <= 0 || data.length < period) return [];
+  const out: LinePoint[] = [];
+  for (let i = period - 1; i < data.length; i++) {
+    let high = data[i].high;
+    let low = data[i].low;
+    for (let j = 0; j < period; j++) {
+      high = Math.max(high, data[i - j].high);
+      low = Math.min(low, data[i - j].low);
+    }
+    const value = high === low ? -50 : ((high - data[i].close) / (high - low)) * -100;
+    out.push({ time: data[i].time, value });
+  }
+  return out;
+}
+
+export function cci(data: Candle[], period = 20): LinePoint[] {
+  if (period <= 0 || data.length < period) return [];
+  const out: LinePoint[] = [];
+  for (let i = period - 1; i < data.length; i++) {
+    let sum = 0;
+    for (let j = 0; j < period; j++) {
+      sum += (data[i - j].high + data[i - j].low + data[i - j].close) / 3;
+    }
+    const sma = sum / period;
+    let md = 0;
+    for (let j = 0; j < period; j++) {
+      md += Math.abs((data[i - j].high + data[i - j].low + data[i - j].close) / 3 - sma);
+    }
+    md /= period;
+    const tp = (data[i].high + data[i].low + data[i].close) / 3;
+    const value = md === 0 ? 0 : (tp - sma) / (0.015 * md);
+    out.push({ time: data[i].time, value });
+  }
+  return out;
+}
