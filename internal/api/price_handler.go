@@ -19,19 +19,47 @@ func NewPriceHandler(apiKey string) *PriceHandler {
 	}
 }
 
+// bestTicker prefers Uniswap V3 subgraph (no API quota) and falls back to the
+// Alchemy price feed when the pair is not supported by Uniswap or the subgraph
+// is unreachable.
+func (h *PriceHandler) bestTicker(pair string) (*market.Ticker, string) {
+	if t, err := h.uniswap.FetchTicker(pair); err == nil && t != nil {
+		return t, "uniswap-v3-subgraph"
+	}
+	if t := h.feed.Get(pair); t != nil {
+		return t, "alchemy-ws"
+	}
+	return nil, ""
+}
+
 func (h *PriceHandler) GetTicker(c *gin.Context) {
 	pair := c.Param("pair")
 	if pair == "" { c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"}); return }
-	t := h.feed.Get(pair)
+	t, source := h.bestTicker(pair)
 	if t == nil { c.JSON(http.StatusNotFound, gin.H{"error": "pair not found"}); return }
-	c.JSON(http.StatusOK, gin.H{"pair":t.Pair,"last":t.Last.String(),"source":"alchemy-ws","timestamp":t.Timestamp})
+	c.JSON(http.StatusOK, gin.H{"pair":t.Pair,"last":t.Last.String(),"source":source,"timestamp":t.Timestamp})
 }
 
 func (h *PriceHandler) GetAllTickers(c *gin.Context) {
-	tickers := h.feed.GetAll()
-	result := make([]gin.H, 0, len(tickers))
-	for _, t := range tickers {
-		result = append(result, gin.H{"pair":t.Pair,"last":t.Last.String(),"source":"alchemy-ws"})
+	// Start with Alchemy feed so every configured pair has a quote, then overlay
+	// Uniswap prices where available to honor the low-cost priority.
+	merged := make(map[string]*market.Ticker)
+	sources := make(map[string]string)
+	for _, t := range h.feed.GetAll() {
+		cp := *t
+		merged[t.Pair] = &cp
+		sources[t.Pair] = "alchemy-ws"
+	}
+	for _, pair := range h.uniswap.SupportedPairs() {
+		if t, err := h.uniswap.FetchTicker(pair); err == nil && t != nil {
+			cp := *t
+			merged[pair] = &cp
+			sources[pair] = "uniswap-v3-subgraph"
+		}
+	}
+	result := make([]gin.H, 0, len(merged))
+	for _, t := range merged {
+		result = append(result, gin.H{"pair":t.Pair,"last":t.Last.String(),"source":sources[t.Pair]})
 	}
 	c.JSON(200, gin.H{"tickers":result,"count":len(result)})
 }

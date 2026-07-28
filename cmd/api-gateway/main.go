@@ -17,6 +17,7 @@ import (
 	"github.com/WkT010/nexa-exchange/internal/market"
 	"github.com/WkT010/nexa-exchange/internal/matching"
 	"github.com/WkT010/nexa-exchange/internal/observability"
+	"github.com/WkT010/nexa-exchange/internal/pnl"
 	"github.com/WkT010/nexa-exchange/internal/risk"
 	"github.com/WkT010/nexa-exchange/internal/store"
 	"github.com/WkT010/nexa-exchange/internal/wallet"
@@ -24,7 +25,7 @@ import (
 	"github.com/WkT010/nexa-exchange/pkg/websocket"
 )
 
-const version = "3.0.0"
+const version = "4.0.365"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -128,6 +129,9 @@ func main() {
 		candleSvc = market.NewCandleService(market.NewMemoryCandleStore())
 	}
 
+	// ── Realized PnL tracker ──
+	pnlSvc := pnl.NewService()
+
 	// ── Handlers ──
 	orderH := api.NewOrderHandlerWithExchange(exchange, orderStore, riskEng)
 	orderH.SetWallet(withdrawalSvc, withdrawalSvc)
@@ -135,6 +139,7 @@ func main() {
 
 	walletH := api.NewWalletHandler(withdrawalSvc, clients)
 	accountH := api.NewAccountHandler(userStore, withdrawalSvc, apiKeyStore)
+	accountH.SetPnLService(pnlSvc)
 
 	adminH := api.NewAdminHandler(withdrawalSvc, riskEng, exchange)
 
@@ -157,6 +162,7 @@ func main() {
 	bridge.SetSettler(withdrawalSvc)
 	bridge.SetCandleRecorder(candleSvc)
 	bridge.SetRiskPriceUpdater(riskEng)
+	bridge.SetPnLRecorder(pnlSvc)
 	bridge.Start()
 
 	// ── Health checks ──

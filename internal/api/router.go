@@ -116,6 +116,7 @@ func (r *Router) Setup() *gin.Engine {
 	// Account.
 	p.GET("/account", r.accountH.GetAccount)
 	p.GET("/account/profile", r.accountH.GetProfile)
+	p.GET("/account/pnl", r.accountH.GetPnL)
 	p.POST("/account/api-keys", r.accountH.CreateAPIKey)
 	p.GET("/account/api-keys", r.accountH.ListAPIKeys)
 	p.DELETE("/account/api-keys/:id", r.accountH.RevokeAPIKey)

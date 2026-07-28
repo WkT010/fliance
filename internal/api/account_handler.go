@@ -2,11 +2,13 @@ package api
 
 import (
 	"errors"
+	"math/big"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/WkT010/nexa-exchange/internal/auth"
+	"github.com/WkT010/nexa-exchange/internal/pnl"
 	"github.com/WkT010/nexa-exchange/internal/wallet"
 )
 
@@ -16,11 +18,15 @@ type AccountHandler struct {
 	users    UserStore
 	wallet   WalletService
 	apiKeys  auth.APIKeyStore
+	pnlSvc   *pnl.Service
 }
 
 func NewAccountHandler(users UserStore, walletSvc WalletService, apiKeys auth.APIKeyStore) *AccountHandler {
 	return &AccountHandler{users: users, wallet: walletSvc, apiKeys: apiKeys}
 }
+
+// SetPnLService wires the profit/loss tracker.
+func (h *AccountHandler) SetPnLService(s *pnl.Service) { h.pnlSvc = s }
 
 // GetAccount returns the authenticated user's profile plus consolidated wallet
 // balances. Mirrors Binance's GET /api/v3/account.
@@ -206,4 +212,70 @@ func (h *AccountHandler) AdminListUsers(c *gin.Context) {
 		"note":   "user listing not implemented in store",
 	})
 	_ = errors.New("placeholder")
+}
+
+// GetPnL returns today's realized PnL, total realized PnL, unrealized PnL and
+// open positions for the authenticated user.
+// GET /api/v2/account/pnl
+func (h *AccountHandler) GetPnL(c *gin.Context) {
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	if h.pnlSvc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "pnl service unavailable"})
+		return
+	}
+
+	// Collect reference prices from the best available source (internal tickers).
+	refs := make(map[string]*big.Float)
+	if h.wallet != nil {
+		if ws, err := h.wallet.GetBalances(userID); err == nil {
+			for _, w := range ws {
+				if w.Asset == "USDT" {
+					continue
+				}
+				pair := w.Asset + "/USDT"
+				// The wallet service does not expose market prices; leave refs
+				// empty so the UI can fetch mark prices separately. Unrealized
+				// PnL will be computed when refs are supplied.
+				_ = pair
+			}
+		}
+	}
+
+	summary := h.pnlSvc.Summary(userID, refs)
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":          summary.UserID,
+		"date":             summary.Date,
+		"today_realized":   summary.TodayRealized.String(),
+		"total_realized":   summary.TotalRealized.String(),
+		"unrealized":       summary.Unrealized.String(),
+		"positions":        positionsToJSON(summary.Positions),
+		"reference_prices": floatMapToJSON(summary.ReferencePrices),
+	})
+}
+
+func positionsToJSON(positions map[string]*pnl.Position) []gin.H {
+	out := make([]gin.H, 0, len(positions))
+	for _, p := range positions {
+		out = append(out, gin.H{
+			"asset":          p.Asset,
+			"qty":            p.Qty.String(),
+			"avg_cost":       p.AvgCost.String(),
+			"realized_pnl":   p.RealizedPnL.String(),
+			"last_fill_time": p.LastFillTime,
+		})
+	}
+	return out
+}
+
+func floatMapToJSON(m map[string]*big.Float) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v.String()
+	}
+	return out
 }

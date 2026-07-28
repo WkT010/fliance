@@ -1,5 +1,10 @@
 import { api } from './client';
-import type { APIKey } from '@/types';
+import type { APIKey, PnLSummary } from '@/types';
+
+export async function getPnL(): Promise<PnLSummary> {
+  const res = await api.get<PnLSummary>('/account/pnl');
+  return res.data;
+}
 
 export async function listAPIKeys(): Promise<APIKey[]> {
   const res = await api.get<{ api_keys: APIKey[] }>('/account/api-keys');

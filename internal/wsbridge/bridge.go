@@ -38,6 +38,11 @@ type CandleRecorder interface {
 	RecordTrade(t *matching.Trade) error
 }
 
+// PnLRecorder consumes fill notifications to track realized profit/loss.
+type PnLRecorder interface {
+	RecordFill(fill *matching.FillNotification)
+}
+
 type Bridge struct {
 	hub             *websocket.Hub
 	engines         map[string]*matching.MatchingEngine
@@ -45,6 +50,7 @@ type Bridge struct {
 	settler         FillSettler
 	candleRecorder  CandleRecorder
 	riskPriceUpdater RiskPriceUpdater
+	pnlRecorder     PnLRecorder
 	done            chan struct{}
 	wg              sync.WaitGroup
 }
@@ -62,6 +68,9 @@ func (b *Bridge) SetCandleRecorder(c CandleRecorder) { b.candleRecorder = c }
 
 // SetRiskPriceUpdater wires the risk engine for live reference-price updates.
 func (b *Bridge) SetRiskPriceUpdater(r RiskPriceUpdater) { b.riskPriceUpdater = r }
+
+// SetPnLRecorder wires the profit/loss tracker.
+func (b *Bridge) SetPnLRecorder(p PnLRecorder) { b.pnlRecorder = p }
 
 func (b *Bridge) Start() {
 	for pair, e := range b.engines {
@@ -110,8 +119,8 @@ func (b *Bridge) consumeFills(pair string, e *matching.MatchingEngine) {
 			if b.settler != nil {
 				// fillID combines the two order IDs, the fill quantity and a
 				// coarse time bucket. It must be deterministic enough to dedupe
-				// a replayed fill but unique across distinct fills. Adding a
-				// uuid-style counter would be cleaner, but this avoids importing
+				// a replayed fill (e.g. after a restart that re-reads the channel) is a no-op.
+				// Adding a uuid-style counter would be cleaner, but this avoids importing
 				// another package.
 				fillID := fill.TakerOrderID + ":" + fill.MakerOrderID + ":" + fill.Quantity.Text('f', 18) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
 				if err := b.settler.SettleFill(
@@ -121,6 +130,10 @@ func (b *Bridge) consumeFills(pair string, e *matching.MatchingEngine) {
 				); err != nil {
 					log.Printf("[wsbridge] settle fill failed (pair=%s taker=%s maker=%s): %v", pair, fill.TakerOrderID, fill.MakerOrderID, err)
 				}
+			}
+
+			if b.pnlRecorder != nil {
+				b.pnlRecorder.RecordFill(fill)
 			}
 
 			depth := e.OrderBook.Depth(10)

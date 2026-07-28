@@ -1,34 +1,99 @@
-import { useEffect, useRef, useState } from 'react';
-import { createChart, type IChartApi, type ISeriesApi, type CandlestickData, type Time } from 'lightweight-charts';
+import { useEffect, useRef, useState, useMemo } from 'react';
+import {
+  createChart,
+  type IChartApi,
+  type ISeriesApi,
+  type CandlestickData,
+  type HistogramData,
+  type LineData,
+  type Time,
+  type AreaData,
+  type BarData,
+  LineStyle,
+  CrosshairMode,
+  PriceScaleMode,
+} from 'lightweight-charts';
 import { useMarketStore } from '@/store/marketStore';
 import { getCandles } from '@/api/market';
 import { INTERVALS } from '@/utils/constants';
 import { Card } from '../common/Card';
 import { Select } from '../common/Select';
+import { Button } from '../common/Button';
 import { formatPrice } from '@/utils/format';
+import { sma, ema, rsi, bollinger, heikinAshi, type Candle } from '@/utils/indicators';
+
+type ChartType = 'candle' | 'bar' | 'line' | 'area' | 'heikin';
+
+interface Indicator {
+  id: string;
+  label: string;
+  fn: (data: Candle[]) => { time: number; value: number }[];
+  color: string;
+}
+
+const INDICATORS: Indicator[] = [
+  { id: 'sma7', label: 'MA7', fn: (d) => sma(d, 7), color: '#f59e0b' },
+  { id: 'sma25', label: 'MA25', fn: (d) => sma(d, 25), color: '#3b82f6' },
+  { id: 'sma99', label: 'MA99', fn: (d) => sma(d, 99), color: '#a855f7' },
+  { id: 'ema12', label: 'EMA12', fn: (d) => ema(d, 12), color: '#22c55e' },
+  { id: 'ema26', label: 'EMA26', fn: (d) => ema(d, 26), color: '#ef4444' },
+];
 
 export function ChartPanel({ pair }: { pair: string }) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
+  const rsiContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const mainSeriesRef = useRef<ISeriesApi<'Candlestick'> | ISeriesApi<'Bar'> | ISeriesApi<'Line'> | ISeriesApi<'Area'> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const indicatorSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  const bollingerSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  const rsiChartRef = useRef<IChartApi | null>(null);
+  const rsiSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const [interval, setInterval] = useState('15m');
+  const [chartType, setChartType] = useState<ChartType>('candle');
+  const [activeIndicators, setActiveIndicators] = useState<string[]>(['sma7', 'sma25']);
+  const [showVolume, setShowVolume] = useState(true);
+  const [showRSI, setShowRSI] = useState(false);
+  const [showBollinger, setShowBollinger] = useState(false);
+  const [candles, setCandles] = useState<Candle[]>([]);
+  const [hover, setHover] = useState<{ price: number; time: number } | null>(null);
   const tickers = useMarketStore((s) => s.tickers);
 
+  const rawCandles = useMemo(() => candles, [candles]);
+  const displayCandles = useMemo(() => (chartType === 'heikin' ? heikinAshi(rawCandles) : rawCandles), [rawCandles, chartType]);
+
   useEffect(() => {
-    if (!chartContainerRef.current) return;
+    if (!chartContainerRef.current || !rsiContainerRef.current) return;
+
     const chart = createChart(chartContainerRef.current, {
       layout: { background: { color: 'transparent' }, textColor: '#d4dbe3' },
       grid: { vertLines: { color: '#1e242c' }, horzLines: { color: '#1e242c' } },
-      crosshair: { mode: 1 },
-      rightPriceScale: { borderColor: '#2a313c' },
-      timeScale: { borderColor: '#2a313c', timeVisible: true },
+      crosshair: { mode: CrosshairMode.Magnet },
+      rightPriceScale: { borderColor: '#2a313c', scaleMargins: { top: 0.1, bottom: 0.2 } },
+      timeScale: { borderColor: '#2a313c', timeVisible: true, secondsVisible: false },
+      watermark: { visible: true, text: `NEXA ${pair}`, fontSize: 28, color: 'rgba(212, 219, 227, 0.06)', vertAlign: 'center', horzAlign: 'center' },
     });
     chartRef.current = chart;
-    const series = chart.addCandlestickSeries({
-      upColor: '#0ecb81', downColor: '#f6465d', borderUpColor: '#0ecb81', borderDownColor: '#f6465d',
-      wickUpColor: '#0ecb81', wickDownColor: '#f6465d',
+
+    const rsiChart = createChart(rsiContainerRef.current, {
+      layout: { background: { color: 'transparent' }, textColor: '#d4dbe3' },
+      grid: { vertLines: { color: '#1e242c' }, horzLines: { color: '#1e242c' } },
+      crosshair: { mode: CrosshairMode.Magnet },
+      rightPriceScale: { borderColor: '#2a313c' },
+      timeScale: { borderColor: '#2a313c', visible: false },
+      height: 120,
     });
-    seriesRef.current = series;
+    rsiChartRef.current = rsiChart;
+    const rsiLine = rsiChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false });
+    rsiSeriesRef.current = rsiLine;
+    rsiChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+      { time: 0 as Time, value: 70 },
+      { time: 9999999999 as Time, value: 70 },
+    ]);
+    rsiChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+      { time: 0 as Time, value: 30 },
+      { time: 9999999999 as Time, value: 30 },
+    ]);
 
     const handleResize = () => {
       if (chartContainerRef.current) {
@@ -38,36 +103,175 @@ export function ChartPanel({ pair }: { pair: string }) {
     window.addEventListener('resize', handleResize);
     handleResize();
 
-    return () => { window.removeEventListener('resize', handleResize); chart.remove(); };
-  }, []);
+    chart.subscribeCrosshairMove((param) => {
+      if (param.time && param.point && param.point.y >= 0) {
+        const series = mainSeriesRef.current;
+        if (series) {
+          const price = param.seriesData.get(series) as { value?: number; close?: number } | undefined;
+          setHover({ price: price?.close ?? price?.value ?? 0, time: param.time as number });
+        }
+      } else {
+        setHover(null);
+      }
+    });
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      chart.remove();
+      rsiChart.remove();
+    };
+  }, [pair]);
 
   useEffect(() => {
     getCandles(pair, interval).then((data) => {
-      const candles: CandlestickData<Time>[] = data.map((c) => ({
-        time: Math.floor(c.timestamp / 1e6 / 1000) as Time,
+      const mapped: Candle[] = data.map((c) => ({
+        time: Math.floor(c.timestamp / 1e6 / 1000),
         open: parseFloat(c.open),
         high: parseFloat(c.high),
         low: parseFloat(c.low),
         close: parseFloat(c.close),
+        volume: parseFloat(c.volume || '0'),
       }));
-      seriesRef.current?.setData(candles);
-      chartRef.current?.timeScale().fitContent();
+      setCandles(mapped);
     });
   }, [pair, interval]);
 
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    // Clean up old series
+    indicatorSeriesRef.current.forEach((s) => chart.removeSeries(s));
+    bollingerSeriesRef.current.forEach((s) => chart.removeSeries(s));
+    if (volumeSeriesRef.current) chart.removeSeries(volumeSeriesRef.current);
+    if (mainSeriesRef.current) chart.removeSeries(mainSeriesRef.current);
+    indicatorSeriesRef.current = [];
+    bollingerSeriesRef.current = [];
+    volumeSeriesRef.current = null;
+    mainSeriesRef.current = null;
+
+    if (chartType === 'line') {
+      const series = chart.addLineSeries({ color: '#3b82f6', lineWidth: 2, priceLineVisible: false });
+      series.setData(displayCandles.map((c) => ({ time: c.time as Time, value: c.close })) as LineData<Time>[]);
+      mainSeriesRef.current = series;
+    } else if (chartType === 'area') {
+      const series = chart.addAreaSeries({
+        lineColor: '#3b82f6',
+        topColor: 'rgba(59, 130, 246, 0.4)',
+        bottomColor: 'rgba(59, 130, 246, 0.02)',
+        priceLineVisible: false,
+      });
+      series.setData(displayCandles.map((c) => ({ time: c.time as Time, value: c.close })) as AreaData<Time>[]);
+      mainSeriesRef.current = series;
+    } else if (chartType === 'bar') {
+      const series = chart.addBarSeries({
+        upColor: '#0ecb81', downColor: '#f6465d',
+        thinBars: false,
+      });
+      series.setData(displayCandles.map((c) => ({
+        time: c.time as Time, open: c.open, high: c.high, low: c.low, close: c.close,
+      })) as BarData<Time>[]);
+      mainSeriesRef.current = series;
+    } else {
+      const series = chart.addCandlestickSeries({
+        upColor: '#0ecb81', downColor: '#f6465d',
+        borderUpColor: '#0ecb81', borderDownColor: '#f6465d',
+        wickUpColor: '#0ecb81', wickDownColor: '#f6465d',
+      });
+      series.setData(displayCandles.map((c) => ({
+        time: c.time as Time, open: c.open, high: c.high, low: c.low, close: c.close,
+      })) as CandlestickData<Time>[]);
+      mainSeriesRef.current = series;
+    }
+
+    if (showVolume) {
+      const volSeries = chart.addHistogramSeries({
+        color: '#3b82f6',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '',
+        priceLineVisible: false,
+      });
+      volSeries.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 }, mode: PriceScaleMode.Percentage });
+      volSeries.setData(displayCandles.map((c) => ({
+        time: c.time as Time,
+        value: c.volume,
+        color: c.close >= c.open ? 'rgba(14, 203, 129, 0.5)' : 'rgba(246, 70, 93, 0.5)',
+      })) as HistogramData<Time>[]);
+      volumeSeriesRef.current = volSeries;
+    }
+
+    activeIndicators.forEach((id) => {
+      const ind = INDICATORS.find((i) => i.id === id);
+      if (!ind) return;
+      const points = ind.fn(rawCandles);
+      const series = chart.addLineSeries({ color: ind.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+      series.setData(points.map((p) => ({ time: p.time as Time, value: p.value })) as LineData<Time>[]);
+      indicatorSeriesRef.current.push(series);
+    });
+
+    if (showBollinger) {
+      const bb = bollinger(rawCandles);
+      const upper = chart.addLineSeries({ color: '#a855f7', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed });
+      const middle = chart.addLineSeries({ color: '#d4dbe3', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+      const lower = chart.addLineSeries({ color: '#a855f7', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed });
+      upper.setData(bb.map((b) => ({ time: b.time as Time, value: b.upper })) as LineData<Time>[]);
+      middle.setData(bb.map((b) => ({ time: b.time as Time, value: b.middle })) as LineData<Time>[]);
+      lower.setData(bb.map((b) => ({ time: b.time as Time, value: b.lower })) as LineData<Time>[]);
+      bollingerSeriesRef.current = [upper, middle, lower];
+    }
+
+    if (showRSI && rsiSeriesRef.current) {
+      const rsiData = rsi(rawCandles);
+      rsiSeriesRef.current.setData(rsiData.map((r) => ({ time: r.time as Time, value: r.value })) as LineData<Time>[]);
+      rsiChartRef.current?.timeScale().fitContent();
+    }
+
+    chart.timeScale().fitContent();
+  }, [displayCandles, rawCandles, chartType, activeIndicators, showVolume, showBollinger, showRSI]);
+
+  const toggleIndicator = (id: string) => {
+    setActiveIndicators((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const lastPrice = tickers[pair]?.last;
+
   return (
     <Card className="flex h-full flex-col" title={
-      <div className="flex items-center justify-between">
-        <span>{pair} <span className="text-nexa-400">{formatPrice(tickers[pair]?.last, 2)}</span></span>
-        <Select
-          className="w-28"
-          value={interval}
-          onChange={(e) => setInterval(e.target.value)}
-          options={INTERVALS.map((i) => ({ value: i, label: i }))}
-        />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span>{pair} <span className="text-nexa-400">{formatPrice(lastPrice, 2)}</span></span>
+        <div className="flex flex-wrap items-center gap-2">
+          {(['candle', 'bar', 'line', 'area', 'heikin'] as ChartType[]).map((t) => (
+            <Button key={t} size="sm" variant={chartType === t ? 'primary' : 'ghost'} onClick={() => setChartType(t)}>
+              {t[0].toUpperCase() + t.slice(1)}
+            </Button>
+          ))}
+          <Select className="w-20" value={interval} onChange={(e) => setInterval(e.target.value)} options={INTERVALS.map((i) => ({ value: i, label: i }))} />
+        </div>
       </div>
     }>
-      <div ref={chartContainerRef} className="flex-1 min-h-[300px]" />
+      <div className="flex flex-wrap gap-2 px-2 py-1 text-xs">
+        {INDICATORS.map((ind) => (
+          <button
+            key={ind.id}
+            onClick={() => toggleIndicator(ind.id)}
+            className={`rounded px-2 py-0.5 border ${activeIndicators.includes(ind.id) ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}
+          >
+            <span className="mr-1 inline-block h-2 w-2 rounded-full" style={{ background: ind.color }} />{ind.label}
+          </button>
+        ))}
+        <button onClick={() => setShowBollinger((v) => !v)} className={`rounded px-2 py-0.5 border ${showBollinger ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>Bollinger</button>
+        <button onClick={() => setShowVolume((v) => !v)} className={`rounded px-2 py-0.5 border ${showVolume ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>Volume</button>
+        <button onClick={() => setShowRSI((v) => !v)} className={`rounded px-2 py-0.5 border ${showRSI ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>RSI</button>
+      </div>
+      <div className="relative flex-1 min-h-[300px]">
+        <div ref={chartContainerRef} className="absolute inset-0" style={{ bottom: showRSI ? 130 : 0 }} />
+        {showRSI && <div ref={rsiContainerRef} className="absolute bottom-0 left-0 right-0 h-[120px] border-t border-nexa-700" />}
+        {hover && (
+          <div className="pointer-events-none absolute right-2 top-2 z-10 rounded bg-nexa-900/90 px-2 py-1 text-xs font-mono text-nexa-100 shadow">
+            <div>O: {formatPrice(hover.price, 2)}</div>
+          </div>
+        )}
+      </div>
     </Card>
   );
 }

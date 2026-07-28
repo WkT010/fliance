@@ -129,6 +129,24 @@ export interface WithdrawReq {
   amount: string;
 }
 
+export interface PnLPosition {
+  asset: string;
+  qty: string;
+  avg_cost: string;
+  realized_pnl: string;
+  last_fill_time: number;
+}
+
+export interface PnLSummary {
+  user_id: string;
+  date: string;
+  today_realized: string;
+  total_realized: string;
+  unrealized: string;
+  positions: PnLPosition[];
+  reference_prices: Record<string, string>;
+}
+
 export interface APIKey {
   id: string;
   name: string;
