@@ -92,8 +92,8 @@ func (b *Bridge) consumeTrades(pair string, e *matching.MatchingEngine) {
 			if b.riskPriceUpdater != nil && t.Price != nil && t.Price.Sign() > 0 {
 				b.riskPriceUpdater.UpdateReferencePrice(pair, t.Price)
 			}
-			data, _ := json.Marshal(map[string]interface{}{"type": "trade", "pair": pair, "price": t.Price.String(), "qty": t.Quantity.String(), "time": t.CreatedAt})
-			b.hub.BroadcastToRoom(websocket.ChannelTrades+":"+pair, data)
+			data, _ := json.Marshal(map[string]interface{}{"type": "trade", "pair": pair, "price": t.Price.String(), "qty": t.Quantity.String(), "side": t.TakerSide.String(), "time": t.CreatedAt})
+		b.hub.BroadcastToRoom(websocket.ChannelTrades+":"+pair, data)
 		}
 	}
 }

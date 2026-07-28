@@ -28,6 +28,12 @@ func NewClient(conn *websocket.Conn, hub *Hub, userID string) *Client {
 	return &Client{ID: userID + "-" + time.Now().Format("150405.000"), UserID: userID, Conn: conn, Send: make(chan []byte, 256), Hub: hub, rooms: make(map[string]bool)}
 }
 
+// JoinRoom joins a room and remembers it locally for clean-up.
+func (c *Client) JoinRoom(room string) {
+	c.Hub.JoinRoom(room, c)
+	c.rooms[room] = true
+}
+
 func (c *Client) ReadPump() {
 	defer func() { c.Hub.Unregister(c); c.Conn.Close() }()
 	c.Conn.SetReadLimit(maxMessageSize)

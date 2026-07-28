@@ -65,6 +65,12 @@ func (h *WSHandler) HandleWebSocket(c *gin.Context) {
 	}
 	cl := websocket.NewClient(conn, h.hub, uid)
 	h.hub.Register(cl)
+	// Authenticated clients are automatically subscribed to their private
+	// notification room so fills/order updates arrive without an explicit
+	// subscribe message.
+	if uid != "" && uid != "anon" {
+		cl.JoinRoom(websocket.ChannelUser + ":" + uid)
+	}
 	go cl.WritePump()
 	go cl.ReadPump()
 }

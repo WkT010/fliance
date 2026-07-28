@@ -122,12 +122,15 @@ func (r *Router) Setup() *gin.Engine {
 
 	// Market data (public).
 	api.GET("/ticker/:pair", r.ph.GetTicker)
+	api.GET("/tickers", r.ph.GetAllTickers)
 	api.GET("/ticker/24h/:pair", r.oh.GetTicker24h)
-	api.GET("/tickers", r.oh.ListTickers)
+	api.GET("/tickers/24h", r.oh.ListTickers)
 	api.GET("/orderbook/:pair", r.oh.GetOrderbook)
 	api.GET("/trades/:pair", r.oh.GetTrades)
 	api.GET("/klines/:pair", r.oh.GetCandles)
 	api.GET("/klines/intervals", r.oh.ListCandleIntervals)
+	api.GET("/price/uniswap/:pair", r.ph.GetUniswapTicker)
+	api.GET("/price/compare/:pair", r.ph.GetPriceComparison)
 
 	// Admin routes.
 	admin := api.Group("/admin")

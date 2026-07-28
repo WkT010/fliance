@@ -643,17 +643,19 @@ func orderToJSON(o *matching.Order) gin.H {
 }
 
 func tradeToJSON(t *matching.Trade) gin.H {
+	side := t.TakerSide.String()
 	return gin.H{
 		"id": t.ID, "buy_order": t.BuyOrderID, "sell_order": t.SellOrderID,
 		"pair": t.Pair, "price": safeFloatStr(t.Price),
-		"quantity": safeFloatStr(t.Quantity), "taker_side": t.TakerSide.String(),
-		"created_at": t.CreatedAt,
+		"quantity": safeFloatStr(t.Quantity), "taker_side": side,
+		"side": side, "time": t.CreatedAt,
 	}
 }
 
 func tickerToJSON(t *matching.Ticker) gin.H {
 	return gin.H{
 		"pair":             t.Pair,
+		"last":             safeFloatStr(t.LastPrice),
 		"last_price":       safeFloatStr(t.LastPrice),
 		"bid":              safeFloatStr(t.Bid),
 		"ask":              safeFloatStr(t.Ask),
