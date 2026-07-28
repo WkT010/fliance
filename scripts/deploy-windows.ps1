@@ -46,10 +46,78 @@ try {
         Write-Log "[NEXA] Chocolatey already installed."
     }
 
-    # --- 2. Install dependencies ---
-    Write-Log "[NEXA] Installing Go, Node.js, PostgreSQL, Git, nssm..."
-    choco install -y git golang nodejs postgresql16 nssm
-    refreshenv
+    # --- 2. Install dependencies (individually so one network hiccup doesn't break everything) ---
+    $GO_VERSION = "1.23.4"
+    $NODE_VERSION = "20.18.0"
+
+    function Add-ToPath($dir) {
+        if (Test-Path $dir) {
+            $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+            if ($machinePath -notlike "*$dir*") {
+                [System.Environment]::SetEnvironmentVariable("Path", "$machinePath;$dir", "Machine")
+                $env:Path = "$env:Path;$dir"
+                Write-Log "[NEXA] Added $dir to PATH"
+            }
+        }
+    }
+
+    # Git
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Log "[NEXA] Installing Git..."
+        choco install -y git --no-progress
+    } else { Write-Log "[NEXA] Git already installed." }
+
+    # Go - pin a known-good version; the chocolatey "latest" can point to a non-existent MSI
+    $go = (Get-Command go -ErrorAction SilentlyContinue).Source
+    if (-not $go) { $go = "C:\Program Files\Go\bin\go.exe" }
+    if (-not (Test-Path $go)) {
+        Write-Log "[NEXA] Installing Go $GO_VERSION ..."
+        choco install -y golang --version=$GO_VERSION --no-progress
+        Add-ToPath "C:\Program Files\Go\bin"
+    } else { Write-Log "[NEXA] Go already installed." }
+
+    # Node.js - pin LTS
+    $npm = (Get-Command npm -ErrorAction SilentlyContinue).Source
+    if (-not $npm) { $npm = "C:\Program Files\nodejs\npm.cmd" }
+    if (-not (Test-Path $npm)) {
+        Write-Log "[NEXA] Installing Node.js $NODE_VERSION ..."
+        choco install -y nodejs --version=$NODE_VERSION --no-progress
+        Add-ToPath "C:\Program Files\nodejs"
+    } else { Write-Log "[NEXA] Node.js already installed." }
+
+    # nssm
+    if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
+        Write-Log "[NEXA] Installing nssm..."
+        choco install -y nssm --no-progress
+    } else { Write-Log "[NEXA] nssm already installed." }
+
+    # PostgreSQL - try up to 2 times with a long timeout; big installer can be slow
+    $pgRoot = "C:\Program Files\PostgreSQL\16"
+    if (-not (Test-Path "$pgRoot\bin\psql.exe")) {
+        $pg = Get-ChildItem -Path "C:\Program Files\PostgreSQL" -Recurse -Filter psql.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pg) { $pgRoot = $pg.FullName -replace "\\bin\\psql\.exe$", "" }
+    }
+    if (-not (Test-Path "$pgRoot\bin\psql.exe")) {
+        Write-Log "[NEXA] Installing PostgreSQL 16 (this is a ~350MB download, may take several minutes)..."
+        $tries = 0
+        $maxTries = 2
+        while ($tries -lt $maxTries) {
+            $tries++
+            try {
+                choco install -y postgresql16 --no-progress --execution-timeout=7200
+                break
+            } catch {
+                Write-Log "[NEXA] PostgreSQL install attempt $tries failed: $_"
+                if ($tries -eq $maxTries) {
+                    throw "PostgreSQL installation failed after $maxTries attempts. Please install PostgreSQL 16 manually from https://www.postgresql.org/download/windows/ then rerun this script."
+                }
+                Start-Sleep -Seconds 10
+            }
+        }
+    } else { Write-Log "[NEXA] PostgreSQL already installed." }
+
+    # Re-read PATH after all installs
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
 
     # --- 3. Locate tools ---
     $go = (Get-Command go -ErrorAction SilentlyContinue).Source
