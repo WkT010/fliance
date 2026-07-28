@@ -206,7 +206,9 @@ func (s *MatchingServer) CancelOrder(ctx context.Context, req *pb.CancelOrderReq
 		if req.UserId != "" && o.UserID != req.UserId {
 			return &pb.CancelOrderResponse{Success: false}, nil
 		}
-		e.CancelOrder(req.OrderId)
+		if _, err := e.Cancel(req.OrderId, req.UserId); err != nil {
+			return &pb.CancelOrderResponse{Success: false}, nil
+		}
 		return &pb.CancelOrderResponse{Success: true, Order: orderToProto(o)}, nil
 	}
 	return &pb.CancelOrderResponse{Success: false}, nil

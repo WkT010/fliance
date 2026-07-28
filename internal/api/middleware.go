@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/WkT010/nexa-exchange/internal/auth"
 	"github.com/WkT010/nexa-exchange/internal/cache"
 )
 
@@ -101,6 +102,45 @@ func CORSMiddlewareConfig(origins []string, allowCreds bool) gin.HandlerFunc {
 	}
 }
 
+// RequestIDMiddleware attaches a unique request-id header to each request.
+func RequestIDMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rid := c.GetHeader("X-Request-ID")
+		if rid == "" {
+			rid = randomID(16)
+		}
+		c.Set("request_id", rid)
+		c.Header("X-Request-ID", rid)
+		c.Next()
+	}
+}
+
+// APIKeyMiddleware validates the X-API-Key header and sets user_id/role on the
+// context. It must run after RequestIDMiddleware so error responses can include
+// the request id.
+func APIKeyMiddleware(store auth.APIKeyStore) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		keyID := c.GetHeader("X-API-Key")
+		secret := c.GetHeader("X-API-Secret")
+		if keyID == "" || secret == "" {
+			c.Next()
+			return
+		}
+		k, err := store.Get(keyID)
+		if err != nil || k == nil || !k.Active {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key", "request_id": c.GetString("request_id")})
+			return
+		}
+		if !k.Validate(secret) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid api key", "request_id": c.GetString("request_id")})
+			return
+		}
+		c.Set("user_id", k.UserID)
+		c.Set("role", "trader")
+		c.Next()
+	}
+}
+
 // LoggerMiddleware logs each request in Apache-style format with request ID.
 func LoggerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -115,22 +155,6 @@ func LoggerMiddleware() gin.HandlerFunc {
 				time.Since(start).String() + " " +
 				c.Request.Method + " " + path + "\n",
 		))
-	}
-}
-
-// MetricsMiddleware records request count and latency into the global MetricsCollector.
-func MetricsMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if c.Request.URL.Path == "/metrics" || c.Request.URL.Path == "/health" || c.Request.URL.Path == "/ready" {
-			c.Next()
-			return
-		}
-		start := time.Now()
-		c.Next()
-		elapsed := time.Since(start).Seconds() * 1000
-		globalMetrics.RecordRequest()
-		globalMetrics.RecordLatency(c.Request.URL.Path, elapsed)
-		if c.Writer.Status() >= 400 { globalMetrics.RecordError() }
 	}
 }
 

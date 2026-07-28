@@ -1,9 +1,10 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: matching-engine
   namespace: nexa
 spec:
+  serviceName: matching-engine
   replicas: 1
   selector: {matchLabels: {app: matching-engine}}
   template:
@@ -15,3 +16,42 @@ spec:
           image: nexa/matching-engine:latest
           envFrom: [{configMapRef: {name: nexa-config}}]
           resources: {limits: {cpu: "2", memory: 1Gi}, requests: {cpu: "1", memory: 512Mi}}
+          ports:
+            - containerPort: 50051
+              name: grpc
+            - containerPort: 8081
+              name: metrics
+          volumeMounts:
+            - name: matching-data
+              mountPath: /data
+          livenessProbe:
+            httpGet: {path: /health, port: metrics}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: {path: /ready, port: metrics}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: matching-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: matching-engine
+  namespace: nexa
+spec:
+  selector: {app: matching-engine}
+  ports:
+    - port: 50051
+      targetPort: 50051
+      name: grpc
+    - port: 8081
+      targetPort: 8081
+      name: metrics

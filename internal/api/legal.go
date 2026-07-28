@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed ../../web/legal/*.html
+//go:embed web/legal/*.html
 var legalFS embed.FS
 
 type LegalHandler struct{}

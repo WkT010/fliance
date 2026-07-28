@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AML / KYC Policy | NEXA Exchange</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: #0b0e11; color: #eaecef; line-height: 1.7; font-size: 15px; }
+        .layout { display: flex; min-height: 100vh; }
+        .sidebar { width: 260px; background: #16181a; border-right: 1px solid #2b2f36; padding: 24px 0; position: sticky; top: 0; height: 100vh; overflow-y: auto; flex-shrink: 0; }
+        .sidebar-logo { padding: 0 20px 24px; border-bottom: 1px solid #2b2f36; margin-bottom: 16px; }
+        .sidebar-logo h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+        .sidebar-logo h1 .nexa { color: #f0b90b; }
+        .sidebar-logo h1 .exchange { color: #eaecef; }
+        .sidebar-logo .tagline { font-size: 11px; color: #848e9c; margin-top: 2px; letter-spacing: 2px; text-transform: uppercase; }
+        .sidebar-nav { padding: 0 12px; }
+        .sidebar-nav a { display: flex; align-items: center; gap: 10px; padding: 10px 14px; color: #848e9c; text-decoration: none; border-radius: 8px; font-size: 14px; transition: all .15s; margin-bottom: 2px; }
+        .sidebar-nav a:hover { background: #2b2f36; color: #eaecef; }
+        .sidebar-nav a.active { background: rgba(240,185,11,0.12); color: #f0b90b; font-weight: 600; }
+        .sidebar-nav a .icon { font-size: 16px; width: 20px; text-align: center; }
+        .main { flex: 1; max-width: 900px; margin: 0 auto; padding: 48px 40px 80px; }
+        .main h2 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+        .main .subtitle { font-size: 14px; color: #848e9c; margin-bottom: 36px; padding-bottom: 24px; border-bottom: 1px solid #2b2f36; }
+        .main .subtitle .zh { display: block; margin-top: 4px; }
+        .section { margin-bottom: 32px; }
+        .section h3 { font-size: 18px; font-weight: 600; color: #f0b90b; margin-bottom: 12px; padding-bottom: 6px; border-bottom: 1px solid #1e2328; }
+        .section h3 .zh { font-weight: 400; font-size: 14px; color: #848e9c; margin-left: 8px; }
+        .section p, .section li { color: #b1b8c3; margin-bottom: 10px; }
+        .section ul, .section ol { padding-left: 20px; margin: 8px 0 16px; }
+        .section li { margin-bottom: 6px; }
+        .section li strong { color: #eaecef; }
+        .highlight-box { background: #1e2328; border-left: 3px solid #f0b90b; padding: 16px 20px; border-radius: 4px; margin: 16px 0; color: #b1b8c3; font-size: 14px; }
+        .jurisdiction-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; margin: 12px 0; }
+        .jurisdiction-list li { font-size: 13px; color: #e8562a; }
+        .last-updated { font-size: 13px; color: #5e6673; margin-top: 40px; padding-top: 20px; border-top: 1px solid #2b2f36; text-align: center; }
+        @media (max-width: 768px) { .layout { flex-direction: column; } .sidebar { width: 100%; height: auto; position: relative; } .main { padding: 32px 20px 60px; } .jurisdiction-list { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-logo">
+            <h1><span class="nexa">NEXA</span> <span class="exchange">Exchange</span></h1>
+            <div class="tagline">Legal Center</div>
+        </div>
+        <div class="sidebar-nav">
+            <a href="terms.html"><span class="icon">📄</span> Terms of Service / 服务条款</a>
+            <a href="privacy.html"><span class="icon">🔒</span> Privacy Policy / 隐私政策</a>
+            <a href="risks.html"><span class="icon">⚠️</span> Risk Disclaimer / 风险免责声明</a>
+            <a href="aml.html" class="active"><span class="icon">🏛️</span> AML / KYC Policy / 反洗钱政策</a>
+            <a href="cookies.html"><span class="icon">🍪</span> Cookie Policy / Cookie政策</a>
+        </div>
+    </aside>
+    <main class="main">
+        <h2>Anti-Money Laundering & Know Your Customer Policy</h2>
+        <div class="subtitle">反洗钱与了解你的客户政策<span class="zh">Last revised: July 27, 2026 · 最后修订日期：2026年7月27日</span></div>
+
+        <div class="section">
+            <h3>1. Purpose and Scope <span class="zh">目的与范围</span></h3>
+            <p>NEXA Exchange is committed to the highest standards of anti-money laundering (AML) and counter-terrorist financing (CTF) compliance. This Policy sets forth our procedures for preventing, detecting, and reporting money laundering, terrorist financing, and other financial crimes. This Policy applies to all users, employees, directors, and third-party service providers of the Platform. We comply with applicable AML/CTF laws and regulations in Hong Kong and all jurisdictions where we operate.</p>
+            <p class="zh">NEXA Exchange致力于最高标准的反洗钱和反恐融资合规。本政策规定了我们预防、检测和报告洗钱、恐怖融资及其他金融犯罪的程序。本政策适用于平台的所有用户、员工、董事及第三方服务提供商。我们遵守香港及我们运营所在所有司法管辖区的适用反洗钱/反恐融资法律和法规。</p>
+        </div>
+
+        <div class="section">
+            <h3>2. KYC Requirements <span class="zh">KYC要求</span></h3>
+            <p>All users must complete identity verification before accessing the Platform's trading services. The following information and documents are required:</p>
+            <ul>
+                <li><strong>Identity Verification / 身份验证:</strong> Valid government-issued photo ID (passport, national ID card, or driver's license).</li>
+                <li><strong>Proof of Address / 地址证明:</strong> Recent utility bill, bank statement, or government document (issued within the last 90 days) showing your name and residential address.</li>
+                <li><strong>Selfie / 自拍照:</strong> A live photograph or liveness video for facial verification.</li>
+                <li><strong>Source of Funds / 资金来源:</strong> Declaration of the source of funds used for trading, including employment, business, investments, or inheritance.</li>
+                <li><strong>PEP Status / 政治公众人物:</strong> Disclosure if you are a politically exposed person or associated with one.</li>
+            </ul>
+            <p>Verification levels include: Level 1 (Basic — email + phone), Level 2 (Intermediate — ID verification), and Level 3 (Advanced — Enhanced Due Diligence). Higher verification levels unlock higher trading limits and additional features.</p>
+            <p class="zh">验证级别包括：一级（基础—邮箱+手机）、二级（中级—身份验证）和三级（高级—增强尽职调查）。更高的验证级别可解锁更高的交易限额和更多功能。</p>
+            <div class="highlight-box">🆔 <strong>KYC Level Requirements / KYC级别要求:</strong> Deposit/Deposit: Level 1 | Spot Trading/现货交易: Level 2 | Derivatives/衍生品: Level 3 | Withdrawal over $10K/提现超过$10K: Level 3</div>
+        </div>
+
+        <div class="section">
+            <h3>3. Enhanced Due Diligence (EDD) <span class="zh">增强尽职调查</span></h3>
+            <p>EDD is applied to users identified as higher risk, including:</p>
+            <ul>
+                <li>Users from or connected to high-risk jurisdictions</li>
+                <li>Politically Exposed Persons (PEPs) and their close associates</li>
+                <li>Users with unusually large transaction volumes or complex ownership structures</li>
+                <li>Users whose behavior patterns suggest potential money laundering or sanctions evasion</li>
+                <li>Corporate entities with opaque beneficial ownership structures</li>
+            </ul>
+            <p>EDD measures include additional document requests, independent source of wealth verification, enhanced transaction monitoring, and senior management approval for onboarding.</p>
+            <p class="zh">EDD措施包括额外文件要求、独立财富来源验证、加强交易监控以及高级管理层批准准入。</p>
+        </div>
+
+        <div class="section">
+            <h3>4. Transaction Monitoring <span class="zh">交易监控</span></h3>
+            <p>We maintain a risk-based transaction monitoring system that analyzes all transactions on the Platform in real time and post-trade. The system flags suspicious activities based on predefined rules and behavioral analytics, including:</p>
+            <ul>
+                <li>Rapid trading patterns (ping-pong trading, wash trading indicators)</li>
+                <li>Structuring transactions to avoid reporting thresholds (smurfing)</li>
+                <li>Unusual geographic patterns or sudden changes in trading behavior</li>
+                <li>Transactions involving known high-risk addresses or mixers</li>
+                <li>Rapid deposits followed by immediate withdrawals without trading activity</li>
+            </ul>
+            <p class="zh">我们维护基于风险的交易监控系统，实时和交易后分析平台上的所有交易。系统基于预定义规则和行为分析标记可疑活动，包括：[上述列表的中文摘要]</p>
+        </div>
+
+        <div class="section">
+            <h3>5. Suspicious Activity Reporting <span class="zh">可疑活动报告</span></h3>
+            <p>When a transaction or activity is identified as suspicious, our AML Compliance Officer conducts a thorough investigation. If sufficient grounds exist, a Suspicious Transaction Report (STR) is filed with the Joint Financial Intelligence Unit (JFIU) of Hong Kong and other relevant authorities. We strictly prohibit "tipping off" — informing the subject of a SAR filing that a report has been made. All reports are handled with the utmost confidentiality.</p>
+            <p class="zh">当交易或活动被识别为可疑时，我们的反洗钱合规官进行彻底调查。如果存在充分理由，将向香港联合财富情报组（JFIU）及其他相关当局提交可疑交易报告。我们严格禁止"通风报信"——向被报告对象告知已提交可疑活动报告。所有报告均以最高机密处理。</p>
+        </div>
+
+        <div class="section">
+            <h3>6. Record Keeping <span class="zh">记录保存</span></h3>
+            <p>We maintain all records required by applicable AML/CTF regulations, including:</p>
+            <ul>
+                <li>KYC documents and verification records — retained for at least 7 years after account closure</li>
+                <li>Transaction records — retained for at least 7 years from the date of transaction</li>
+                <li>Communication logs related to compliance investigations — retained for at least 5 years</li>
+                <li>SAR/STR filings and related documentation — retained for at least 7 years</li>
+                <li>Training records for employees on AML/CTF matters — retained for at least 3 years</li>
+            </ul>
+            <p class="zh">我们保存所有适用反洗钱/反恐融资法规要求的记录，包括：[上述列表的中文摘要]</p>
+        </div>
+
+        <div class="section">
+            <h3>7. Sanctions Compliance <span class="zh">制裁合规</span></h3>
+            <p>We screen all users against applicable sanctions lists, including but not limited to:</p>
+            <ul>
+                <li>United Nations Security Council Consolidated List</li>
+                <li>OFAC Specially Designated Nationals (SDN) List</li>
+                <li>European Union Consolidated Financial Sanctions List</li>
+                <li>Hong Kong Monetary Authority Sanctions Lists</li>
+                <li>UK Office of Financial Sanctions Implementation (OFSI) List</li>
+            </ul>
+            <p>Sanctions screening is performed at registration, periodically thereafter, and in real time for all transactions. Any match is immediately escalated to our AML Compliance Officer for investigation. We do not process transactions involving sanctioned entities, jurisdictions, or individuals.</p>
+            <p class="zh">制裁筛查在注册时、之后定期进行以及实时对所有交易进行。任何匹配结果立即上报给我们的反洗钱合规官进行调查。我们不处理涉及受制裁实体、司法管辖区或个人的交易。</p>
+        </div>
+
+        <div class="section">
+            <h3>8. Prohibited Jurisdictions <span class="zh">禁止司法管辖区</span></h3>
+            <p>Due to regulatory restrictions, users from the following jurisdictions are strictly prohibited from accessing or using the Platform:</p>
+            <ul class="jurisdiction-list">
+                <li>🇨🇳 China (Mainland) / 中国大陆</li>
+                <li>🇺🇸 United States / 美国</li>
+                <li>🇨🇦 Canada / 加拿大</li>
+                <li>🇬🇧 United Kingdom / 英国</li>
+                <li>🇯🇵 Japan / 日本</li>
+                <li>🇰🇵 North Korea / 朝鲜</li>
+                <li>🇮🇷 Iran / 伊朗</li>
+                <li>🇸🇾 Syria / 叙利亚</li>
+                <li>🇨🇺 Cuba / 古巴</li>
+                <li>🇻🇪 Venezuela / 委内瑞拉</li>
+                <li>🇷🇺 Russia / 俄罗斯</li>
+                <li>🇲🇲 Myanmar / 缅甸</li>
+                <li>🇾🇪 Yemen / 也门</li>
+                <li>🇸🇩 Sudan / 苏丹</li>
+                <li>🇨🇫 Central African Republic / 中非共和国</li>
+                <li>🇨🇩 Democratic Republic of Congo / 刚果民主共和国</li>
+            </ul>
+            <p>This list is subject to change based on evolving regulatory requirements. We reserve the right to restrict access from additional jurisdictions at any time.</p>
+            <p class="zh">此列表可能根据不断变化的监管要求而更改。我们保留随时限制来自其他司法管辖区的访问的权利。</p>
+        </div>
+
+        <div class="section">
+            <h3>9. Privacy and Data Protection <span class="zh">隐私与数据保护</span></h3>
+            <p>All KYC and AML-related data is processed in accordance with our Privacy Policy. Personal data collected for AML/KYC purposes is used exclusively for compliance with legal obligations and is not used for any other purpose without your consent. We implement strict access controls and encryption to protect this sensitive data. For more details, please refer to our <a href="privacy.html" style="color: #f0b90b;">Privacy Policy</a>.</p>
+            <p class="zh">所有KYC和反洗钱相关数据均按照我们的隐私政策处理。为反洗钱/KYC目的收集的个人数据仅用于履行法律义务，未经您的同意不得用于任何其他目的。我们实施严格的访问控制和加密以保护这些敏感数据。更多详情请参阅我们的隐私政策。</p>
+        </div>
+
+        <div class="last-updated">
+            Last Updated: July 27, 2026 · 最后更新：2026年7月27日<br>
+            &copy; 2026 NEXA Exchange. All rights reserved. / 版权所有。
+        </div>
+    </main>
+</div>
+</body>
+</html>

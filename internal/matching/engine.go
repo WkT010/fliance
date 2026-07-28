@@ -36,6 +36,7 @@ type MatchingEngine struct {
 	cancels   chan *cancelOp
 	done      chan struct{}
 	stp       SelfTradePreventionMode
+	wal       *WALWriter
 }
 
 type cancelOp struct {
@@ -63,8 +64,9 @@ func NewMatchingEngine(pair string, ringCap uint64) *MatchingEngine {
 }
 
 func (e *MatchingEngine) SetSelfTradePrevention(mode SelfTradePreventionMode) { e.stp = mode }
-func (e *MatchingEngine) Start() { go e.run() }
-func (e *MatchingEngine) Stop()  { close(e.done) }
+func (e *MatchingEngine) SetWAL(w *WALWriter)                    { e.wal = w }
+func (e *MatchingEngine) Start()                                 { go e.run() }
+func (e *MatchingEngine) Stop()                                  { close(e.done) }
 
 func (e *MatchingEngine) SubmitOrder(order *Order) bool {
 	if order == nil { return false }
@@ -102,6 +104,19 @@ func (e *MatchingEngine) Cancel(orderID, userID string) (*Order, error) {
 	}
 }
 
+// CancelAll cancels every live order belonging to userID and returns the number
+// of orders cancelled.
+func (e *MatchingEngine) CancelAll(userID string) int {
+	orders := e.OrderBook.GetOrdersByUser(userID)
+	count := 0
+	for _, o := range orders {
+		if _, err := e.Cancel(o.ID, userID); err == nil {
+			count++
+		}
+	}
+	return count
+}
+
 func (e *MatchingEngine) RecentTrades(limit int) []*Trade {
 	if e.MD == nil { return nil }
 	return e.MD.RecentTrades(limit)
@@ -125,6 +140,9 @@ func (e *MatchingEngine) run() {
 }
 
 func (e *MatchingEngine) processCancel(op *cancelOp) {
+	if err := e.wal.AppendCancel(op.orderID, op.userID); err != nil {
+		log.Printf("[engine-%s] wal append cancel failed: %v", e.Pair, err)
+	}
 	ob := e.OrderBook; ob.mu.Lock()
 	defer ob.mu.Unlock()
 	o, ok := ob.orders[op.orderID]
@@ -137,6 +155,9 @@ func (e *MatchingEngine) processCancel(op *cancelOp) {
 }
 
 func (e *MatchingEngine) processOrder(order *Order) {
+	if err := e.wal.AppendOrder(order); err != nil {
+		log.Printf("[engine-%s] wal append order failed: %v", e.Pair, err)
+	}
 	ob := e.OrderBook; ob.mu.Lock()
 	defer ob.mu.Unlock()
 	if order.Quantity == nil || order.Quantity.Sign() <= 0 { order.Status = Rejected; e.Stats.OrdersRejected.Add(1); return }

@@ -157,19 +157,19 @@ func (s *PGWalletStore) Settle(ops []wallet.SettleOp, txns []*wallet.Transaction
 
 func (s *PGWalletStore) SaveTx(tx *wallet.Transaction) error {
 	_, err := s.db.Exec(
-		`INSERT INTO transactions (id,user_id,wallet_id,type,asset,amount,fee,status,tx_hash,confirmations,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`,
+		`INSERT INTO transactions (id,user_id,wallet_id,type,asset,amount,fee,status,tx_hash,confirmations,created_at,to_address) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO NOTHING`,
 		tx.ID, tx.UserID, tx.WalletID, tx.Type, tx.Asset,
 		tx.Amount.Text('f', 18), tx.Fee.Text('f', 18),
-		tx.Status, tx.TxHash, tx.Confirmations, tx.CreatedAt)
+		tx.Status, tx.TxHash, tx.Confirmations, tx.CreatedAt, tx.ToAddress)
 	return err
 }
 func (s *PGWalletStore) GetTx(id string) (*wallet.Transaction, error) {
 	tx := &wallet.Transaction{Amount: new(big.Float), Fee: new(big.Float)}
 	var a, f string
 	row := s.db.QueryRow(
-		`SELECT id,user_id,wallet_id,type,asset,amount,fee,status,COALESCE(tx_hash,''),confirmations,created_at FROM transactions WHERE id=$1`, id)
+		`SELECT id,user_id,wallet_id,type,asset,amount,fee,status,COALESCE(tx_hash,''),confirmations,created_at,COALESCE(to_address,'') FROM transactions WHERE id=$1`, id)
 	if err := row.Scan(&tx.ID, &tx.UserID, &tx.WalletID, &tx.Type, &tx.Asset,
-		&a, &f, &tx.Status, &tx.TxHash, &tx.Confirmations, &tx.CreatedAt); err != nil {
+		&a, &f, &tx.Status, &tx.TxHash, &tx.Confirmations, &tx.CreatedAt, &tx.ToAddress); err != nil {
 		return nil, fmt.Errorf("get tx: %w", err)
 	}
 	tx.Amount.Parse(a, 10)
@@ -178,7 +178,7 @@ func (s *PGWalletStore) GetTx(id string) (*wallet.Transaction, error) {
 }
 func (s *PGWalletStore) ListTx(userID string, limit, offset int) ([]*wallet.Transaction, error) {
 	rows, err := s.db.Query(
-		`SELECT id,user_id,wallet_id,type,asset,amount,fee,status,COALESCE(tx_hash,''),confirmations,created_at FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+		`SELECT id,user_id,wallet_id,type,asset,amount,fee,status,COALESCE(tx_hash,''),confirmations,created_at,COALESCE(to_address,'') FROM transactions WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
 		userID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -189,7 +189,41 @@ func (s *PGWalletStore) ListTx(userID string, limit, offset int) ([]*wallet.Tran
 		tx := &wallet.Transaction{Amount: new(big.Float), Fee: new(big.Float)}
 		var a, f string
 		if err := rows.Scan(&tx.ID, &tx.UserID, &tx.WalletID, &tx.Type, &tx.Asset,
-			&a, &f, &tx.Status, &tx.TxHash, &tx.Confirmations, &tx.CreatedAt); err != nil {
+			&a, &f, &tx.Status, &tx.TxHash, &tx.Confirmations, &tx.CreatedAt, &tx.ToAddress); err != nil {
+			return nil, err
+		}
+		tx.Amount.Parse(a, 10)
+		tx.Fee.Parse(f, 10)
+		txs = append(txs, tx)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return txs, nil
+}
+
+// UpdateTxStatus updates the status of a transaction row.
+func (s *PGWalletStore) UpdateTxStatus(id string, status wallet.TxStatus) error {
+	_, err := s.db.Exec(`UPDATE transactions SET status=$1, updated_at=$2 WHERE id=$3`,
+		status, time.Now().UnixNano(), id)
+	return err
+}
+
+// ListTxByStatus returns transactions with the given status, newest first.
+func (s *PGWalletStore) ListTxByStatus(status wallet.TxStatus, limit, offset int) ([]*wallet.Transaction, error) {
+	rows, err := s.db.Query(
+		`SELECT id,user_id,wallet_id,type,asset,amount,fee,status,COALESCE(tx_hash,''),confirmations,created_at,COALESCE(to_address,'') FROM transactions WHERE status=$1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+		status, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var txs []*wallet.Transaction
+	for rows.Next() {
+		tx := &wallet.Transaction{Amount: new(big.Float), Fee: new(big.Float)}
+		var a, f string
+		if err := rows.Scan(&tx.ID, &tx.UserID, &tx.WalletID, &tx.Type, &tx.Asset,
+			&a, &f, &tx.Status, &tx.TxHash, &tx.Confirmations, &tx.CreatedAt, &tx.ToAddress); err != nil {
 			return nil, err
 		}
 		tx.Amount.Parse(a, 10)

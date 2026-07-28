@@ -11,6 +11,9 @@ data:
   REDIS_ADDR: "redis:6379"
   KAFKA_BROKERS: "kafka:9092"
   TRADING_PAIRS: "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT"
+  WAL_DIR: "/data/wal"
+  SNAPSHOT_DIR: "/data/snapshots"
+  SNAPSHOT_INTERVAL: "60s"
   LOG_LEVEL: "info"
   LOG_FORMAT: "json"
 ---

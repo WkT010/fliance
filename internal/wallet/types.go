@@ -39,6 +39,10 @@ const (
 	Confirming  TxStatus = 2
 	Completed   TxStatus = 3
 	Failed      TxStatus = 4
+	Reviewing   TxStatus = 5
+	Approved    TxStatus = 6
+	Broadcast   TxStatus = 7
+	Rejected    TxStatus = 8
 )
 
 func (s TxStatus) String() string {
@@ -51,6 +55,14 @@ func (s TxStatus) String() string {
 		return "completed"
 	case Failed:
 		return "failed"
+	case Reviewing:
+		return "reviewing"
+	case Approved:
+		return "approved"
+	case Broadcast:
+		return "broadcast"
+	case Rejected:
+		return "rejected"
 	default:
 		return "unknown"
 	}
@@ -69,4 +81,5 @@ type Transaction struct {
 	Amount, Fee                          *big.Float
 	Confirmations                        int
 	CreatedAt                            int64
+	ToAddress                            string // withdrawal destination
 }

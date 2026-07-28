@@ -9,17 +9,17 @@ import (
 )
 
 type FeeTier struct {
-	Tier      int      + "json:\"tier\"" + 
-	MinVolume float64  + "json:\"min_volume\"" + 
-	MakerRate float64  + "json:\"maker_rate\"" + 
-	TakerRate float64  + "json:\"taker_rate\"" + 
+	Tier      int     `json:"tier"`
+	MinVolume float64 `json:"min_volume"`
+	MakerRate float64 `json:"maker_rate"`
+	TakerRate float64 `json:"taker_rate"`
 }
 
 type FeeSchedule struct {
-	Pair         string     + "json:\"pair\"" + 
-	DefaultMaker float64    + "json:\"default_maker\"" + 
-	DefaultTaker float64    + "json:\"default_taker\"" + 
-	Tiers        []FeeTier  + "json:\"tiers,omitempty\"" + 
+	Pair         string    `json:"pair"`
+	DefaultMaker float64   `json:"default_maker"`
+	DefaultTaker float64   `json:"default_taker"`
+	Tiers        []FeeTier `json:"tiers,omitempty"`
 }
 
 type FeeHandler struct {
@@ -72,10 +72,10 @@ func (h *FeeHandler) GetPairFee(c *gin.Context) {
 }
 
 type updateFeeReq struct {
-	Pair         string     + "json:\"pair\" binding:\"required\"" + 
-	DefaultMaker *float64   + "json:\"default_maker\"" + 
-	DefaultTaker *float64   + "json:\"default_taker\"" + 
-	Tiers        *[]FeeTier  + "json:\"tiers,omitempty\"" + 
+	Pair         string     `json:"pair" binding:"required"`
+	DefaultMaker *float64   `json:"default_maker"`
+	DefaultTaker *float64   `json:"default_taker"`
+	Tiers        *[]FeeTier `json:"tiers,omitempty"`
 }
 
 func (h *FeeHandler) UpdateFee(c *gin.Context) {

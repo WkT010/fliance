@@ -38,6 +38,10 @@ type WalletStore interface {
 	SaveTx(*Transaction) error
 	GetTx(string) (*Transaction, error)
 	ListTx(userID string, limit, offset int) ([]*Transaction, error)
+	// UpdateTxStatus updates the status of a transaction.
+	UpdateTxStatus(id string, status TxStatus) error
+	// ListTxByStatus returns transactions filtered by status.
+	ListTxByStatus(status TxStatus, limit, offset int) ([]*Transaction, error)
 
 	// ReserveForOrder atomically checks that the wallet has enough available
 	// (balance - locked) balance and locks amt. Returns ErrInsufficientBalance

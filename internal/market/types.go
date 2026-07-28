@@ -11,9 +11,11 @@ const (
 
 type MarketEvent struct{ Type, Pair string; Data []byte; Timestamp int64 }
 type Ticker struct {
-	Pair string
-	Last, Bid, Ask, Volume24h, High24h, Low24h, Change24h *big.Float
-	Timestamp int64
+	Pair                                           string
+	Last, Bid, Ask, Spread                         *big.Float
+	Volume24h, QuoteVolume24h                      *big.Float
+	High24h, Low24h, Open24h, Change24h, ChangePct24h *big.Float
+	Timestamp                                      int64
 }
 type Candle struct {
 	Pair, Interval string

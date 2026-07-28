@@ -169,6 +169,19 @@ func (ob *OrderBook) Get(orderID string) *Order {
 	return ob.orders[orderID]
 }
 
+// GetOrdersByUser returns a snapshot of all live orders belonging to userID.
+func (ob *OrderBook) GetOrdersByUser(userID string) []*Order {
+	ob.mu.RLock()
+	defer ob.mu.RUnlock()
+	out := make([]*Order, 0)
+	for _, o := range ob.orders {
+		if o.UserID == userID {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
 // BestBid returns the best (highest priced) live bid, lazily purging stale
 // heap entries left behind by Remove.
 func (ob *OrderBook) BestBid() *Order {

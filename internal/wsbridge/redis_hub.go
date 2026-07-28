@@ -33,7 +33,7 @@ func (rh *RedisHub) Start() {
 	rh.pubsub.Receive(context.Background())
 	log.Printf("[redis-hub] listening on %s", rh.channel)
 	go func() {
-		for msg := range rh.pubsub.Channel(redis.ChannelOptions{Size: 1000}) {
+		for msg := range rh.pubsub.Channel() {
 			var rm RedisMessage
 			json.Unmarshal([]byte(msg.Payload), &rm)
 			rh.local.BroadcastToRoom(rm.Channel, rm.Data)

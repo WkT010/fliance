@@ -15,7 +15,11 @@ spec:
           image: nexa/wallet-service:latest
           ports: [{containerPort: 8082, name: http}]
           envFrom: [{configMapRef: {name: nexa-config}}, {secretRef: {name: nexa-secrets}}]
+          env:
+            - name: LISTEN_ADDR
+              value: ":8082"
           livenessProbe: {httpGet: {path: /health, port: 8082}, initialDelaySeconds: 10, periodSeconds: 30}
+          readinessProbe: {httpGet: {path: /ready, port: 8082}, initialDelaySeconds: 5, periodSeconds: 10}
           resources: {limits: {cpu: "0.5", memory: 256Mi}, requests: {cpu: "0.25", memory: 128Mi}}
 ---
 apiVersion: v1

@@ -1,6 +1,7 @@
 package market
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -51,6 +52,38 @@ type wsMsg struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 	ID      *int            `json:"id,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
+}
+
+func (amc *AlchemyMultiChain) Call(symbol, method string, params []interface{}) (json.RawMessage, error) {
+	amc.mu.RLock()
+	c, ok := amc.Chains[symbol]
+	amc.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown chain: %s", symbol)
+	}
+	body, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": method, "params": params, "id": 1})
+	resp, err := amc.client.Post(c.RPCURL, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("rpc call: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("rpc status %d", resp.StatusCode)
+	}
+	var r struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, fmt.Errorf("decode rpc response: %w", err)
+	}
+	if r.Error != nil {
+		return nil, fmt.Errorf("rpc error %d: %s", r.Error.Code, r.Error.Message)
+	}
+	return r.Result, nil
 }
 
 func (amc *AlchemyMultiChain) ConnectWS(symbol string) (*AlchemyWSConn, error) {

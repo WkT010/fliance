@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 	"github.com/WkT010/nexa-exchange/internal/market"
 )
@@ -13,10 +15,10 @@ func NewPriceHandler(apiKey string) *PriceHandler {
 
 func (h *PriceHandler) GetTicker(c *gin.Context) {
 	pair := c.Param("pair")
-	if pair == "" { AbortWithError(c, NewError(400, "pair required")); return }
+	if pair == "" { c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"}); return }
 	t := h.feed.Get(pair)
-	if t == nil { AbortWithError(c, NewError(404, "pair not found")); return }
-	c.JSON(200, gin.H{"pair":t.Pair,"last":t.Last.String(),"source":"alchemy-ws","timestamp":t.Timestamp})
+	if t == nil { c.JSON(http.StatusNotFound, gin.H{"error": "pair not found"}); return }
+	c.JSON(http.StatusOK, gin.H{"pair":t.Pair,"last":t.Last.String(),"source":"alchemy-ws","timestamp":t.Timestamp})
 }
 
 func (h *PriceHandler) GetAllTickers(c *gin.Context) {

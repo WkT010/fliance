@@ -1,9 +1,6 @@
 package matching
 
-import (
-	"math/big"
-	"sync"
-)
+import "sync"
 
 var OrderPool = sync.Pool{New: func() interface{} { return &Order{Price: newBigFloat(), Quantity: newBigFloat(), FilledQty: newBigFloat(), RemainingQty: newBigFloat()} }}
 var TradePool = sync.Pool{New: func() interface{} { return &Trade{Price: newBigFloat(), Quantity: newBigFloat(), Fee: newBigFloat()} }}

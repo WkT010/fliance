@@ -13,6 +13,12 @@ import (
 	"github.com/WkT010/nexa-exchange/pkg/websocket"
 )
 
+// RiskPriceUpdater receives the latest trade price so it can keep reference
+// prices up to date for price-band risk checks.
+type RiskPriceUpdater interface {
+	UpdateReferencePrice(pair string, price *big.Float)
+}
+
 // FillSettler settles a single fill. The bridge calls it for every fill emitted
 // by the matching engines so wallet balances stay in sync with trades in real
 // time. Errors are logged but never block the bridge (a failed settlement can
@@ -27,13 +33,20 @@ type OrderReleaser interface {
 	ReleaseOrder(orderID, userID string) error
 }
 
+// CandleRecorder consumes executed trades to update OHLCV candles.
+type CandleRecorder interface {
+	RecordTrade(t *matching.Trade) error
+}
+
 type Bridge struct {
-	hub        *websocket.Hub
-	engines    map[string]*matching.MatchingEngine
-	orderStore api.OrderStore
-	settler    FillSettler
-	done       chan struct{}
-	wg         sync.WaitGroup
+	hub             *websocket.Hub
+	engines         map[string]*matching.MatchingEngine
+	orderStore      api.OrderStore
+	settler         FillSettler
+	candleRecorder  CandleRecorder
+	riskPriceUpdater RiskPriceUpdater
+	done            chan struct{}
+	wg              sync.WaitGroup
 }
 
 func NewBridge(hub *websocket.Hub, engines map[string]*matching.MatchingEngine, store api.OrderStore) *Bridge {
@@ -43,6 +56,12 @@ func NewBridge(hub *websocket.Hub, engines map[string]*matching.MatchingEngine, 
 // SetSettler wires a trade-fill settler (e.g. wallet.Service). Must be called
 // before Start.
 func (b *Bridge) SetSettler(s FillSettler) { b.settler = s }
+
+// SetCandleRecorder wires an OHLCV candle service. Must be called before Start.
+func (b *Bridge) SetCandleRecorder(c CandleRecorder) { b.candleRecorder = c }
+
+// SetRiskPriceUpdater wires the risk engine for live reference-price updates.
+func (b *Bridge) SetRiskPriceUpdater(r RiskPriceUpdater) { b.riskPriceUpdater = r }
 
 func (b *Bridge) Start() {
 	for pair, e := range b.engines {
@@ -64,6 +83,14 @@ func (b *Bridge) consumeTrades(pair string, e *matching.MatchingEngine) {
 		case t := <-e.Trades:
 			if b.orderStore != nil {
 				go b.orderStore.SaveTrade(t)
+			}
+			if b.candleRecorder != nil {
+				if err := b.candleRecorder.RecordTrade(t); err != nil {
+					log.Printf("[wsbridge] candle record failed (pair=%s): %v", pair, err)
+				}
+			}
+			if b.riskPriceUpdater != nil && t.Price != nil && t.Price.Sign() > 0 {
+				b.riskPriceUpdater.UpdateReferencePrice(pair, t.Price)
 			}
 			data, _ := json.Marshal(map[string]interface{}{"type": "trade", "pair": pair, "price": t.Price.String(), "qty": t.Quantity.String(), "time": t.CreatedAt})
 			b.hub.BroadcastToRoom(websocket.ChannelTrades+":"+pair, data)

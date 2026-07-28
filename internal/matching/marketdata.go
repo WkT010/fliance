@@ -61,6 +61,19 @@ var intervalSeconds = map[string]int64{
 // if the interval is unknown.
 func IntervalSeconds(interval string) int64 { return intervalSeconds[interval] }
 
+// IntervalNames returns all supported candle interval names sorted from shortest
+// to longest.
+func IntervalNames() []string {
+	names := make([]string, 0, len(intervalSeconds))
+	for k := range intervalSeconds {
+		names = append(names, k)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return intervalSeconds[names[i]] < intervalSeconds[names[j]]
+	})
+	return names
+}
+
 // MarketDataRecorder aggregates trades into 24h rolling ticker statistics and
 // historical OHLCV candles. It is safe for concurrent use.
 type MarketDataRecorder struct {
