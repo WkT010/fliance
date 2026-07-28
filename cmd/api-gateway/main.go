@@ -138,13 +138,6 @@ func main() {
 	orderH.SetCandleStore(candleSvc)
 
 	walletH := api.NewWalletHandler(withdrawalSvc, clients)
-	accountH := api.NewAccountHandler(userStore, withdrawalSvc, apiKeyStore)
-	accountH.SetPnLService(pnlSvc)
-
-	adminH := api.NewAdminHandler(withdrawalSvc, riskEng, exchange)
-
-	mgr := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTIssuer)
-	authH := api.NewAuthHandler(mgr, userStore)
 
 	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey)
 	if cfg.AlchemyAPIKey != "" {
@@ -152,6 +145,14 @@ func main() {
 	} else {
 		log.Println("[NEXA] Alchemy price feed: disabled (no API key)")
 	}
+
+	accountH := api.NewAccountHandler(userStore, withdrawalSvc, apiKeyStore, priceH)
+	accountH.SetPnLService(pnlSvc)
+
+	adminH := api.NewAdminHandler(withdrawalSvc, riskEng, exchange)
+
+	mgr := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTIssuer)
+	authH := api.NewAuthHandler(mgr, userStore)
 
 	hub := websocket.NewHub()
 	go hub.Run()

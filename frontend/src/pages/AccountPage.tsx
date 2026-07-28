@@ -4,24 +4,30 @@ import { Card } from '@/components/common/Card';
 import { Button } from '@/components/common/Button';
 import { Input } from '@/components/common/Input';
 import { Badge } from '@/components/common/Badge';
-import { listAPIKeys, createAPIKey, revokeAPIKey, getPnL } from '@/api/account';
+import { listAPIKeys, createAPIKey, revokeAPIKey, getPnL, getPnLHistory } from '@/api/account';
 import { useAuthStore } from '@/store/authStore';
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
 import { formatDate, formatPrice, changeColorClass } from '@/utils/format';
-import type { APIKey } from '@/types';
+import type { APIKey, PnLSummary, PnLHistoryItem } from '@/types';
 
 export function AccountPage() {
   const user = useAuthStore((s) => s.user);
   const { data: keys, refetch } = useFetch(listAPIKeys, []);
-  const [pnl, setPnL] = useState<{ today_realized: string; total_realized: string; unrealized: string; positions: { asset: string; qty: string; avg_cost: string; realized_pnl: string }[] } | null>(null);
+  const [pnl, setPnL] = useState<PnLSummary | null>(null);
+  const [history, setHistory] = useState<PnLHistoryItem[]>([]);
+  const [historyDays, setHistoryDays] = useState(7);
   const [name, setName] = useState('');
   const [newKey, setNewKey] = useState<string | null>(null);
 
   const loadPnL = async () => {
     try {
-      const data = await getPnL();
-      setPnL(data);
+      const [summary, hist] = await Promise.all([
+        getPnL(),
+        getPnLHistory(historyDays),
+      ]);
+      setPnL(summary);
+      setHistory(hist.history || []);
     } catch { /* ignore */ }
   };
 
@@ -38,10 +44,37 @@ export function AccountPage() {
 
   const pnlValue = (v?: string) => parseFloat(v || '0');
 
+  const totalPnL = pnlValue(pnl?.total_realized) + pnlValue(pnl?.unrealized);
+  const portfolioValue = pnlValue(pnl?.portfolio_value);
+  const roi = portfolioValue > 0 ? (totalPnL / portfolioValue) * 100 : 0;
+
+  const maxHist = Math.max(1, ...history.map((h) => Math.abs(pnlValue(h.realized))));
+
   return (
     <Layout>
-      <div className="grid h-full grid-cols-1 gap-4 p-4 lg:grid-cols-2">
-        <Card title="PnL Today">
+      <div className="grid h-full grid-cols-1 gap-4 p-4 lg:grid-cols-3">
+        <Card title="Portfolio" className="lg:col-span-1">
+          <div className="space-y-3 p-4">
+            <div className="flex justify-between">
+              <span className="text-sm text-nexa-400">Portfolio Value</span>
+              <span className="font-mono text-nexa-100">{formatPrice(pnl?.portfolio_value, 2)} USDT</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-sm text-nexa-400">Total PnL (Realized + Unrealized)</span>
+              <span className={changeColorClass(totalPnL)}>{formatPrice(totalPnL.toString(), 2)} USDT</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-sm text-nexa-400">ROI</span>
+              <span className={changeColorClass(roi)}>{formatPrice(roi, 2)}%</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-sm text-nexa-400">Total Fees</span>
+              <span className="text-down">{formatPrice(pnl?.total_fees, 2)} USDT</span>
+            </div>
+          </div>
+        </Card>
+
+        <Card title="PnL Today" className="lg:col-span-1">
           <div className="space-y-3 p-4">
             <div className="flex justify-between">
               <span className="text-sm text-nexa-400">Today Realized</span>
@@ -55,18 +88,65 @@ export function AccountPage() {
               <span className="text-sm text-nexa-400">Unrealized</span>
               <span className={changeColorClass(pnlValue(pnl?.unrealized))}>{formatPrice(pnl?.unrealized, 2)} USDT</span>
             </div>
-            <div className="border-t border-nexa-700 pt-2 text-xs text-nexa-400">Positions</div>
-            <div className="max-h-40 overflow-auto space-y-1">
-              {(pnl?.positions || []).map((p) => (
-                <div key={p.asset} className="flex justify-between text-xs">
-                  <span className="text-nexa-300">{p.asset}</span>
-                  <span className="font-mono text-nexa-100">{formatPrice(p.qty, 6)} @ {formatPrice(p.avg_cost, 2)}</span>
-                </div>
-              ))}
-            </div>
           </div>
         </Card>
-        <Card title="Profile">
+
+        <Card title="Positions" className="lg:col-span-1">
+          <div className="max-h-56 space-y-1 overflow-auto p-4">
+            {(pnl?.positions || []).length === 0 && (
+              <div className="text-sm text-nexa-500">No open positions</div>
+            )}
+            {(pnl?.positions || []).map((p) => (
+              <div key={p.asset} className="flex justify-between text-xs">
+                <span className="text-nexa-300">{p.asset}</span>
+                <span className="font-mono text-nexa-100">
+                  {formatPrice(p.qty, 6)} @ {formatPrice(p.avg_cost, 2)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card title="Realized PnL History" className="lg:col-span-2">
+          <div className="space-y-3 p-4">
+            <div className="flex gap-2">
+              {[7, 30].map((d) => (
+                <Button
+                  key={d}
+                  size="sm"
+                  variant={historyDays === d ? 'primary' : 'secondary'}
+                  onClick={() => setHistoryDays(d)}
+                >
+                  {d}D
+                </Button>
+              ))}
+            </div>
+            {history.length === 0 ? (
+              <div className="text-sm text-nexa-500">No history yet</div>
+            ) : (
+              <div className="flex h-40 items-end gap-1">
+                {history.map((h) => {
+                  const v = pnlValue(h.realized);
+                  const hgt = `${(Math.abs(v) / maxHist) * 80 + 5}%`;
+                  return (
+                    <div key={h.date} className="group relative flex flex-1 flex-col items-center justify-end">
+                      <div
+                        className={`w-full rounded-t ${v >= 0 ? 'bg-up' : 'bg-down'}`}
+                        style={{ height: hgt, minHeight: 4 }}
+                      />
+                      <div className="mt-1 text-[10px] text-nexa-500">{h.date.slice(5)}</div>
+                      <div className="pointer-events-none absolute -top-8 left-1/2 z-10 hidden -translate-x-1/2 whitespace-nowrap rounded bg-nexa-900 px-2 py-1 text-xs text-nexa-100 shadow group-hover:block">
+                        {h.date}: {formatPrice(h.realized, 2)} USDT
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <Card title="Profile" className="lg:col-span-1">
           <div className="space-y-2 p-4">
             <div className="text-sm text-nexa-400">Email</div>
             <div className="text-nexa-100">{user?.email}</div>
@@ -74,7 +154,8 @@ export function AccountPage() {
             <div className="text-nexa-100"><Badge color="accent">{user?.role}</Badge></div>
           </div>
         </Card>
-        <Card title="API Keys">
+
+        <Card title="API Keys" className="lg:col-span-3">
           <div className="space-y-3 p-4">
             <div className="flex gap-2">
               <Input placeholder="Key name" value={name} onChange={(e) => setName(e.target.value)} />

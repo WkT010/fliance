@@ -19,14 +19,49 @@ type AccountHandler struct {
 	wallet   WalletService
 	apiKeys  auth.APIKeyStore
 	pnlSvc   *pnl.Service
+	priceH   *PriceHandler
 }
 
-func NewAccountHandler(users UserStore, walletSvc WalletService, apiKeys auth.APIKeyStore) *AccountHandler {
-	return &AccountHandler{users: users, wallet: walletSvc, apiKeys: apiKeys}
+func NewAccountHandler(users UserStore, walletSvc WalletService, apiKeys auth.APIKeyStore, priceH *PriceHandler) *AccountHandler {
+	return &AccountHandler{users: users, wallet: walletSvc, apiKeys: apiKeys, priceH: priceH}
 }
 
 // SetPnLService wires the profit/loss tracker.
 func (h *AccountHandler) SetPnLService(s *pnl.Service) { h.pnlSvc = s }
+
+// setPriceH can be used if the price handler was not available at construction time.
+func (h *AccountHandler) setPriceH(ph *PriceHandler) { h.priceH = ph }
+
+// referencePrices returns the best available mark prices for the user's assets.
+func (h *AccountHandler) referencePrices(assets []string) map[string]*big.Float {
+	refs := make(map[string]*big.Float)
+	if h.priceH == nil {
+		return refs
+	}
+	for _, asset := range assets {
+		if asset == "USDT" {
+			refs[asset] = big.NewFloat(1)
+			continue
+		}
+		pair := asset + "/USDT"
+		if p, _, err := h.priceH.BestPrice(pair); err == nil && p != nil {
+			refs[asset] = p
+		}
+	}
+	return refs
+}
+
+func collectAssetsFromBalances(balances []*wallet.Wallet) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, w := range balances {
+		if _, ok := seen[w.Asset]; !ok {
+			seen[w.Asset] = struct{}{}
+			out = append(out, w.Asset)
+		}
+	}
+	return out
+}
 
 // GetAccount returns the authenticated user's profile plus consolidated wallet
 // balances. Mirrors Binance's GET /api/v3/account.
@@ -214,8 +249,8 @@ func (h *AccountHandler) AdminListUsers(c *gin.Context) {
 	_ = errors.New("placeholder")
 }
 
-// GetPnL returns today's realized PnL, total realized PnL, unrealized PnL and
-// open positions for the authenticated user.
+// GetPnL returns today's realized PnL, total realized PnL, unrealized PnL,
+// trading fees, portfolio value, and open positions for the authenticated user.
 // GET /api/v2/account/pnl
 func (h *AccountHandler) GetPnL(c *gin.Context) {
 	uid, _ := c.Get("user_id")
@@ -229,33 +264,71 @@ func (h *AccountHandler) GetPnL(c *gin.Context) {
 		return
 	}
 
-	// Collect reference prices from the best available source (internal tickers).
-	refs := make(map[string]*big.Float)
-	if h.wallet != nil {
-		if ws, err := h.wallet.GetBalances(userID); err == nil {
-			for _, w := range ws {
-				if w.Asset == "USDT" {
-					continue
-				}
-				pair := w.Asset + "/USDT"
-				// The wallet service does not expose market prices; leave refs
-				// empty so the UI can fetch mark prices separately. Unrealized
-				// PnL will be computed when refs are supplied.
-				_ = pair
-			}
-		}
-	}
+	balances, assets := h.userBalances(userID)
+	refs := h.referencePrices(assets)
 
 	summary := h.pnlSvc.Summary(userID, refs)
+	portfolioValue := new(big.Float).Add(summary.PortfolioValue, h.pnlSvc.PortfolioValue(userID, balances, refs))
+
 	c.JSON(http.StatusOK, gin.H{
 		"user_id":          summary.UserID,
 		"date":             summary.Date,
 		"today_realized":   summary.TodayRealized.String(),
 		"total_realized":   summary.TotalRealized.String(),
 		"unrealized":       summary.Unrealized.String(),
+		"total_fees":       summary.TotalFees.String(),
+		"portfolio_value":  portfolioValue.String(),
 		"positions":        positionsToJSON(summary.Positions),
 		"reference_prices": floatMapToJSON(summary.ReferencePrices),
 	})
+}
+
+// GetPnLHistory returns the last N days of realized PnL for the authenticated user.
+// Query: ?days=7|30 (default 30)
+// GET /api/v2/account/pnl/history
+func (h *AccountHandler) GetPnLHistory(c *gin.Context) {
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	if h.pnlSvc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "pnl service unavailable"})
+		return
+	}
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	if days <= 0 || days > 365 {
+		days = 30
+	}
+	hist := h.pnlSvc.History(userID, days)
+	out := make([]gin.H, 0, len(hist))
+	for _, d := range hist {
+		out = append(out, gin.H{"date": d.Date, "realized": d.Realized.String()})
+	}
+	c.JSON(http.StatusOK, gin.H{"history": out, "days": days})
+}
+
+func (h *AccountHandler) userBalances(userID string) (map[string]*big.Float, []string) {
+	balances := make(map[string]*big.Float)
+	if h.wallet == nil {
+		return balances, nil
+	}
+	ws, err := h.wallet.GetBalances(userID)
+	if err != nil {
+		return balances, nil
+	}
+	for _, w := range ws {
+		total := new(big.Float)
+		if w.Balance != nil {
+			total.Add(total, w.Balance)
+		}
+		if w.Locked != nil {
+			total.Add(total, w.Locked)
+		}
+		balances[w.Asset] = total
+	}
+	return balances, collectAssetsFromBalances(ws)
 }
 
 func positionsToJSON(positions map[string]*pnl.Position) []gin.H {
@@ -266,6 +339,7 @@ func positionsToJSON(positions map[string]*pnl.Position) []gin.H {
 			"qty":            p.Qty.String(),
 			"avg_cost":       p.AvgCost.String(),
 			"realized_pnl":   p.RealizedPnL.String(),
+			"total_fees":     p.TotalFees.String(),
 			"last_fill_time": p.LastFillTime,
 		})
 	}

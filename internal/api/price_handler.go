@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+	"math/big"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +32,15 @@ func (h *PriceHandler) bestTicker(pair string) (*market.Ticker, string) {
 		return t, "alchemy-ws"
 	}
 	return nil, ""
+}
+
+// BestPrice returns the best available last price for a pair and the source name.
+func (h *PriceHandler) BestPrice(pair string) (*big.Float, string, error) {
+	t, source := h.bestTicker(pair)
+	if t == nil {
+		return nil, "", fmt.Errorf("no price available for %s", pair)
+	}
+	return new(big.Float).Copy(t.Last), source, nil
 }
 
 func (h *PriceHandler) GetTicker(c *gin.Context) {

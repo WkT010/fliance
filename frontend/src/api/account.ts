@@ -1,8 +1,13 @@
 import { api } from './client';
-import type { APIKey, PnLSummary } from '@/types';
+import type { APIKey, PnLSummary, PnLHistory } from '@/types';
 
 export async function getPnL(): Promise<PnLSummary> {
   const res = await api.get<PnLSummary>('/account/pnl');
+  return res.data;
+}
+
+export async function getPnLHistory(days = 30): Promise<PnLHistory> {
+  const res = await api.get<PnLHistory>('/account/pnl/history', { params: { days } });
   return res.data;
 }
 

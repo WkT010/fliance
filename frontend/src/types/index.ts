@@ -134,6 +134,7 @@ export interface PnLPosition {
   qty: string;
   avg_cost: string;
   realized_pnl: string;
+  total_fees: string;
   last_fill_time: number;
 }
 
@@ -143,8 +144,20 @@ export interface PnLSummary {
   today_realized: string;
   total_realized: string;
   unrealized: string;
+  total_fees: string;
+  portfolio_value: string;
   positions: PnLPosition[];
   reference_prices: Record<string, string>;
+}
+
+export interface PnLHistoryItem {
+  date: string;
+  realized: string;
+}
+
+export interface PnLHistory {
+  history: PnLHistoryItem[];
+  days: number;
 }
 
 export interface APIKey {
