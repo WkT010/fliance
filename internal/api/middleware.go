@@ -36,6 +36,8 @@ func RateLimiter(requests int, window time.Duration) gin.HandlerFunc {
 		}
 	}()
 	return func(c *gin.Context) {
+			// Skip rate limiting for WebSocket upgrades
+			if strings.HasPrefix(c.Request.URL.Path, "/ws") || c.Request.Header.Get("Upgrade") == "websocket" { c.Next(); return }
 		ip := c.ClientIP()
 		mu.Lock()
 		e, ok := clients[ip]
@@ -63,6 +65,8 @@ func RedisRateLimiter(rc *cache.RedisCache, requests int, window time.Duration) 
 	if requests <= 0 { requests = 100 }
 	if window <= 0 { window = time.Second }
 	return func(c *gin.Context) {
+			// Skip rate limiting for WebSocket upgrades
+			if strings.HasPrefix(c.Request.URL.Path, "/ws") || c.Request.Header.Get("Upgrade") == "websocket" { c.Next(); return }
 		key := "ip:" + c.ClientIP()
 		allowed, err := rc.RateLimit(c.Request.Context(), key, requests, window)
 		if err != nil || !allowed {
@@ -90,6 +94,8 @@ func CORSMiddleware() gin.HandlerFunc {
 // CORSMiddlewareConfig returns a CORS middleware driven by configuration.
 func CORSMiddlewareConfig(origins []string, allowCreds bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
+			// Skip rate limiting for WebSocket upgrades
+			if strings.HasPrefix(c.Request.URL.Path, "/ws") || c.Request.Header.Get("Upgrade") == "websocket" { c.Next(); return }
 		origin := c.Request.Header.Get("Origin")
 		if origin == "" { origin = "*" }
 		c.Header("Access-Control-Allow-Origin", origin)
@@ -105,6 +111,8 @@ func CORSMiddlewareConfig(origins []string, allowCreds bool) gin.HandlerFunc {
 // RequestIDMiddleware attaches a unique request-id header to each request.
 func RequestIDMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+			// Skip rate limiting for WebSocket upgrades
+			if strings.HasPrefix(c.Request.URL.Path, "/ws") || c.Request.Header.Get("Upgrade") == "websocket" { c.Next(); return }
 		rid := c.GetHeader("X-Request-ID")
 		if rid == "" {
 			rid = randomID(16)
@@ -120,6 +128,8 @@ func RequestIDMiddleware() gin.HandlerFunc {
 // the request id.
 func APIKeyMiddleware(store auth.APIKeyStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
+			// Skip rate limiting for WebSocket upgrades
+			if strings.HasPrefix(c.Request.URL.Path, "/ws") || c.Request.Header.Get("Upgrade") == "websocket" { c.Next(); return }
 		keyID := c.GetHeader("X-API-Key")
 		secret := c.GetHeader("X-API-Secret")
 		if keyID == "" || secret == "" {
@@ -144,6 +154,8 @@ func APIKeyMiddleware(store auth.APIKeyStore) gin.HandlerFunc {
 // LoggerMiddleware logs each request in Apache-style format with request ID.
 func LoggerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+			// Skip rate limiting for WebSocket upgrades
+			if strings.HasPrefix(c.Request.URL.Path, "/ws") || c.Request.Header.Get("Upgrade") == "websocket" { c.Next(); return }
 		start := time.Now()
 		path := c.Request.URL.Path
 		c.Next()
@@ -178,6 +190,8 @@ func strconvFormatInt(n int64) string {
 // AdminOnly guards endpoints for admin users only.
 func AdminOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
+			// Skip rate limiting for WebSocket upgrades
+			if strings.HasPrefix(c.Request.URL.Path, "/ws") || c.Request.Header.Get("Upgrade") == "websocket" { c.Next(); return }
 		role, _ := c.Get("role")
 		if role != "admin" {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin only", "request_id": c.GetString("request_id")})
@@ -190,6 +204,8 @@ func AdminOnly() gin.HandlerFunc {
 // RequirePermission guards that the authenticated principal has a given permission.
 func RequirePermission(perm string) gin.HandlerFunc {
 	return func(c *gin.Context) {
+			// Skip rate limiting for WebSocket upgrades
+			if strings.HasPrefix(c.Request.URL.Path, "/ws") || c.Request.Header.Get("Upgrade") == "websocket" { c.Next(); return }
 		if perms, ok := c.Get("permissions"); ok {
 			if list, ok := perms.([]string); ok {
 				for _, p := range list {
