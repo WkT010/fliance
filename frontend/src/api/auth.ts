@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { LoginReq, RegisterReq, User } from '@/types';
+import type { LoginReq, RegisterReq } from '@/types';
 
 export interface TokenResponse {
   access_token: string;
@@ -17,8 +17,16 @@ export async function register(data: RegisterReq): Promise<TokenResponse> {
   return res.data;
 }
 
-export async function getAccount(): Promise<{ user: User }> {
-  const res = await api.get<{ user: User }>('/account');
+export interface AccountResponse {
+  user_id: string;
+  email: string;
+  role: 'user' | 'admin';
+  created_at: number;
+  balances?: Array<{ asset: string; available: string; locked: string }>;
+}
+
+export async function getAccount(): Promise<AccountResponse> {
+  const res = await api.get<AccountResponse>('/account');
   return res.data;
 }
 
