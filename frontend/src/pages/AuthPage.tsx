@@ -20,14 +20,20 @@ export function LoginPage() {
     setError(null);
     try {
       const res = await login({ email, password });
+      useAuthStore.getState().setAuth(res.access_token, { id: '', email, role: 'user' });
       const account = await getAccount();
       setAuth(res.access_token, account.user);
       navigate('/');
     } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'response' in err) {
+        const axiosErr = err as { response?: { status?: number; data?: { error?: string } } };
+        const status = axiosErr.response?.status;
+        if (status === 401) { setError('Email or password incorrect'); return; }
+        if (status === 429) { setError('Too many attempts. Please wait and try again'); return; }
+        if (axiosErr.response?.data?.error) { setError(axiosErr.response.data.error); return; }
+      }
       setError(err instanceof Error ? err.message : 'Login failed');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   return (
@@ -37,12 +43,10 @@ export function LoginPage() {
         <form onSubmit={submit} className="space-y-4">
           <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
           <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          {error && <p className="text-sm text-down">{error}</p>}
+          {error && <div className="rounded border border-down/20 bg-down/10 px-3 py-2 text-sm text-down">{error}</div>}
           <Button type="submit" isLoading={loading} className="w-full">Sign In</Button>
         </form>
-        <p className="mt-4 text-center text-sm text-nexa-400">
-          No account? <Link to="/register" className="text-accent hover:underline">Register</Link>
-        </p>
+        <p className="mt-4 text-center text-sm text-nexa-400">No account? <Link to="/register" className="text-accent hover:underline">Register</Link></p>
       </Card>
     </div>
   );
@@ -62,14 +66,17 @@ export function RegisterPage() {
     setError(null);
     try {
       const res = await register({ email, password });
+      useAuthStore.getState().setAuth(res.access_token, { id: '', email, role: 'user' });
       const account = await getAccount();
       setAuth(res.access_token, account.user);
       navigate('/');
     } catch (err: unknown) {
+      if (err && typeof err === 'object' && 'response' in err) {
+        const axiosErr = err as { response?: { status?: number } };
+        if (axiosErr.response?.status === 409) { setError('already_registered'); return; }
+      }
       setError(err instanceof Error ? err.message : 'Registration failed');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
   return (
@@ -79,12 +86,12 @@ export function RegisterPage() {
         <form onSubmit={submit} className="space-y-4">
           <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
           <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          {error && <p className="text-sm text-down">{error}</p>}
+          {error && error === 'already_registered' ? (
+            <div className="rounded border border-down/20 bg-down/10 px-3 py-2 text-sm text-down">This email is already registered. <Link to="/login" className="text-accent font-medium hover:underline">Sign In</Link></div>
+          ) : (error && <div className="rounded border border-down/20 bg-down/10 px-3 py-2 text-sm text-down">{error}</div>)}
           <Button type="submit" isLoading={loading} className="w-full">Create Account</Button>
         </form>
-        <p className="mt-4 text-center text-sm text-nexa-400">
-          Already have an account? <Link to="/login" className="text-accent hover:underline">Sign In</Link>
-        </p>
+        <p className="mt-4 text-center text-sm text-nexa-400">Already have an account? <Link to="/login" className="text-accent hover:underline">Sign In</Link></p>
       </Card>
     </div>
   );
