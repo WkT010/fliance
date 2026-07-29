@@ -3,6 +3,7 @@ import { TradingPage } from '@/pages/TradingPage';
 import { MarketsPage } from '@/pages/MarketsPage';
 import { WalletPage } from '@/pages/WalletPage';
 import { AccountPage } from '@/pages/AccountPage';
+import { SettingsPage } from '@/pages/SettingsPage';
 import { AdminPage } from '@/pages/AdminPage';
 import { LoginPage, RegisterPage } from '@/pages/AuthPage';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
@@ -26,6 +27,7 @@ export default function App() {
       <Route path="/markets" element={<ProtectedRoute><MarketsPage /></ProtectedRoute>} />
       <Route path="/wallet" element={<ProtectedRoute><WalletPage /></ProtectedRoute>} />
       <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
+      <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
       <Route path="/admin" element={<ProtectedRoute admin><AdminPage /></ProtectedRoute>} />
     </Routes>
   );

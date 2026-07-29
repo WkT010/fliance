@@ -96,6 +96,7 @@ func (r *Router) Setup() *gin.Engine {
 	auth.POST("/register", r.ah.Register)
 	auth.POST("/refresh", r.ah.RefreshToken)
 	auth.POST("/logout", r.authMW, r.ah.Logout)
+	auth.POST("/change-password", r.authMW, r.ah.ChangePassword)
 
 	// Authenticated routes.
 	p := api.Group("")

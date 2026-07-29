@@ -39,3 +39,10 @@ func (s *PGUserStore) Create(user *api.User) error {
 		user.ID, user.Email, user.PasswordHash, user.Role, user.CreatedAt, user.UpdatedAt)
 	return err
 }
+
+func (s *PGUserStore) Update(user *api.User) error {
+	_, err := s.db.Exec(
+		`UPDATE users SET password_hash=$1, updated_at=$2 WHERE id=$3`,
+		user.PasswordHash, user.UpdatedAt, user.ID)
+	return err
+}

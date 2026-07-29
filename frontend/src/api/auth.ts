@@ -21,3 +21,13 @@ export async function getAccount(): Promise<{ user: User }> {
   const res = await api.get<{ user: User }>('/account');
   return res.data;
 }
+
+export interface ChangePasswordReq {
+  current_password: string;
+  new_password: string;
+}
+
+export async function changePassword(data: ChangePasswordReq): Promise<{ status: string }> {
+  const res = await api.post<{ status: string }>('/auth/change-password', data);
+  return res.data;
+}

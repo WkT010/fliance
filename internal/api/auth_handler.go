@@ -26,6 +26,7 @@ type UserStore interface {
 	GetByEmail(string) (*User, error)
 	GetByID(string) (*User, error)
 	Create(*User) error
+	Update(*User) error
 }
 
 // lockoutEntry tracks consecutive failed login attempts per user (by email).
@@ -203,6 +204,49 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	t, _ := h.m.GenerateToken(cl.UserID, cl.Role, 24*time.Hour)
 	rt, _ := h.m.GenerateToken(cl.UserID, cl.Role, 7*24*time.Hour)
 	c.JSON(200, gin.H{"token": t, "refresh_token": rt, "expires_in": 86400})
+}
+
+type changePasswordReq struct {
+	CurrentPassword string `json:"current_password" binding:"required,min=8"`
+	NewPassword     string `json:"new_password" binding:"required,min=8"`
+}
+
+// ChangePassword allows an authenticated user to update their password.
+// POST /api/v2/auth/change-password
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	var r changePasswordReq
+	if err := c.ShouldBindJSON(&r); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "current_password and new_password required (min 8 chars)"})
+		return
+	}
+	u, err := h.store.GetByID(userID)
+	if err != nil || u == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(r.CurrentPassword)); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "current password is incorrect"})
+		return
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(r.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+		return
+	}
+	// Update expects a user with the new password hash and refreshed timestamp.
+	u.PasswordHash = string(newHash)
+	u.UpdatedAt = time.Now().UnixNano()
+	if err := h.store.Update(u); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update password"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "password updated"})
 }
 
 // Logout is a stateless no-op: clients simply discard their token. The endpoint

@@ -2,10 +2,10 @@ import { cls } from '@/utils/format';
 
 interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   label?: string;
-  options: { value: string; label: string }[];
+  options?: { value: string; label: string }[];
 }
 
-export function Select({ label, options, className, ...props }: SelectProps) {
+export function Select({ label, options, className, children, ...props }: SelectProps) {
   return (
     <div className="w-full">
       {label && <label className="mb-1 block text-xs font-medium text-nexa-300">{label}</label>}
@@ -16,9 +16,9 @@ export function Select({ label, options, className, ...props }: SelectProps) {
         )}
         {...props}
       >
-        {options.map((o) => (
+        {options ? options.map((o) => (
           <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
+        )) : children}
       </select>
     </div>
   );

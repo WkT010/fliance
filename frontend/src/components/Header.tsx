@@ -15,6 +15,7 @@ export function Header() {
           <Link to="/markets" className="text-nexa-300 hover:text-nexa-100">Markets</Link>
           <Link to="/wallet" className="text-nexa-300 hover:text-nexa-100">Wallet</Link>
           <Link to="/account" className="text-nexa-300 hover:text-nexa-100">Account</Link>
+          <Link to="/settings" className="text-nexa-300 hover:text-nexa-100">Settings</Link>
           {isAdmin && <Link to="/admin" className="text-nexa-300 hover:text-nexa-100">Admin</Link>}
         </nav>
       </div>
