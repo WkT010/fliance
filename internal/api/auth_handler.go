@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -105,8 +106,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	rt, _ := h.m.GenerateToken(u.ID, u.Role, 7*24*time.Hour)
 	c.JSON(200, gin.H{
 		"token":         t,
-		"refresh_token": rt,
-		"user_id":       u.ID,
+				"access_token":  t,
+				"refresh_token": rt,
 		"role":          u.Role,
 		"expires_in":    86400,
 	})
@@ -183,7 +184,14 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "create failed"})
 		return
 	}
-	c.JSON(201, gin.H{"user_id": u.ID, "email": u.Email})
+	accessToken, _ := h.m.GenerateToken(u.ID, u.Role, 24*time.Hour)
+	c.JSON(201, gin.H{
+		"user_id":     u.ID,
+		"email":       u.Email,
+		"token":       accessToken,
+		"access_token": accessToken,
+		"expires_in":  86400,
+	})
 }
 
 type refreshReq struct {
@@ -203,7 +211,7 @@ func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	}
 	t, _ := h.m.GenerateToken(cl.UserID, cl.Role, 24*time.Hour)
 	rt, _ := h.m.GenerateToken(cl.UserID, cl.Role, 7*24*time.Hour)
-	c.JSON(200, gin.H{"token": t, "refresh_token": rt, "expires_in": 86400})
+	c.JSON(200, gin.H{"token": t, "access_token": t, "refresh_token": rt, "expires_in": 86400})
 }
 
 type changePasswordReq struct {
