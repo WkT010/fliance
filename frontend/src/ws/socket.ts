@@ -9,17 +9,29 @@ export class NexaSocket {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pair: string | null = null;
   private manualClose = false;
+  private reconnectAttempts = 0;
+  private MAX_RETRIES = 5;
 
   connect(pair: string) {
     this.pair = pair;
     this.manualClose = false;
+    this.reconnectAttempts = 0;
+    this.doConnect();
+  }
+
+  private doConnect() {
+    if (this.reconnectAttempts >= this.MAX_RETRIES) {
+      console.warn('[WS] Max reconnect attempts reached, giving up');
+      return;
+    }
     const token = useAuthStore.getState().token;
     const url = token ? `${WS_URL}?token=${token}` : WS_URL;
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {
-      this.subscribe(WS_CHANNELS.ORDERBOOK, [pair]);
-      this.subscribe(WS_CHANNELS.TRADES, [pair]);
+      this.reconnectAttempts = 0;
+      this.subscribe(WS_CHANNELS.ORDERBOOK, [this.pair!]);
+      this.subscribe(WS_CHANNELS.TRADES, [this.pair!]);
       this.startHeartbeat();
     };
 
@@ -38,7 +50,12 @@ export class NexaSocket {
 
     this.ws.onclose = () => {
       this.stopHeartbeat();
-      if (!this.manualClose) this.reconnectTimer = setTimeout(() => this.pair && this.connect(this.pair), 3000);
+      if (!this.manualClose) {
+        this.reconnectAttempts++;
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        console.warn(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.MAX_RETRIES})`);
+        this.reconnectTimer = setTimeout(() => this.doConnect(), delay);
+      }
     };
 
     this.ws.onerror = () => { this.ws?.close(); };
@@ -65,9 +82,13 @@ export class NexaSocket {
 
   private handleMessage(msg: Record<string, unknown>) {
     const store = useMarketStore.getState();
-    if (msg.type === 'snapshot' && msg.bids && msg.asks) store.setOrderbook(msg as unknown as Orderbook);
-    else if (msg.type === 'trade') store.addTrade(msg as unknown as Trade);
-    else if (msg.type === 'fill') store.addFill(msg as unknown as FillMessage);
+    if (msg.type === 'snapshot' && msg.bids && msg.asks) {
+      store.setOrderbook(msg as unknown as Orderbook);
+    } else if (msg.type === 'trade') {
+      store.addTrade(msg as unknown as Trade);
+    } else if (msg.type === 'fill') {
+      store.addFill(msg as unknown as FillMessage);
+    }
   }
 
   switchPair(pair: string) {
@@ -76,6 +97,7 @@ export class NexaSocket {
       this.send({ type: 'unsubscribe', channel: WS_CHANNELS.TRADES, pairs: [this.pair] });
     }
     this.pair = pair;
+    this.reconnectAttempts = 0;
     this.subscribe(WS_CHANNELS.ORDERBOOK, [pair]);
     this.subscribe(WS_CHANNELS.TRADES, [pair]);
   }
