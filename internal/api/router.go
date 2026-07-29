@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,11 +14,12 @@ import (
 	"github.com/WkT010/nexa-exchange/internal/observability"
 )
 
-// Router wires all HTTP handlers and middleware for the API gateway.
 type Router struct {
 	engine    *gin.Engine
+	config    *config.Config
 	oh        *OrderHandler
-	ah        *AuthHandler
+	eh        *ExchangeHandler
+	authH     *AuthHandler
 	wh        *WSHandler
 	ph        *PriceHandler
 	walletH   *WalletHandler
@@ -30,55 +32,41 @@ type Router struct {
 	staticDir string
 }
 
-// NewRouter constructs a router. apiKeyStore may be nil to disable API-key auth.
 func NewRouter(
 	oh *OrderHandler,
-	ah *AuthHandler,
+	eh *ExchangeHandler,
+	authH *AuthHandler,
 	wh *WSHandler,
 	ph *PriceHandler,
 	walletH *WalletHandler,
 	accountH *AccountHandler,
 	adminH *AdminHandler,
 	authMW gin.HandlerFunc,
-	apiKeyStore auth.APIKeyStore,
+	apiKeyMW gin.HandlerFunc,
 	cfg *config.Config,
 	health *observability.HealthCollector,
 ) *Router {
 	r := &Router{
 		engine:    gin.New(),
+		config:    cfg,
 		oh:        oh,
-		ah:        ah,
+		eh:        eh,
+		authH:     authH,
 		wh:        wh,
 		ph:        ph,
 		walletH:   walletH,
 		accountH:  accountH,
 		adminH:    adminH,
 		authMW:    authMW,
+		apiKeyMW:  apiKeyMW,
 		health:    health,
 		startedAt: time.Now(),
 	}
-	if apiKeyStore != nil && cfg.EnableAPIKeyAuth {
-		r.apiKeyMW = APIKeyMiddleware(apiKeyStore)
-	}
-
-	cors := CORSMiddlewareConfig(cfg.CORSAllowOrigins, cfg.CORSAllowCreds)
-	rateLimit := RateLimiter(cfg.RateLimitPerSec, time.Second)
-	r.engine.Use(
-		gin.Recovery(),
-		RequestIDMiddleware(),
-		LoggerMiddleware(),
-		cors,
-		rateLimit,
-		observability.PrometheusMiddleware(),
-		ErrorHandler(),
-	)
 	return r
 }
 
-// SetStaticDir enables serving of a static frontend build directory.
 func (r *Router) SetStaticDir(dir string) { r.staticDir = dir }
 
-// Setup registers all routes and returns the configured Gin engine.
 func (r *Router) Setup() *gin.Engine {
 	r.engine.GET("/health", r.health.Handler())
 	r.engine.GET("/ready", r.health.ReadyHandler())
@@ -87,114 +75,80 @@ func (r *Router) Setup() *gin.Engine {
 	api := r.engine.Group("/api/v2")
 	api.GET("/ping", r.health.Handler())
 	api.GET("/time", func(c *gin.Context) {
-		c.JSON(200, gin.H{"server_time": time.Now().UTC().UnixNano() / 1e6})
+		c.JSON(200, gin.H{"time": time.Now().UnixNano()})
 	})
 
-	// Public auth endpoints.
 	auth := api.Group("/auth")
-	auth.POST("/login", r.ah.Login)
-	auth.POST("/register", r.ah.Register)
-	auth.POST("/refresh", r.ah.RefreshToken)
-	auth.POST("/logout", r.authMW, r.ah.Logout)
-	auth.POST("/change-password", r.authMW, r.ah.ChangePassword)
+	auth.POST("/login", r.authH.Login)
+	auth.POST("/register", r.authH.Register)
+	auth.POST("/refresh", r.authH.RefreshToken)
+	auth.POST("/logout", r.authMW, r.authH.Logout)
+	auth.POST("/change-password", r.authMW, r.authH.ChangePassword)
 
-	// Authenticated routes.
-	p := api.Group("")
-	p.Use(r.authMW)
-	if r.apiKeyMW != nil {
-		p.Use(r.apiKeyMW)
-	}
+	prot := api.Group("", r.authMW)
+	prot.POST("/order", r.oh.PlaceOrder)
+	prot.DELETE("/order/:id", r.oh.CancelOrder)
+	prot.DELETE("/orders", r.oh.CancelAllOrders)
+	prot.GET("/order/:id", r.oh.GetOrder)
+	prot.GET("/orders", r.oh.ListOrders)
+	prot.GET("/wallet/balances", r.walletH.GetBalances)
+	prot.GET("/wallet/balances/:asset", r.walletH.GetBalance)
+	prot.POST("/wallet/deposit/address", r.walletH.GetDepositAddress)
+	prot.POST("/wallet/deposit", r.walletH.Deposit)
+	prot.POST("/wallet/withdraw", r.walletH.Withdraw)
+	prot.GET("/wallet/transactions", r.walletH.ListTransactions)
+	prot.GET("/wallet/assets", r.walletH.ListSupportedAssets)
 
-	// Trading.
-	p.POST("/order", r.oh.PlaceOrder)
-	p.DELETE("/order/:id", r.oh.CancelOrder)
-	p.DELETE("/orders", r.oh.CancelAllOrders)
-	p.GET("/order/:id", r.oh.GetOrder)
-	p.GET("/orders", r.oh.ListOrders)
+	prot.GET("/account", r.accountH.GetAccount)
+	prot.POST("/account/api-keys", r.accountH.CreateAPIKey)
+	prot.GET("/account/api-keys", r.accountH.ListAPIKeys)
+	prot.DELETE("/account/api-keys/:id", r.accountH.RevokeAPIKey)
 
-	// Wallet.
-	p.GET("/wallet/balances", r.walletH.GetBalances)
-	p.GET("/wallet/balances/:asset", r.walletH.GetBalance)
-	p.POST("/wallet/deposit/address", r.walletH.GetDepositAddress)
-	p.POST("/wallet/deposit", r.walletH.Deposit)
-	p.POST("/wallet/withdraw", r.walletH.Withdraw)
-	p.GET("/wallet/transactions", r.walletH.ListTransactions)
-	p.GET("/wallet/assets", r.walletH.ListSupportedAssets)
-
-	// Account.
-	p.GET("/account", r.accountH.GetAccount)
-	p.GET("/account/profile", r.accountH.GetProfile)
-	p.GET("/account/pnl", r.accountH.GetPnL)
-	p.GET("/account/pnl/history", r.accountH.GetPnLHistory)
-	p.POST("/account/api-keys", r.accountH.CreateAPIKey)
-	p.GET("/account/api-keys", r.accountH.ListAPIKeys)
-	p.DELETE("/account/api-keys/:id", r.accountH.RevokeAPIKey)
-
-	// Market data (public).
-	api.GET("/ticker/:pair", r.ph.GetTicker)
-	api.GET("/tickers", r.ph.GetAllTickers)
-	api.GET("/ticker/24h/:pair", r.oh.GetTicker24h)
+	// Market data — all use *pair catch-all to support BTC/USDT format
 	api.GET("/tickers/24h", r.oh.ListTickers)
-	api.GET("/orderbook/:pair", r.oh.GetOrderbook)
-	api.GET("/trades/:pair", r.oh.GetTrades)
-	api.GET("/klines/:pair", r.oh.GetCandles)
-	api.GET("/klines/intervals", r.oh.ListCandleIntervals)
-	api.GET("/price/uniswap/:pair", r.ph.GetUniswapTicker)
-	api.GET("/price/compare/:pair", r.ph.GetPriceComparison)
+	api.GET("/tickers", r.ph.GetAllTickers)
+	api.GET("/ticker/*pair", r.ph.GetTicker)
+	api.GET("/orderbook/*pair", r.oh.GetOrderbook)
+	api.GET("/trades/*pair", r.oh.GetTrades)
+	api.GET("/klines/*pair", r.oh.GetCandles)
+	api.GET("/price/uniswap/*pair", r.ph.GetUniswapTicker)
+	api.GET("/price/compare/*pair", r.ph.GetPriceComparison)
 
-	// Admin routes.
+	// Admin
 	admin := api.Group("/admin")
 	admin.Use(r.authMW, AdminOnly())
 	admin.GET("/users", r.accountH.AdminListUsers)
-
-	// Withdrawal operations.
 	admin.GET("/withdrawals", r.adminH.ListWithdrawals)
 	admin.POST("/withdrawals/:id/approve", r.adminH.ApproveWithdrawal)
 	admin.POST("/withdrawals/:id/reject", r.adminH.RejectWithdrawal)
-
-	// User withdrawal controls.
 	admin.GET("/users/:id/withdrawals", r.adminH.ListUserWithdrawals)
 	admin.GET("/users/:id/addresses", r.adminH.ListAddresses)
 	admin.POST("/users/:id/addresses", r.adminH.AddAddress)
 	admin.POST("/users/:id/limits", r.adminH.SetDailyLimit)
-
-	// Risk management.
 	admin.GET("/risk/pairs", r.adminH.ListPairRisk)
 	admin.GET("/risk/pairs/:pair", r.adminH.GetPairRisk)
 	admin.PUT("/risk/pairs/:pair", r.adminH.UpdatePairRisk)
 	admin.GET("/risk/users/:id", r.adminH.GetUserRisk)
 	admin.PUT("/risk/users/:id", r.adminH.UpdateUserRisk)
-
-	// Trading controls.
 	admin.POST("/pairs/:pair/pause", r.adminH.PausePair)
 	admin.POST("/pairs/:pair/resume", r.adminH.ResumePair)
-
-	// Operational.
 	admin.POST("/snapshots", r.adminH.TriggerSnapshot)
 
-	// WebSocket.
 	r.engine.GET("/ws", r.wh.HandleWebSocket)
 
-	// Static frontend (SPA) serving. API routes take precedence.
+	// Static frontend SPA
 	if r.staticDir != "" {
-		fsys := gin.Dir(r.staticDir, false)
-		fileServer := http.FileServer(fsys)
 		r.engine.NoRoute(func(c *gin.Context) {
 			path := c.Request.URL.Path
-			// Never serve static files for API/WebSocket/health/metrics routes.
 			if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws") ||
 				path == "/health" || path == "/ready" || path == "/metrics" {
 				c.AbortWithStatus(http.StatusNotFound)
 				return
 			}
-			// If a real file exists, serve it; otherwise fall back to index.html.
-			if info, err := fsys.Open(filepath.Clean("/" + path)); err == nil {
-				if stat, err := info.Stat(); err == nil && !stat.IsDir() {
-					_ = info.Close()
-					fileServer.ServeHTTP(c.Writer, c.Request)
-					return
-				}
-				_ = info.Close()
+			fullPath := filepath.Join(r.staticDir, filepath.Clean(path))
+			if fi, err := os.Stat(fullPath); err == nil && !fi.IsDir() {
+				c.File(fullPath)
+				return
 			}
 			c.File(filepath.Join(r.staticDir, "index.html"))
 		})
@@ -205,15 +159,4 @@ func (r *Router) Setup() *gin.Engine {
 
 func (r *Router) healthHandler(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "service": "nexa"})
-}
-
-func (r *Router) readyHandler(c *gin.Context) {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	c.JSON(200, gin.H{
-		"status":     "ready",
-		"uptime":     time.Since(r.startedAt).Seconds(),
-		"goroutines": runtime.NumGoroutine(),
-		"memory_mb":  m.Alloc / 1024 / 1024,
-	})
 }
