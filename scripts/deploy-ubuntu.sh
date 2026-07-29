@@ -49,31 +49,110 @@ mkdir -p "$(dirname "$LOG_FILE")"
 log "[NEXA] Deploying Nexa Exchange ${VERSION} on Ubuntu..."
 log "[NEXA] Log file: $LOG_FILE"
 
+# Helper: locate a binary in common install locations (works even when sudo resets PATH)
+find_binary() {
+    local name="$1"
+    shift
+    local candidates=("$@")
+    local c p
+    for c in "${candidates[@]}"; do
+        for p in $c; do
+            if [ -x "$p" ]; then
+                echo "$p"
+                return 0
+            fi
+        done
+    done
+    command -v "$name" 2>/dev/null
+}
+
+GO_BIN="$(find_binary go \
+    /usr/local/go/bin/go \
+    /usr/lib/go*/bin/go \
+    /root/.local/share/mise/shims/go \
+    /home/*/.local/share/mise/shims/go \
+    /root/.nvm/versions/node/*/bin/go \
+    /usr/local/bin/go \
+    /usr/bin/go)"
+
+NODE_BIN="$(find_binary node \
+    /usr/local/bin/node \
+    /usr/bin/node \
+    /root/.local/share/mise/shims/node \
+    /home/*/.local/share/mise/shims/node \
+    /root/.nvm/versions/node/*/bin/node)"
+
+NPM_BIN="$(find_binary npm \
+    /usr/local/bin/npm \
+    /usr/bin/npm \
+    /root/.local/share/mise/shims/npm \
+    /home/*/.local/share/mise/shims/npm \
+    /root/.nvm/versions/node/*/bin/npm)"
+
 # --- 1. Update and install base packages ---
 log "[NEXA] Installing system dependencies..."
-apt-get update || fail "apt-get update failed"
+for attempt in 1 2 3; do
+    log "[NEXA] apt-get update attempt ${attempt}/3..."
+    if apt-get update; then break; fi
+    if [ "$attempt" -eq 3 ]; then log "[NEXA] WARNING: apt-get update failed, continuing with existing package lists..."; fi
+    sleep 3
+done
 apt-get install -y git curl wget build-essential ca-certificates gnupg lsb-release software-properties-common || fail "apt-get install failed"
 
 # --- 2. Install Go ---
-if command -v go &>/dev/null && [[ "$(go version | awk '{print $3}')" =~ ^go1\.(2[2-9]|[3-9][0-9]) ]]; then
-    log "[NEXA] Go already installed: $(go version)"
-else
+GO_OK=false
+if [ -n "$GO_BIN" ] && "$GO_BIN" version &>/dev/null; then
+    GO_VERSION_STR=$("$GO_BIN" version | awk '{print $3}')
+    if [[ "$GO_VERSION_STR" =~ ^go1\.(2[2-9]|[3-9][0-9]) ]]; then
+        log "[NEXA] Go already installed: $GO_VERSION_STR ($GO_BIN)"
+        GO_OK=true
+    fi
+fi
+
+if [ "$GO_OK" != true ]; then
     log "[NEXA] Installing Go ${GO_VERSION}..."
     rm -rf /usr/local/go
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz || fail "Go download failed"
+    mkdir -p /usr/local/bin
+
+    for attempt in 1 2 3; do
+        log "[NEXA] Go download attempt ${attempt}/3..."
+        if curl -fsSL --max-time 300 "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz; then
+            break
+        fi
+        if curl -fsSL --max-time 300 "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz; then
+            break
+        fi
+        if [ "$attempt" -eq 3 ]; then fail "Go download failed after 3 attempts"; fi
+        sleep 5
+    done
+
     tar -C /usr/local -xzf /tmp/go.tar.gz || fail "Go extraction failed"
     ln -sf /usr/local/go/bin/go /usr/local/bin/go
     ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+    GO_BIN="/usr/local/go/bin/go"
 fi
-export PATH="/usr/local/go/bin:$PATH"
+export PATH="$(dirname "$GO_BIN"):$PATH"
 
 # --- 3. Install Node.js 20 ---
-if command -v node &>/dev/null && [[ "$(node -v | cut -d'v' -f2 | cut -d'.' -f1)" -ge 18 ]]; then
-    log "[NEXA] Node.js already installed: $(node -v)"
-else
+NODE_OK=false
+if [ -n "$NODE_BIN" ] && "$NODE_BIN" -v &>/dev/null; then
+    NODE_MAJOR=$("$NODE_BIN" -v | sed 's/^v//; s/\..*//')
+    if [ "$NODE_MAJOR" -ge 18 ]; then
+        log "[NEXA] Node.js already installed: $("$NODE_BIN" -v) ($NODE_BIN)"
+        NODE_OK=true
+    fi
+fi
+
+if [ "$NODE_OK" != true ]; then
     log "[NEXA] Installing Node.js 20..."
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - || fail "NodeSource setup failed"
     apt-get install -y nodejs || fail "Node.js install failed"
+    NODE_BIN="/usr/bin/node"
+    NPM_BIN="/usr/bin/npm"
+fi
+
+if [ -n "$NPM_BIN" ]; then
+    export PATH="$(dirname "$NPM_BIN"):$PATH"
 fi
 
 # --- 4. Install PostgreSQL ---
@@ -81,7 +160,14 @@ if command -v psql &>/dev/null; then
     log "[NEXA] PostgreSQL already installed: $(psql --version | head -n1)"
 else
     log "[NEXA] Installing PostgreSQL..."
-    apt-get install -y postgresql postgresql-contrib || fail "PostgreSQL install failed"
+    if ! apt-get install -y postgresql postgresql-contrib; then
+        log ""
+        log "[NEXA] PostgreSQL could not be installed automatically. Common fixes:"
+        log "[NEXA]   1. Run: sudo apt-get update"
+        log "[NEXA]   2. Run: sudo apt-get install -y postgresql postgresql-contrib"
+        log "[NEXA]   3. Then rerun this script."
+        fail "PostgreSQL install failed"
+    fi
 fi
 systemctl enable --now postgresql || fail "Failed to start PostgreSQL"
 
