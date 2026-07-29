@@ -9,14 +9,24 @@ export function useMarket(pair: string) {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    // Cancel any in-flight requests from previous pair
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+
     store.setPair(pair);
     store.clearFills();
-    getOrderbook(pair).then((ob) => { if (!ac.signal.aborted) store.setOrderbook(ob); });
-    getTrades(pair).then((trades) => { if (!ac.signal.aborted) useMarketStore.setState({ trades }); });
+
+    // initial snapshot 鈥?use AbortController to prevent race conditions
+    getOrderbook(pair).then((ob) => {
+      if (!ac.signal.aborted) store.setOrderbook(ob);
+    });
+    getTrades(pair).then((trades) => {
+      if (!ac.signal.aborted) useMarketStore.setState({ trades });
+    });
+
     socket.connect(pair);
+
     intervalRef.current = setInterval(() => {
       get24hTickers().then((res) => {
         if (ac.signal.aborted) return;
@@ -25,7 +35,14 @@ export function useMarket(pair: string) {
         store.setTickers(map);
       });
     }, 5000);
-    return () => { ac.abort(); if (intervalRef.current) clearInterval(intervalRef.current); socket.close(); };
+
+    return () => {
+      ac.abort();
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      socket.close();
+    };
   }, [pair, store]);
+
   return store;
 }
+
