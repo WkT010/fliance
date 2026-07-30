@@ -18,6 +18,7 @@ export function Header() {
           <Link to="/account" className="text-nexa-300 hover:text-nexa-100">Account</Link>
           <Link to="/settings" className="text-nexa-300 hover:text-nexa-100">Settings</Link>
           {isAdmin && <Link to="/admin" className="text-nexa-300 hover:text-nexa-100">Admin</Link>}
+          <Link to="/legal" className="text-nexa-300 hover:text-nexa-100">Legal</Link>
         </nav>
       </div>
       <div className="flex items-center gap-3">

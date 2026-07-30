@@ -6,6 +6,7 @@ import { WalletPage } from '@/pages/WalletPage';
 import { AccountPage } from '@/pages/AccountPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { AdminPage } from '@/pages/AdminPage';
+import { LegalPage } from '@/pages/LegalPage';
 import { LoginPage, RegisterPage } from '@/pages/AuthPage';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { useAuthInit } from '@/hooks/useAuth';
@@ -31,6 +32,7 @@ export default function App() {
       <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
       <Route path="/admin" element={<ProtectedRoute admin><AdminPage /></ProtectedRoute>} />
+      <Route path="/legal" element={<ProtectedRoute><LegalPage /></ProtectedRoute>} />
     </Routes>
   );
 }
