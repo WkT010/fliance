@@ -132,6 +132,12 @@ func main() {
 	// ── Realized PnL tracker ──
 	pnlSvc := pnl.NewService()
 
+	// ── Futures persistence ──
+	var futuresStore api.FuturesStore
+	if db != nil {
+		futuresStore = store.NewPGFuturesStore(db)
+	}
+
 	// ── Handlers ──
 	orderH := api.NewOrderHandlerWithExchange(exchange, orderStore, riskEng)
 	orderH.SetWallet(withdrawalSvc, withdrawalSvc)
@@ -140,9 +146,9 @@ func main() {
 	walletH := api.NewWalletHandler(withdrawalSvc, clients)
 
 	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey)
-	futuresH := api.NewFuturesHandler(priceH, walletSvc, nil)
+	futuresH := api.NewFuturesHandler(priceH, walletSvc, futuresStore)
 
-	// ── Futures liquidation monitor ──
+	// ── Futures liquidation / TP-SL / funding / order processing ──
 	futuresLiquidationCtx, futuresLiquidationCancel := context.WithCancel(context.Background())
 	defer futuresLiquidationCancel()
 	go func() {
@@ -153,7 +159,21 @@ func main() {
 			case <-futuresLiquidationCtx.Done():
 				return
 			case <-t.C:
+				futuresH.ProcessOrders()
+				futuresH.CheckTPSL()
 				futuresH.CheckLiquidations()
+			}
+		}
+	}()
+	go func() {
+		t := time.NewTicker(1 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-futuresLiquidationCtx.Done():
+				return
+			case <-t.C:
+				futuresH.ApplyFunding()
 			}
 		}
 	}()

@@ -22,6 +22,7 @@ import { Button } from '../common/Button';
 import { formatPrice } from '@/utils/format';
 import {
   sma, ema, rsi, bollinger, heikinAshi, macd, kdj, stochastic, vwap, volumeSma, atr, williamsR, cci,
+  superTrend, ichimoku, fibonacciLevels, pivotPoints, obv, mfi,
   type Candle,
 } from '@/utils/indicators';
 
@@ -57,6 +58,8 @@ const SUB_PANELS: SubPanelConfig[] = [
   { id: 'atr', label: 'ATR', height: 90 },
   { id: 'williamsR', label: 'Williams %R', height: 90 },
   { id: 'cci', label: 'CCI', height: 90 },
+  { id: 'obv', label: 'OBV', height: 90 },
+  { id: 'mfi', label: 'MFI', height: 90 },
 ];
 
 export function ChartPanel({ pair }: { pair: string }) {
@@ -67,6 +70,10 @@ export function ChartPanel({ pair }: { pair: string }) {
   const volumeMaSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
   const indicatorSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
   const bollingerSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  const superTrendSeriesRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const ichimokuSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  const fibSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
+  const pivotSeriesRef = useRef<ISeriesApi<'Line'>[]>([]);
 
   const subRefs = useRef<Record<string, {
     container: HTMLDivElement | null;
@@ -81,6 +88,10 @@ export function ChartPanel({ pair }: { pair: string }) {
   const [showVolume, setShowVolume] = useState(true);
   const [showVolumeMa, setShowVolumeMa] = useState(false);
   const [showBollinger, setShowBollinger] = useState(false);
+  const [showSuperTrend, setShowSuperTrend] = useState(false);
+  const [showIchimoku, setShowIchimoku] = useState(false);
+  const [showFib, setShowFib] = useState(false);
+  const [showPivot, setShowPivot] = useState(false);
   const [activePanels, setActivePanels] = useState<string[]>([]);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [hover, setHover] = useState<{ price: number; time: number } | null>(null);
@@ -197,6 +208,16 @@ export function ChartPanel({ pair }: { pair: string }) {
           subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: -100 }, { time: 9999999999 as Time, value: -100 },
           ]);
+        } else if (p.id === 'obv') {
+          series.push(subChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'OBV' }));
+        } else if (p.id === 'mfi') {
+          series.push(subChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'MFI' }));
+          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+            { time: 0 as Time, value: 80 }, { time: 9999999999 as Time, value: 80 },
+          ]);
+          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+            { time: 0 as Time, value: 20 }, { time: 9999999999 as Time, value: 20 },
+          ]);
         }
 
         subRefs.current[p.id] = { container, chart: subChart, series, histogram };
@@ -240,11 +261,19 @@ export function ChartPanel({ pair }: { pair: string }) {
 
     indicatorSeriesRef.current.forEach((s) => chart.removeSeries(s));
     bollingerSeriesRef.current.forEach((s) => chart.removeSeries(s));
+    if (superTrendSeriesRef.current) chart.removeSeries(superTrendSeriesRef.current);
+    ichimokuSeriesRef.current.forEach((s) => chart.removeSeries(s));
+    fibSeriesRef.current.forEach((s) => chart.removeSeries(s));
+    pivotSeriesRef.current.forEach((s) => chart.removeSeries(s));
     if (volumeSeriesRef.current) chart.removeSeries(volumeSeriesRef.current);
     if (volumeMaSeriesRef.current) chart.removeSeries(volumeMaSeriesRef.current);
     if (mainSeriesRef.current) chart.removeSeries(mainSeriesRef.current);
     indicatorSeriesRef.current = [];
     bollingerSeriesRef.current = [];
+    superTrendSeriesRef.current = null;
+    ichimokuSeriesRef.current = [];
+    fibSeriesRef.current = [];
+    pivotSeriesRef.current = [];
     volumeSeriesRef.current = null;
     volumeMaSeriesRef.current = null;
     mainSeriesRef.current = null;
@@ -327,6 +356,50 @@ export function ChartPanel({ pair }: { pair: string }) {
       bollingerSeriesRef.current = [upper, middle, lower];
     }
 
+    if (showSuperTrend) {
+      const st = superTrend(rawCandles);
+      const series = chart.addLineSeries({ color: '#22d3ee', lineWidth: 2, priceLineVisible: false, lastValueVisible: false, title: 'SuperTrend' });
+      series.setData(st.map((p) => ({ time: p.time as Time, value: p.value })) as LineData<Time>[]);
+      superTrendSeriesRef.current = series;
+    }
+
+    if (showIchimoku) {
+      const ic = ichimoku(rawCandles);
+      const tenkan = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Tenkan' });
+      const kijun = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Kijun' });
+      const senkouA = chart.addLineSeries({ color: '#22c55e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Senkou A' });
+      const senkouB = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Senkou B' });
+      tenkan.setData(ic.map((p) => ({ time: p.time as Time, value: p.tenkan })) as LineData<Time>[]);
+      kijun.setData(ic.map((p) => ({ time: p.time as Time, value: p.kijun })) as LineData<Time>[]);
+      senkouA.setData(ic.map((p) => ({ time: p.time as Time, value: p.senkouA })) as LineData<Time>[]);
+      senkouB.setData(ic.map((p) => ({ time: p.time as Time, value: p.senkouB })) as LineData<Time>[]);
+      ichimokuSeriesRef.current = [tenkan, kijun, senkouA, senkouB];
+    }
+
+    if (showFib && rawCandles.length > 0) {
+      let high = rawCandles[0].high;
+      let low = rawCandles[0].low;
+      rawCandles.forEach((c) => { if (c.high > high) high = c.high; if (c.low < low) low = c.low; });
+      const fibs = fibonacciLevels(high, low);
+      const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
+      fibs.forEach((f, i) => {
+        const series = chart.addLineSeries({ color: colors[i % colors.length], lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: `Fib ${Math.round(f.level * 1000) / 10}%` });
+        series.setData([{ time: rawCandles[0].time as Time, value: f.price }, { time: rawCandles[rawCandles.length - 1].time as Time, value: f.price }]);
+        fibSeriesRef.current.push(series);
+      });
+    }
+
+    if (showPivot && rawCandles.length > 1) {
+      const pivots = pivotPoints(rawCandles);
+      const pp = chart.addLineSeries({ color: '#d4dbe3', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: 'PP' });
+      const r1 = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: 'R1' });
+      const s1 = chart.addLineSeries({ color: '#22c55e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: 'S1' });
+      pp.setData(pivots.map((p) => ({ time: p.time as Time, value: p.pp })) as LineData<Time>[]);
+      r1.setData(pivots.map((p) => ({ time: p.time as Time, value: p.r1 })) as LineData<Time>[]);
+      s1.setData(pivots.map((p) => ({ time: p.time as Time, value: p.s1 })) as LineData<Time>[]);
+      pivotSeriesRef.current = [pp, r1, s1];
+    }
+
     // Update sub-panels
     if (activePanels.includes('rsi') && subRefs.current.rsi) {
       const data = rsi(rawCandles);
@@ -347,7 +420,7 @@ export function ChartPanel({ pair }: { pair: string }) {
     if (activePanels.includes('kdj') && subRefs.current.kdj) {
       const data = kdj(rawCandles);
       subRefs.current.kdj.series[0].setData(data.map((r) => ({ time: r.time as Time, value: r.k })) as LineData<Time>[]);
-      subRefs.current.kdj.series[1].setData(data.map((r) => ({ time: r.time as Time, value: r.k })) as LineData<Time>[]);
+      subRefs.current.kdj.series[1].setData(data.map((r) => ({ time: r.time as Time, value: r.d })) as LineData<Time>[]);
       subRefs.current.kdj.series[2].setData(data.map((r) => ({ time: r.time as Time, value: r.j })) as LineData<Time>[]);
       subRefs.current.kdj.chart?.timeScale().fitContent();
     }
@@ -372,9 +445,19 @@ export function ChartPanel({ pair }: { pair: string }) {
       subRefs.current.cci.series[0].setData(data.map((r) => ({ time: r.time as Time, value: r.value })) as LineData<Time>[]);
       subRefs.current.cci.chart?.timeScale().fitContent();
     }
+    if (activePanels.includes('obv') && subRefs.current.obv) {
+      const data = obv(rawCandles);
+      subRefs.current.obv.series[0].setData(data.map((r) => ({ time: r.time as Time, value: r.value })) as LineData<Time>[]);
+      subRefs.current.obv.chart?.timeScale().fitContent();
+    }
+    if (activePanels.includes('mfi') && subRefs.current.mfi) {
+      const data = mfi(rawCandles);
+      subRefs.current.mfi.series[0].setData(data.map((r) => ({ time: r.time as Time, value: r.value })) as LineData<Time>[]);
+      subRefs.current.mfi.chart?.timeScale().fitContent();
+    }
 
     chart.timeScale().fitContent();
-  }, [displayCandles, rawCandles, chartType, activeIndicators, showVolume, showVolumeMa, showBollinger, activePanels]);
+  }, [displayCandles, rawCandles, chartType, activeIndicators, showVolume, showVolumeMa, showBollinger, showSuperTrend, showIchimoku, showFib, showPivot, activePanels]);
 
   const toggleIndicator = (id: string) => {
     setActiveIndicators((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -411,6 +494,10 @@ export function ChartPanel({ pair }: { pair: string }) {
           </button>
         ))}
         <button onClick={() => setShowBollinger((v) => !v)} className={`rounded px-2 py-0.5 border ${showBollinger ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>Bollinger</button>
+        <button onClick={() => setShowSuperTrend((v) => !v)} className={`rounded px-2 py-0.5 border ${showSuperTrend ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>SuperTrend</button>
+        <button onClick={() => setShowIchimoku((v) => !v)} className={`rounded px-2 py-0.5 border ${showIchimoku ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>Ichimoku</button>
+        <button onClick={() => setShowFib((v) => !v)} className={`rounded px-2 py-0.5 border ${showFib ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>Fibonacci</button>
+        <button onClick={() => setShowPivot((v) => !v)} className={`rounded px-2 py-0.5 border ${showPivot ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>Pivot</button>
         <button onClick={() => setShowVolume((v) => !v)} className={`rounded px-2 py-0.5 border ${showVolume ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>Volume</button>
         <button onClick={() => setShowVolumeMa((v) => !v)} className={`rounded px-2 py-0.5 border ${showVolumeMa ? 'border-accent bg-accent/20 text-accent' : 'border-nexa-700 text-nexa-400 hover:bg-nexa-800'}`}>VMA20</button>
         {SUB_PANELS.map((p) => (

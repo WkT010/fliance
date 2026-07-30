@@ -18,6 +18,8 @@ export interface OpenPositionReq {
   margin_mode: MarginMode;
   quantity: string;
   price?: string;
+  tp_price?: string;
+  sl_price?: string;
 }
 
 export async function openFuturesPosition(data: OpenPositionReq): Promise<FuturesPosition> {
@@ -28,6 +30,11 @@ export async function openFuturesPosition(data: OpenPositionReq): Promise<Future
 export async function closeFuturesPosition(id: string): Promise<FuturesPosition> {
   const res = await api.post(`/futures/positions/${id}/close`);
   return res.data.position;
+}
+
+export async function cancelFuturesOrder(id: string): Promise<FuturesOrder> {
+  const res = await api.delete(`/futures/orders/${id}`);
+  return res.data.order;
 }
 
 export interface PlaceFuturesOrderReq {
@@ -51,4 +58,25 @@ export async function placeFuturesOrder(data: PlaceFuturesOrderReq): Promise<Fut
 export async function getFuturesOrders(): Promise<FuturesOrder[]> {
   const res = await api.get('/futures/orders');
   return res.data.orders || [];
+}
+
+export async function getFuturesAccountSummary(): Promise<{
+  open_positions: number;
+  total_margin: string;
+  total_pnl: string;
+  wallet_balance: string;
+  wallet_locked: string;
+}> {
+  const res = await api.get('/futures/account/summary');
+  return res.data;
+}
+
+export async function addMargin(id: string, amount: string): Promise<FuturesPosition> {
+  const res = await api.post(`/futures/positions/${id}/add-margin`, { amount });
+  return res.data.position;
+}
+
+export async function reduceMargin(id: string, amount: string): Promise<FuturesPosition> {
+  const res = await api.post(`/futures/positions/${id}/reduce-margin`, { amount });
+  return res.data.position;
 }

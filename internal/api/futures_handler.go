@@ -29,7 +29,9 @@ type FuturesPosition struct {
 	PnL        *big.Float
 	PnLPct     *big.Float
 	LiqPrice   *big.Float
-	Status     string // "open" or "closed"
+	TPPrice    *big.Float
+	SLPrice    *big.Float
+	Status     string // "open", "closed" or "liquidated"
 	CreatedAt  int64
 	UpdatedAt  int64
 }
@@ -57,8 +59,11 @@ type FuturesStore interface {
 	SavePosition(*FuturesPosition) error
 	GetPosition(id, userID string) (*FuturesPosition, error)
 	ListPositions(userID string) ([]*FuturesPosition, error)
+	ListOpenPositions() ([]*FuturesPosition, error)
 	SaveOrder(*FuturesOrder) error
 	ListOrders(userID string) ([]*FuturesOrder, error)
+	ListOpenOrders() ([]*FuturesOrder, error)
+	UpdateOrderStatus(id, status string) error
 }
 
 // FuturesHandler exposes perpetual futures endpoints backed by real market data
@@ -127,6 +132,27 @@ func (s *memoryFuturesStore) ListOrders(userID string) ([]*FuturesOrder, error) 
 	}
 	return out, nil
 }
+func (s *memoryFuturesStore) ListOpenOrders() ([]*FuturesOrder, error) {
+	s.mu.RLock(); defer s.mu.RUnlock()
+	out := make([]*FuturesOrder, 0)
+	for _, o := range s.orders {
+		if o.Status == "open" { cp := *o; out = append(out, &cp) }
+	}
+	return out, nil
+}
+func (s *memoryFuturesStore) ListOpenPositions() ([]*FuturesPosition, error) {
+	s.mu.RLock(); defer s.mu.RUnlock()
+	out := make([]*FuturesPosition, 0)
+	for _, p := range s.positions {
+		if p.Status == "open" { cp := *p; out = append(out, &cp) }
+	}
+	return out, nil
+}
+func (s *memoryFuturesStore) UpdateOrderStatus(id, status string) error {
+	s.mu.Lock(); defer s.mu.Unlock()
+	if o, ok := s.orders[id]; ok { o.Status = status }
+	return nil
+}
 
 // GetMarkPrice returns the real mark/index price and funding info.
 func (h *FuturesHandler) GetMarkPrice(c *gin.Context) {
@@ -178,6 +204,8 @@ type openPositionReq struct {
 	MarginMode string `json:"margin_mode" binding:"required"`
 	Quantity   string `json:"quantity" binding:"required"`
 	Price      string `json:"price"`
+	TPPrice    string `json:"tp_price"`
+	SLPrice    string `json:"sl_price"`
 }
 
 // OpenPosition opens a leveraged position and reserves real collateral from
@@ -222,6 +250,37 @@ func (h *FuturesHandler) OpenPosition(c *gin.Context) {
 
 	margin := calcMargin(entry, qty, r.Leverage)
 	quote := quoteAsset(r.Pair)
+
+	// One-way position netting: only one open position per pair per user.
+	existing := h.netPosition(userID, r.Pair)
+	if existing != nil && existing.Side == side {
+		if h.wallet != nil {
+			if _, err := h.wallet.ReserveForOrder(userID, quote, margin); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin reservation failed: %v", err)})
+				return
+			}
+		}
+		h.mergeSameSidePosition(existing, entry, qty, margin, r.Leverage)
+		if r.TPPrice != "" {
+			if tp, ok := parseBigFloat(r.TPPrice); ok && tp.Sign() > 0 { existing.TPPrice = tp }
+		}
+		if r.SLPrice != "" {
+			if sl, ok := parseBigFloat(r.SLPrice); ok && sl.Sign() > 0 { existing.SLPrice = sl }
+		}
+		_ = h.store.SavePosition(existing)
+		pnl, pnlPct := calcFuturesPnL(existing.Side, existing.EntryPrice, mark, existing.Quantity, existing.Leverage, existing.Margin)
+		c.JSON(http.StatusOK, gin.H{"position": positionToJSON(existing, mark, pnl, pnlPct), "merged": true})
+		return
+	}
+
+	if existing != nil && existing.Side != side {
+		// Opposite direction: close the existing position and open a new one.
+		if err := h.closePosition(existing, mark); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("close existing position failed: %v", err)})
+			return
+		}
+	}
+
 	if h.wallet != nil {
 		if _, err := h.wallet.ReserveForOrder(userID, quote, margin); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin reservation failed: %v", err)})
@@ -250,6 +309,12 @@ func (h *FuturesHandler) OpenPosition(c *gin.Context) {
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
+	if r.TPPrice != "" {
+		if tp, ok := parseBigFloat(r.TPPrice); ok && tp.Sign() > 0 { pos.TPPrice = tp }
+	}
+	if r.SLPrice != "" {
+		if sl, ok := parseBigFloat(r.SLPrice); ok && sl.Sign() > 0 { pos.SLPrice = sl }
+	}
 	_ = h.store.SavePosition(pos)
 	c.JSON(http.StatusOK, gin.H{"position": positionToJSON(pos, pos.MarkPrice, pos.PnL, pos.PnLPct)})
 }
@@ -267,11 +332,19 @@ func (h *FuturesHandler) ClosePosition(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "position not found"})
 		return
 	}
-	if pos.Status == "closed" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "position already closed"})
+	if pos.Status != "open" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "position not open"})
 		return
 	}
 	mark := h.liveMarkPrice(pos.Pair)
+	if err := h.closePosition(pos, mark); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("close failed: %v", err)})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"position": positionToJSON(pos, pos.MarkPrice, pos.PnL, pos.PnLPct)})
+}
+
+func (h *FuturesHandler) closePosition(pos *FuturesPosition, mark *big.Float) error {
 	pnl, _ := calcFuturesPnL(pos.Side, pos.EntryPrice, mark, pos.Quantity, pos.Leverage, pos.Margin)
 	pos.MarkPrice = copyF(mark)
 	pos.PnL = pnl
@@ -280,18 +353,16 @@ func (h *FuturesHandler) ClosePosition(c *gin.Context) {
 
 	if h.wallet != nil {
 		quote := quoteAsset(pos.Pair)
-		op := wallet.SettleOp{UserID: userID, Asset: quote, Unlock: pos.Margin, Delta: pnl}
+		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, Unlock: pos.Margin, Delta: pnl}
 		now := time.Now().UnixNano()
 		txns := []*wallet.Transaction{
-			{ID: "fpnl_" + uuid.NewString(), UserID: userID, Asset: quote, Type: wallet.FuturesPnl, Amount: new(big.Float).Copy(pnl), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
+			{ID: "fpnl_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, Type: wallet.FuturesPnl, Amount: new(big.Float).Copy(pnl), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
 		}
 		if err := h.wallet.Settle([]wallet.SettleOp{op}, txns); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("settlement failed: %v", err)})
-			return
+			return err
 		}
 	}
-	_ = h.store.SavePosition(pos)
-	c.JSON(http.StatusOK, gin.H{"position": positionToJSON(pos, pos.MarkPrice, pos.PnL, pos.PnLPct)})
+	return h.store.SavePosition(pos)
 }
 
 type marginReq struct {
@@ -379,7 +450,8 @@ func (h *FuturesHandler) ReduceMargin(c *gin.Context) {
 	}
 	newMargin := new(big.Float).Sub(pos.Margin, amt)
 	mark := h.liveMarkPrice(pos.Pair)
-	if h.isLiquidated(pos.Side, mark, pos.EntryPrice, pos.Quantity, newMargin) {
+	checkPos := &FuturesPosition{Side: pos.Side, EntryPrice: pos.EntryPrice, Quantity: pos.Quantity, Margin: newMargin, Leverage: pos.Leverage, MarginMode: pos.MarginMode, UserID: pos.UserID, Pair: pos.Pair}
+	if h.isLiquidated(checkPos, mark) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "reduction would liquidate position"})
 		return
 	}
@@ -422,7 +494,7 @@ func (h *FuturesHandler) LiquidatePosition(c *gin.Context) {
 		return
 	}
 	mark := h.liveMarkPrice(pos.Pair)
-	if !h.isLiquidated(pos.Side, mark, pos.EntryPrice, pos.Quantity, pos.Margin) {
+	if !h.isLiquidated(pos, mark) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "position not liquidated", "mark_price": safeFloatStr(mark), "liq_price": safeFloatStr(pos.LiqPrice)})
 		return
 	}
@@ -492,17 +564,16 @@ func (h *FuturesHandler) AccountSummary(c *gin.Context) {
 // CheckLiquidations scans every open position and liquidates any whose mark
 // price has crossed the liquidation price. Designed to be run on a ticker.
 func (h *FuturesHandler) CheckLiquidations() {
-	h.mu.RLock()
-	positions := make([]*FuturesPosition, 0, len(h.positions))
-	for _, p := range h.positions {
-		if p.Status == "open" {
-			positions = append(positions, p)
-		}
+	if h.store == nil {
+		return
 	}
-	h.mu.RUnlock()
+	positions, err := h.store.ListOpenPositions()
+	if err != nil {
+		return
+	}
 	for _, pos := range positions {
 		mark := h.liveMarkPrice(pos.Pair)
-		if h.isLiquidated(pos.Side, mark, pos.EntryPrice, pos.Quantity, pos.Margin) {
+		if h.isLiquidated(pos, mark) {
 			pos.MarkPrice = copyF(mark)
 			pos.PnL = new(big.Float).Neg(pos.Margin)
 			pos.PnLPct = big.NewFloat(-100)
@@ -617,6 +688,29 @@ func (h *FuturesHandler) CreateOrder(c *gin.Context) {
 		mark := h.liveMarkPrice(r.Pair)
 		margin := calcMargin(mark, qty, r.Leverage)
 		quote := quoteAsset(r.Pair)
+
+		existing := h.netPosition(userID, r.Pair)
+		if existing != nil && existing.Side == side {
+			if h.wallet != nil {
+				if _, err := h.wallet.ReserveForOrder(userID, quote, margin); err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin reservation failed: %v", err)})
+					return
+				}
+			}
+			h.mergeSameSidePosition(existing, mark, qty, margin, r.Leverage)
+			existing.TPPrice = order.TPPrice
+			existing.SLPrice = order.SLPrice
+			existing.UpdatedAt = now
+			_ = h.store.SavePosition(existing)
+			c.JSON(http.StatusOK, gin.H{"order": futuresOrderToJSON(order), "position": positionToJSON(existing, mark, new(big.Float), new(big.Float)), "merged": true})
+			return
+		}
+		if existing != nil && existing.Side != side {
+			if err := h.closePosition(existing, mark); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("close existing position failed: %v", err)})
+				return
+			}
+		}
 		if h.wallet != nil {
 			if _, err := h.wallet.ReserveForOrder(userID, quote, margin); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin reservation failed: %v", err)})
@@ -637,6 +731,8 @@ func (h *FuturesHandler) CreateOrder(c *gin.Context) {
 			PnL:        new(big.Float),
 			PnLPct:     new(big.Float),
 			LiqPrice:   calcLiqPrice(side, mark, r.Leverage),
+			TPPrice:    order.TPPrice,
+			SLPrice:    order.SLPrice,
 			Status:     "open",
 			CreatedAt:  now,
 			UpdatedAt:  now,
@@ -645,6 +741,177 @@ func (h *FuturesHandler) CreateOrder(c *gin.Context) {
 	}
 	_ = h.store.SaveOrder(order)
 	c.JSON(http.StatusOK, gin.H{"order": futuresOrderToJSON(order)})
+}
+
+// CancelOrder cancels an open futures order and releases any reserved margin.
+func (h *FuturesHandler) CancelOrder(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	id := c.Param("id")
+	orders, err := h.store.ListOrders(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load orders"})
+		return
+	}
+	var target *FuturesOrder
+	for _, o := range orders {
+		if o.ID == id { target = o; break }
+	}
+	if target == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		return
+	}
+	if target.Status != "open" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order not open"})
+		return
+	}
+	_ = h.store.UpdateOrderStatus(id, "cancelled")
+	c.JSON(http.StatusOK, gin.H{"order": futuresOrderToJSON(target)})
+}
+
+// ProcessOrders evaluates open limit and stop orders against live mark prices
+// and opens positions when trigger conditions are met.
+func (h *FuturesHandler) ProcessOrders() {
+	if h.store == nil {
+		return
+	}
+	orders, err := h.store.ListOpenOrders()
+	if err != nil {
+		return
+	}
+	for _, o := range orders {
+		mark := h.liveMarkPrice(o.Pair)
+		if mark == nil || mark.Sign() <= 0 {
+			continue
+		}
+		triggered := false
+		if o.StopPrice != nil && o.StopPrice.Sign() > 0 {
+			if o.Side == "buy" && mark.Cmp(o.StopPrice) >= 0 { triggered = true }
+			if o.Side == "sell" && mark.Cmp(o.StopPrice) <= 0 { triggered = true }
+		} else if o.Type == "limit" && o.Price != nil && o.Price.Sign() > 0 {
+			if o.Side == "buy" && mark.Cmp(o.Price) <= 0 { triggered = true }
+			if o.Side == "sell" && mark.Cmp(o.Price) >= 0 { triggered = true }
+		} else if o.Type == "market" {
+			triggered = true
+		}
+		if !triggered {
+			continue
+		}
+		side := "long"
+		if o.Side == "sell" { side = "short" }
+		margin := calcMargin(mark, o.Quantity, o.Leverage)
+		quote := quoteAsset(o.Pair)
+
+		existing := h.netPosition(o.UserID, o.Pair)
+		if existing != nil && existing.Side == side {
+			if h.wallet != nil {
+				if _, err := h.wallet.ReserveForOrder(o.UserID, quote, margin); err != nil {
+					_ = h.store.UpdateOrderStatus(o.ID, "cancelled")
+					continue
+				}
+			}
+			h.mergeSameSidePosition(existing, mark, o.Quantity, margin, o.Leverage)
+			existing.TPPrice = o.TPPrice
+			existing.SLPrice = o.SLPrice
+			existing.UpdatedAt = time.Now().UnixNano()
+			_ = h.store.SavePosition(existing)
+			_ = h.store.UpdateOrderStatus(o.ID, "filled")
+			continue
+		}
+		if existing != nil && existing.Side != side {
+			if err := h.closePosition(existing, mark); err != nil {
+				continue
+			}
+		}
+		if h.wallet != nil {
+			if _, err := h.wallet.ReserveForOrder(o.UserID, quote, margin); err != nil {
+				_ = h.store.UpdateOrderStatus(o.ID, "cancelled")
+				continue
+			}
+		}
+		now := time.Now().UnixNano()
+		pos := &FuturesPosition{
+			ID: uuid.NewString(), UserID: o.UserID, Pair: o.Pair, Side: side,
+			Leverage: o.Leverage, MarginMode: o.MarginMode,
+			EntryPrice: copyF(mark), MarkPrice: copyF(mark), Quantity: copyF(o.Quantity),
+			Margin: margin, PnL: new(big.Float), PnLPct: new(big.Float),
+			LiqPrice: calcLiqPrice(side, mark, o.Leverage),
+			TPPrice:  o.TPPrice, SLPrice: o.SLPrice,
+			Status: "open", CreatedAt: now, UpdatedAt: now,
+		}
+		_ = h.store.SavePosition(pos)
+		_ = h.store.UpdateOrderStatus(o.ID, "filled")
+	}
+}
+
+// CheckTPSL scans open positions and closes any whose take-profit or stop-loss
+// level has been hit by the live mark price.
+func (h *FuturesHandler) CheckTPSL() {
+	if h.store == nil {
+		return
+	}
+	positions, err := h.store.ListOpenPositions()
+	if err != nil {
+		return
+	}
+	for _, pos := range positions {
+		mark := h.liveMarkPrice(pos.Pair)
+		if mark == nil || mark.Sign() <= 0 {
+			continue
+		}
+		hit := false
+		if pos.Side == "long" {
+			if pos.TPPrice != nil && pos.TPPrice.Sign() > 0 && mark.Cmp(pos.TPPrice) >= 0 { hit = true }
+			if pos.SLPrice != nil && pos.SLPrice.Sign() > 0 && mark.Cmp(pos.SLPrice) <= 0 { hit = true }
+		} else {
+			if pos.TPPrice != nil && pos.TPPrice.Sign() > 0 && mark.Cmp(pos.TPPrice) <= 0 { hit = true }
+			if pos.SLPrice != nil && pos.SLPrice.Sign() > 0 && mark.Cmp(pos.SLPrice) >= 0 { hit = true }
+		}
+		if hit {
+			_ = h.closePosition(pos, mark)
+		}
+	}
+}
+
+// ApplyFunding charges or credits hourly funding to all open positions. The
+// funding amount is transferred from/to the user's wallet and applied to the
+// position's margin.
+func (h *FuturesHandler) ApplyFunding() {
+	if h.store == nil || h.wallet == nil {
+		return
+	}
+	positions, err := h.store.ListOpenPositions()
+	if err != nil {
+		return
+	}
+	now := time.Now().UnixNano()
+	for _, pos := range positions {
+		mark := h.liveMarkPrice(pos.Pair)
+		if mark == nil || mark.Sign() <= 0 {
+			continue
+		}
+		notional := new(big.Float).Mul(mark, pos.Quantity)
+		rate := fundingRate(pos.Pair)
+		sideSign := big.NewFloat(1)
+		if pos.Side == "long" { sideSign = big.NewFloat(-1) }
+		funding := new(big.Float).Mul(notional, rate)
+		funding.Mul(funding, sideSign)
+		quote := quoteAsset(pos.Pair)
+		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, Delta: funding}
+		txns := []*wallet.Transaction{
+			{ID: "ffund_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, Type: wallet.FuturesFunding, Amount: new(big.Float).Copy(funding), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
+		}
+		if err := h.wallet.Settle([]wallet.SettleOp{op}, txns); err != nil {
+			continue
+		}
+		pos.Margin = new(big.Float).Add(pos.Margin, funding)
+		pos.MarkPrice = copyF(mark)
+		pos.UpdatedAt = now
+		_ = h.store.SavePosition(pos)
+	}
 }
 
 func (h *FuturesHandler) liveMarkPrice(pair string) *big.Float {
@@ -662,11 +929,11 @@ func quoteAsset(pair string) string {
 }
 
 func calcFuturesPnL(side string, entry, mark, qty *big.Float, leverage int, margin *big.Float) (*big.Float, *big.Float) {
-	// PnL = (mark - entry) * qty * leverage for long, inverse for short.
+	// PnL is the notional change: (mark - entry) * qty. Leverage is already
+	// reflected in the margin size, so we do not multiply by it again.
 	diff := new(big.Float).Sub(mark, entry)
 	if side == "short" { diff.Neg(diff) }
 	pnl := new(big.Float).Mul(diff, qty)
-	pnl.Mul(pnl, big.NewFloat(float64(leverage)))
 	pnlPct := new(big.Float)
 	if margin != nil && margin.Sign() != 0 {
 		pnlPct.Quo(pnl, margin)
@@ -699,15 +966,63 @@ func calcLiqPrice(side string, entry *big.Float, leverage int) *big.Float {
 	return new(big.Float).Mul(entry, factor)
 }
 
+// netPosition merges a new order with an existing open position in the same
+// pair. Same-side orders increase the position; opposite-side orders close the
+// existing position and open a new one with the net size (one-way mode).
+func (h *FuturesHandler) netPosition(userID, pair string) *FuturesPosition {
+	if h.store == nil {
+		return nil
+	}
+	positions, err := h.store.ListPositions(userID)
+	if err != nil {
+		return nil
+	}
+	for _, p := range positions {
+		if p.Status == "open" && p.Pair == pair {
+			return p
+		}
+	}
+	return nil
+}
+
+// mergeSameSidePosition increases the size of an existing position at the
+// weighted average entry price and recalculates liquidation price.
+func (h *FuturesHandler) mergeSameSidePosition(pos *FuturesPosition, entry, qty, margin *big.Float, leverage int) {
+	oldNotional := new(big.Float).Mul(pos.EntryPrice, pos.Quantity)
+	addNotional := new(big.Float).Mul(entry, qty)
+	totalQty := new(big.Float).Add(pos.Quantity, qty)
+	newEntry := new(big.Float).Add(oldNotional, addNotional)
+	if totalQty.Sign() > 0 {
+		newEntry.Quo(newEntry, totalQty)
+	}
+	pos.EntryPrice = newEntry
+	pos.Quantity = totalQty
+	pos.Margin = new(big.Float).Add(pos.Margin, margin)
+	pos.Leverage = leverage
+	pos.LiqPrice = calcLiqPrice(pos.Side, pos.EntryPrice, pos.Leverage)
+	pos.UpdatedAt = time.Now().UnixNano()
+}
+
 // isLiquidated returns true when the position's margin is exhausted at the
-// current mark price (maintenance margin = 0.5%).
-func (h *FuturesHandler) isLiquidated(side string, mark, entry, qty, margin *big.Float) bool {
-	if margin == nil || margin.Sign() <= 0 {
+// current mark price. Isolated positions use only their allocated margin;
+// cross margin positions can use the entire wallet balance in the quote asset.
+func (h *FuturesHandler) isLiquidated(pos *FuturesPosition, mark *big.Float) bool {
+	if pos.Margin == nil || pos.Margin.Sign() <= 0 {
 		return true
 	}
-	pnl, _ := calcFuturesPnL(side, entry, mark, qty, 1, margin)
-	remaining := new(big.Float).Add(margin, pnl)
-	mm := new(big.Float).Mul(margin, big.NewFloat(0.005))
+	pnl, _ := calcFuturesPnL(pos.Side, pos.EntryPrice, mark, pos.Quantity, pos.Leverage, pos.Margin)
+	remaining := new(big.Float).Add(pos.Margin, pnl)
+	if pos.MarginMode == "cross" && h.wallet != nil {
+		quote := quoteAsset(pos.Pair)
+		if w, err := h.wallet.GetBalance(pos.UserID, quote); err == nil && w != nil {
+			available := new(big.Float).Sub(w.Balance, w.Locked)
+			// For cross margin the locked amount of this position is already
+			// part of w.Locked, so add it back to avoid double counting.
+			available.Add(available, pos.Margin)
+			remaining.Add(remaining, available)
+		}
+	}
+	mm := new(big.Float).Mul(pos.Margin, big.NewFloat(0.005))
 	return remaining.Cmp(mm) <= 0
 }
 
@@ -725,6 +1040,8 @@ func positionToJSON(p *FuturesPosition, mark, pnl, pnlPct *big.Float) gin.H {
 		"pnl":         safeFloatStr(pnl),
 		"pnl_pct":     safeFloatStr(pnlPct),
 		"liq_price":   safeFloatStr(p.LiqPrice),
+		"tp_price":    safeFloatStr(p.TPPrice),
+		"sl_price":    safeFloatStr(p.SLPrice),
 		"status":      p.Status,
 		"created_at":  p.CreatedAt,
 		"updated_at":  p.UpdatedAt,

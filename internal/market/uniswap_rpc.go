@@ -13,6 +13,7 @@ import (
 // Uniswap V3 contract addresses on Ethereum mainnet.
 const (
 	UniV3QuoterV1 = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
+	UniV3SwapRouter = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
 )
 
 // UniV3PoolMeta maps a display pair to on-chain metadata.
@@ -162,6 +163,26 @@ type QuoteSwapResult struct {
 	FeeTier     int
 }
 
+// SwapTxRequest is the input for building an unsigned Uniswap V3 swap tx.
+type SwapTxRequest struct {
+	Pair            string
+	TokenIn         string
+	TokenOut        string
+	AmountIn        *big.Float
+	AmountOutMin    *big.Float // optional slippage protection; 0 = no protection
+	Recipient       string     // receiver of tokenOut
+	Deadline        int64      // unix seconds; 0 = 20 min from now
+}
+
+// SwapTxResult contains the unsigned transaction payload ready for signing.
+type SwapTxResult struct {
+	To       string
+	Data     string
+	Value    string
+	GasLimit uint64
+	Router   string
+}
+
 // QuoteExactInputSingle fetches a real Uniswap V3 quote for an exact-input swap.
 func (u *UniswapRPCProvider) QuoteExactInputSingle(req QuoteSwapRequest) (*QuoteSwapResult, error) {
 	meta, ok := UniV3Pools[req.Pair]
@@ -208,6 +229,61 @@ func (u *UniswapRPCProvider) QuoteExactInputSingle(req QuoteSwapRequest) (*Quote
 		ExecutionPrice: executionPrice,
 		Pool:           meta.Address,
 		FeeTier:        req.Fee,
+	}, nil
+}
+
+// BuildSwapTx builds an unsigned exactInputSingle swap transaction calldata.
+// The returned data can be passed to a wallet (e.g. MetaMask) for signing and
+// broadcast. No funds move until the user signs.
+func (u *UniswapRPCProvider) BuildSwapTx(req SwapTxRequest) (*SwapTxResult, error) {
+	meta, ok := UniV3Pools[req.Pair]
+	if !ok {
+		return nil, fmt.Errorf("unsupported pair: %s", req.Pair)
+	}
+	tokenIn, ok1 := uniTokenAddresses[req.TokenIn]
+	tokenOut, ok2 := uniTokenAddresses[req.TokenOut]
+	if !ok1 || !ok2 {
+		return nil, fmt.Errorf("unknown token: %s/%s", req.TokenIn, req.TokenOut)
+	}
+	decimalsIn := meta.Decimals0
+	if meta.Token0 != req.TokenIn {
+		decimalsIn = meta.Decimals1
+	}
+	amountInWei := floatToWei(req.AmountIn, decimalsIn)
+
+	amountOutMin := big.NewInt(0)
+	if req.AmountOutMin != nil && req.AmountOutMin.Sign() > 0 {
+		amountOutMin, _ = req.AmountOutMin.Int(nil)
+	}
+
+	deadline := req.Deadline
+	if deadline == 0 {
+		deadline = time.Now().Add(20 * time.Minute).Unix()
+	}
+
+	recipient := req.Recipient
+	if recipient == "" {
+		recipient = "0x0000000000000000000000000000000000000000"
+	}
+
+	// exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
+	selector := "0x04e45aaf"
+	data := selector +
+		padAddress(tokenIn) +
+		padAddress(tokenOut) +
+		fmt.Sprintf("%064x", meta.Fee) +
+		padAddress(recipient) +
+		encodeUint256(big.NewInt(deadline)) +
+		encodeUint256(amountInWei) +
+		encodeUint256(amountOutMin) +
+		encodeUint256(big.NewInt(0)) // sqrtPriceLimitX96
+
+	return &SwapTxResult{
+		To:       UniV3SwapRouter,
+		Data:     "0x" + data,
+		Value:    "0x0",
+		GasLimit: 250000,
+		Router:   UniV3SwapRouter,
 	}, nil
 }
 

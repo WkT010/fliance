@@ -113,9 +113,10 @@ func (r *Router) Setup() *gin.Engine {
 	prot.POST("/futures/positions/:id/liquidate", r.futuresH.LiquidatePosition)
 	prot.GET("/futures/orders", r.futuresH.ListOrders)
 	prot.POST("/futures/orders", r.futuresH.CreateOrder)
+	prot.DELETE("/futures/orders/:id", r.futuresH.CancelOrder)
 
 	// Market data — all use *pair catch-all to support BTC/USDT format
-	api.GET("/tickers/24h", r.oh.ListTickers)
+	api.GET("/tickers/24h", r.ph.GetAllTickers)
 	api.GET("/tickers", r.ph.GetAllTickers)
 	api.GET("/ticker/*pair", r.ph.GetTicker)
 	api.GET("/orderbook/*pair", r.oh.GetOrderbook)
@@ -124,8 +125,9 @@ func (r *Router) Setup() *gin.Engine {
 	api.GET("/price/uniswap/*pair", r.ph.GetUniswapTicker)
 	api.GET("/price/compare/*pair", r.ph.GetPriceComparison)
 
-	// AMM swap (public quote).
+	// AMM swap (public quote + unsigned tx builder).
 	api.POST("/swap/quote", r.ph.QuoteSwap)
+	api.POST("/swap/build", r.ph.BuildSwap)
 
 	// Admin
 	admin := api.Group("/admin")
