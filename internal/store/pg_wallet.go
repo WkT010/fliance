@@ -50,6 +50,16 @@ func (s *PGWalletStore) GetWallets(userID string) ([]*wallet.Wallet, error) {
 	return wallets, nil
 }
 
+func (s *PGWalletStore) SaveWallet(w *wallet.Wallet) error {
+	if w.Balance == nil { w.Balance = big.NewFloat(0) }
+	if w.Locked == nil { w.Locked = big.NewFloat(0) }
+	_, err := s.db.Exec(
+		`INSERT INTO wallets (id,user_id,asset,balance,locked,address,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		 ON CONFLICT (user_id, asset) DO NOTHING`,
+		w.ID, w.UserID, w.Asset, w.Balance.Text('f', 18), w.Locked.Text('f', 18), w.Address, w.CreatedAt, w.UpdatedAt)
+	return err
+}
+
 func (s *PGWalletStore) UpdateBalance(id string, delta *big.Float) error {
 	_, err := s.db.Exec(`UPDATE wallets SET balance = balance + $1, updated_at = $2 WHERE id=$3`,
 		delta.Text('f', 18), time.Now().UnixNano(), id)

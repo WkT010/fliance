@@ -28,11 +28,28 @@ type AlchemyMultiChain struct {
 
 func NewAlchemyMultiChain(apiKey string) *AlchemyMultiChain {
 	amc := &AlchemyMultiChain{apiKey: apiKey, client: &http.Client{Timeout: 15 * time.Second}, Chains: make(map[string]*ChainConfig), conns: make(map[string]*AlchemyWSConn)}
+	// When no API key is provided, fall back to public RPC endpoints so the
+	// product can still fetch real on-chain prices/quotes in dev/test.
+	ethRPC, ethWS := fmt.Sprintf("https://eth-mainnet.g.alchemy.com/v2/%s", apiKey), fmt.Sprintf("wss://eth-mainnet.g.alchemy.com/v2/%s", apiKey)
+	polygonRPC, polygonWS := fmt.Sprintf("https://polygon-mainnet.g.alchemy.com/v2/%s", apiKey), fmt.Sprintf("wss://polygon-mainnet.g.alchemy.com/v2/%s", apiKey)
+	arbRPC, arbWS := fmt.Sprintf("https://arb-mainnet.g.alchemy.com/v2/%s", apiKey), fmt.Sprintf("wss://arb-mainnet.g.alchemy.com/v2/%s", apiKey)
+	opRPC, opWS := fmt.Sprintf("https://opt-mainnet.g.alchemy.com/v2/%s", apiKey), fmt.Sprintf("wss://opt-mainnet.g.alchemy.com/v2/%s", apiKey)
+	if apiKey == "" {
+		// Public RPC fallbacks for dev/test. Production should set ALCHEMY_API_KEY.
+		ethRPC = "https://ethereum-rpc.publicnode.com"
+		ethWS = ""
+		polygonRPC = "https://polygon-rpc.com"
+		polygonWS = ""
+		arbRPC = "https://arb1.arbitrum.io/rpc"
+		arbWS = ""
+		opRPC = "https://mainnet.optimism.io"
+		opWS = ""
+	}
 	for _, c := range []*ChainConfig{
-		{"Ethereum", "ETH", fmt.Sprintf("https://eth-mainnet.g.alchemy.com/v2/%s", apiKey), fmt.Sprintf("wss://eth-mainnet.g.alchemy.com/v2/%s", apiKey), true, 18},
-		{"Polygon", "POLYGON", fmt.Sprintf("https://polygon-mainnet.g.alchemy.com/v2/%s", apiKey), fmt.Sprintf("wss://polygon-mainnet.g.alchemy.com/v2/%s", apiKey), true, 18},
-		{"Arbitrum", "ARB", fmt.Sprintf("https://arb-mainnet.g.alchemy.com/v2/%s", apiKey), fmt.Sprintf("wss://arb-mainnet.g.alchemy.com/v2/%s", apiKey), true, 18},
-		{"Optimism", "OP", fmt.Sprintf("https://opt-mainnet.g.alchemy.com/v2/%s", apiKey), fmt.Sprintf("wss://opt-mainnet.g.alchemy.com/v2/%s", apiKey), true, 18},
+		{"Ethereum", "ETH", ethRPC, ethWS, true, 18},
+		{"Polygon", "POLYGON", polygonRPC, polygonWS, true, 18},
+		{"Arbitrum", "ARB", arbRPC, arbWS, true, 18},
+		{"Optimism", "OP", opRPC, opWS, true, 18},
 	} { amc.Chains[c.Symbol] = c }
 	return amc
 }

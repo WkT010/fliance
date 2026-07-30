@@ -28,6 +28,8 @@ var (
 type WalletStore interface {
 	GetWallet(userID, asset string) (*Wallet, error)
 	GetWallets(userID string) ([]*Wallet, error)
+	// SaveWallet inserts a new wallet row.
+	SaveWallet(*Wallet) error
 	// UpdateBalance applies a signed delta to the wallet's balance.
 	UpdateBalance(id string, delta *big.Float) error
 	// LockBalance increases the locked amount by amt. It does NOT change the
@@ -215,6 +217,9 @@ func (s *Service) Deposit(userID, asset string, amount *big.Float, txHash string
 	if err != nil || w == nil {
 		// Auto-create wallet on first deposit (common for exchanges).
 		w = &Wallet{ID: "wal_" + uuid.NewString(), UserID: userID, Asset: asset, Balance: big.NewFloat(0), Locked: big.NewFloat(0), CreatedAt: now, UpdatedAt: now}
+		if err := s.store.SaveWallet(w); err != nil {
+			return fmt.Errorf("create wallet: %w", err)
+		}
 	}
 	if err := s.store.UpdateBalance(w.ID, amount); err != nil {
 		return fmt.Errorf("credit balance: %w", err)
@@ -481,6 +486,29 @@ func (s *Service) SettleFill(fillID, pair string, takerSide int, takerOrderID, m
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+// ReserveForOrder atomically checks available balance and locks amt for an
+// off-exchange position or AMM trade. Thin wrapper over WalletStore; returns
+// ErrInsufficientBalance if funds are unavailable. If there is no store, the
+// reservation succeeds in best-effort mode.
+func (s *Service) ReserveForOrder(userID, asset string, amt *big.Float) (*Wallet, error) {
+	if s.store == nil {
+		return &Wallet{UserID: userID, Asset: asset, Balance: big.NewFloat(0), Locked: big.NewFloat(0)}, nil
+	}
+	if amt == nil || amt.Sign() <= 0 {
+		return nil, ErrNegativeAmount
+	}
+	return s.store.ReserveForOrder(userID, asset, amt)
+}
+
+// Settle applies a batch of atomic wallet operations (unlock + balance delta)
+// and records ledger entries. Thin wrapper over WalletStore.
+func (s *Service) Settle(ops []SettleOp, txns []*Transaction) error {
+	if s.store == nil {
+		return nil
+	}
+	return s.store.Settle(ops, txns)
 }
 
 // ListTransactions returns the user's ledger entries (newest first).

@@ -102,11 +102,15 @@ func (r *Router) Setup() *gin.Engine {
 	prot.GET("/account/api-keys", r.accountH.ListAPIKeys)
 	prot.DELETE("/account/api-keys/:id", r.accountH.RevokeAPIKey)
 
-	// Futures simulator
+	// Futures trading (real prices, real wallet collateral)
 	api.GET("/futures/mark-price/*pair", r.futuresH.GetMarkPrice)
+	prot.GET("/futures/account/summary", r.futuresH.AccountSummary)
 	prot.GET("/futures/positions", r.futuresH.GetPositions)
 	prot.POST("/futures/positions", r.futuresH.OpenPosition)
 	prot.POST("/futures/positions/:id/close", r.futuresH.ClosePosition)
+	prot.POST("/futures/positions/:id/add-margin", r.futuresH.AddMargin)
+	prot.POST("/futures/positions/:id/reduce-margin", r.futuresH.ReduceMargin)
+	prot.POST("/futures/positions/:id/liquidate", r.futuresH.LiquidatePosition)
 	prot.GET("/futures/orders", r.futuresH.ListOrders)
 	prot.POST("/futures/orders", r.futuresH.CreateOrder)
 
@@ -119,6 +123,9 @@ func (r *Router) Setup() *gin.Engine {
 	api.GET("/klines/*pair", r.oh.GetCandles)
 	api.GET("/price/uniswap/*pair", r.ph.GetUniswapTicker)
 	api.GET("/price/compare/*pair", r.ph.GetPriceComparison)
+
+	// AMM swap (public quote).
+	api.POST("/swap/quote", r.ph.QuoteSwap)
 
 	// Admin
 	admin := api.Group("/admin")

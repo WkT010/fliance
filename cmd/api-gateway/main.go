@@ -140,7 +140,24 @@ func main() {
 	walletH := api.NewWalletHandler(withdrawalSvc, clients)
 
 	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey)
-	futuresH := api.NewFuturesHandler(priceH)
+	futuresH := api.NewFuturesHandler(priceH, walletSvc, nil)
+
+	// ── Futures liquidation monitor ──
+	futuresLiquidationCtx, futuresLiquidationCancel := context.WithCancel(context.Background())
+	defer futuresLiquidationCancel()
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-futuresLiquidationCtx.Done():
+				return
+			case <-t.C:
+				futuresH.CheckLiquidations()
+			}
+		}
+	}()
+
 	if cfg.AlchemyAPIKey != "" {
 		log.Println("[NEXA] Alchemy price feed: active")
 	} else {

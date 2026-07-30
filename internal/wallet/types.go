@@ -5,12 +5,16 @@ import "math/big"
 type TxType int8
 
 const (
-	Deposit    TxType = 1
-	Withdrawal TxType = 2
-	Transfer   TxType = 3
-	TradeBuy   TxType = 4
-	TradeSell  TxType = 5
-	Fee        TxType = 6
+	Deposit           TxType = 1
+	Withdrawal        TxType = 2
+	Transfer          TxType = 3
+	TradeBuy          TxType = 4
+	TradeSell         TxType = 5
+	Fee               TxType = 6
+	FuturesMargin     TxType = 7
+	FuturesPnl        TxType = 8
+	FuturesLiquidation TxType = 9
+	FuturesFunding    TxType = 10
 )
 
 func (t TxType) String() string {
@@ -27,6 +31,14 @@ func (t TxType) String() string {
 		return "trade_sell"
 	case Fee:
 		return "fee"
+	case FuturesMargin:
+		return "futures_margin"
+	case FuturesPnl:
+		return "futures_pnl"
+	case FuturesLiquidation:
+		return "futures_liquidation"
+	case FuturesFunding:
+		return "futures_funding"
 	default:
 		return "unknown"
 	}
