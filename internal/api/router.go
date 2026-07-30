@@ -104,10 +104,12 @@ func (r *Router) Setup() *gin.Engine {
 
 	// Futures trading (real prices, real wallet collateral)
 	api.GET("/futures/mark-price/*pair", r.futuresH.GetMarkPrice)
+	prot.GET("/futures/funding-history/*pair", r.futuresH.GetFundingHistory)
 	prot.GET("/futures/account/summary", r.futuresH.AccountSummary)
 	prot.GET("/futures/positions", r.futuresH.GetPositions)
 	prot.POST("/futures/positions", r.futuresH.OpenPosition)
 	prot.POST("/futures/positions/:id/close", r.futuresH.ClosePosition)
+	prot.POST("/futures/positions/:id/close-partial", r.futuresH.ClosePositionPartial)
 	prot.POST("/futures/positions/:id/add-margin", r.futuresH.AddMargin)
 	prot.POST("/futures/positions/:id/reduce-margin", r.futuresH.ReduceMargin)
 	prot.POST("/futures/positions/:id/liquidate", r.futuresH.LiquidatePosition)

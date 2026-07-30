@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/common/Card';
@@ -26,6 +26,26 @@ export function MarketsPage() {
   };
 
   usePolling(load, 5000);
+
+  const { gainers, losers } = useMemo(() => {
+    const sorted = [...tickers].filter((t) => t.change_pct_24h).sort((a, b) => Number(b.change_pct_24h) - Number(a.change_pct_24h));
+    return { gainers: sorted.slice(0, 3), losers: sorted.slice(-3).reverse() };
+  }, [tickers]);
+
+  const MoverItem = ({ t }: { t: Ticker }) => (
+    <Link
+      to={`/?pair=${encodeURIComponent(t.pair)}`}
+      className="flex items-center justify-between rounded border border-nexa-700/50 bg-nexa-900/50 p-2 transition-colors hover:bg-nexa-800/50"
+    >
+      <div>
+        <div className="text-sm font-medium text-nexa-100">{t.pair}</div>
+        <div className="font-mono text-xs text-nexa-300">{formatPrice(t.last, 2)}</div>
+      </div>
+      <div className={cls('font-mono text-sm font-medium', changeColorClass(t.change_pct_24h))}>
+        {`${Number(t.change_pct_24h) > 0 ? '+' : ''}${formatPrice(t.change_pct_24h, 2)}%`}
+      </div>
+    </Link>
+  );
 
   return (
     <Layout>
@@ -59,24 +79,42 @@ export function MarketsPage() {
             </table>
           </div>
         </Card>
-        <Card title="On-Chain Price Monitor">
-          <div className="space-y-3 p-2">
-            <p className="text-xs text-nexa-400">Internal ticker vs Uniswap V3 subgraph</p>
-            {Object.entries(compare).map(([pair, c]) => (
-              <div key={pair} className="rounded border border-nexa-700 bg-nexa-900 p-3">
-                <div className="mb-2 text-sm font-medium text-nexa-100">{pair}</div>
-                <div className="flex justify-between text-xs">
-                  <span className="text-nexa-400">Internal</span>
-                  <span className="font-mono text-nexa-100">{c.internal.available ? formatPrice(c.internal.last, 4) : 'N/A'}</span>
+        <div className="flex flex-col gap-4">
+          <Card title="On-Chain Price Monitor">
+            <div className="space-y-3 p-2">
+              <p className="text-xs text-nexa-400">Internal ticker vs Uniswap V3 subgraph</p>
+              {Object.entries(compare).map(([pair, c]) => (
+                <div key={pair} className="rounded border border-nexa-700 bg-nexa-900 p-3">
+                  <div className="mb-2 text-sm font-medium text-nexa-100">{pair}</div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-nexa-400">Internal</span>
+                    <span className="font-mono text-nexa-100">{c.internal.available ? formatPrice(c.internal.last, 4) : 'N/A'}</span>
+                  </div>
+                  <div className="flex justify-between text-xs">
+                    <span className="text-nexa-400">Uniswap</span>
+                    <span className="font-mono text-nexa-100">{c.uniswap.available ? formatPrice(c.uniswap.last, 4) : c.uniswap.error || 'N/A'}</span>
+                  </div>
                 </div>
-                <div className="flex justify-between text-xs">
-                  <span className="text-nexa-400">Uniswap</span>
-                  <span className="font-mono text-nexa-100">{c.uniswap.available ? formatPrice(c.uniswap.last, 4) : c.uniswap.error || 'N/A'}</span>
+              ))}
+            </div>
+          </Card>
+          <Card title="Top Movers (24h)">
+            <div className="space-y-4 p-2">
+              <div>
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-up">Top Gainers</div>
+                <div className="space-y-2">
+                  {gainers.length ? gainers.map((t) => <MoverItem key={t.pair} t={t} />) : <div className="text-sm text-nexa-500">No data</div>}
                 </div>
               </div>
-            ))}
-          </div>
-        </Card>
+              <div>
+                <div className="mb-2 text-xs font-medium uppercase tracking-wide text-down">Top Losers</div>
+                <div className="space-y-2">
+                  {losers.length ? losers.map((t) => <MoverItem key={t.pair} t={t} />) : <div className="text-sm text-nexa-500">No data</div>}
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
       </div>
     </Layout>
   );

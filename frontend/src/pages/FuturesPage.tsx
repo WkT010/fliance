@@ -12,15 +12,21 @@ import { Button } from '@/components/common/Button';
 import { Input } from '@/components/common/Input';
 import { Card } from '@/components/common/Card';
 import { Badge } from '@/components/common/Badge';
-import { formatPrice, formatQty, cls, changeColorClass } from '@/utils/format';
+import { formatPrice, formatQty, formatTime, cls, changeColorClass } from '@/utils/format';
 import {
   getMarkPrice,
   getFuturesPositions,
   openFuturesPosition,
   placeFuturesOrder,
   closeFuturesPosition,
+  cancelFuturesOrder,
+  getFuturesOrders,
+  getFuturesAccountSummary,
+  addMargin,
+  reduceMargin,
+  getFundingHistory,
 } from '@/api/futures';
-import type { FuturesPosition, MarkPrice, FuturesSide, MarginMode } from '@/types';
+import type { FuturesPosition, FuturesOrder, MarkPrice, FuturesSide, MarginMode } from '@/types';
 
 function normalizeTs(ts: number): number {
   if (ts > 1e15) return ts / 1e6;
@@ -49,7 +55,14 @@ export function FuturesPage() {
   const [submitting, setSubmitting] = useState(false);
   const [markPrice, setMarkPrice] = useState<MarkPrice | null>(null);
   const [positions, setPositions] = useState<FuturesPosition[]>([]);
+  const [orders, setOrders] = useState<FuturesOrder[]>([]);
+  const [accountSummary, setAccountSummary] = useState<Awaited<ReturnType<typeof getFuturesAccountSummary>> | null>(null);
+  const [panelTab, setPanelTab] = useState<'positions' | 'orders'>('positions');
   const [positionTab, setPositionTab] = useState<'open' | 'closed'>('open');
+  const [marginEditId, setMarginEditId] = useState<string | null>(null);
+  const [marginAmount, setMarginAmount] = useState('');
+  const [marginLoading, setMarginLoading] = useState(false);
+  const [fundingHistory, setFundingHistory] = useState<{ time: number; funding_rate: string; mark_price: string }[]>([]);
   const [countdown, setCountdown] = useState('--:--');
 
   useMarket(pair);
@@ -61,18 +74,32 @@ export function FuturesPage() {
 
   const loadData = async () => {
     try {
-      const [mp, pos] = await Promise.all([
+      const [mp, pos, summary, ord] = await Promise.all([
         getMarkPrice(pair),
         getFuturesPositions(),
+        getFuturesAccountSummary(),
+        getFuturesOrders(),
       ]);
       setMarkPrice(mp);
       setPositions(pos);
+      setAccountSummary(summary);
+      setOrders(ord);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const loadFundingHistory = async () => {
+    try {
+      const data = await getFundingHistory(pair);
+      setFundingHistory(data.history);
     } catch {
       /* ignore */
     }
   };
 
   usePolling(loadData, 3000, [pair]);
+  usePolling(loadFundingHistory, 10000, [pair]);
 
   useEffect(() => {
     if (!markPrice?.next_funding) return;
@@ -149,6 +176,50 @@ export function FuturesPage() {
     }
   };
 
+  const handleCancelOrder = async (id: string) => {
+    try {
+      await cancelFuturesOrder(id);
+      await loadData();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const toggleMarginEdit = (id: string) => {
+    setMarginEditId((current) => (current === id ? null : id));
+    setMarginAmount('');
+  };
+
+  const handleAddMargin = async (id: string) => {
+    if (!marginAmount || parseFloat(marginAmount) <= 0) return;
+    setMarginLoading(true);
+    try {
+      await addMargin(id, marginAmount);
+      setMarginAmount('');
+      setMarginEditId(null);
+      await loadData();
+    } catch {
+      /* ignore */
+    } finally {
+      setMarginLoading(false);
+    }
+  };
+
+  const handleReduceMargin = async (id: string) => {
+    if (!marginAmount || parseFloat(marginAmount) <= 0) return;
+    setMarginLoading(true);
+    try {
+      await reduceMargin(id, marginAmount);
+      setMarginAmount('');
+      setMarginEditId(null);
+      await loadData();
+    } catch {
+      /* ignore */
+    } finally {
+      setMarginLoading(false);
+    }
+  };
+
   const openPositions = positions.filter((p) => p.status === 'open');
   const closedPositions = positions.filter((p) => p.status === 'closed');
 
@@ -189,12 +260,40 @@ export function FuturesPage() {
 
         <div className="grid flex-1 grid-cols-1 gap-2 lg:grid-cols-12">
           <div className="lg:col-span-3 flex flex-col gap-2">
-            <div className="h-1/2 min-h-[200px]">
+            <div className="flex-[2] min-h-[180px]">
               <OrderbookPanel pair={pair} compact />
             </div>
-            <div className="h-1/2 min-h-[200px]">
+            <div className="flex-[2] min-h-[180px]">
               <RecentTrades pair={pair} />
             </div>
+            <Card className="flex-1 min-h-[160px] flex flex-col" title="Funding History">
+              <div className="flex-1 overflow-auto p-2">
+                {fundingHistory.length === 0 ? (
+                  <div className="py-6 text-center text-nexa-500 text-xs">No funding history</div>
+                ) : (
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-nexa-800/50 text-nexa-400">
+                      <tr>
+                        <th className="py-1 text-left font-medium">Time</th>
+                        <th className="py-1 text-right font-medium">Rate</th>
+                        <th className="py-1 text-right font-medium">Mark</th>
+                      </tr>
+                    </thead>
+                    <tbody className="text-nexa-300">
+                      {fundingHistory.map((item, idx) => (
+                        <tr key={idx} className="border-b border-nexa-700/50 last:border-0">
+                          <td className="py-1 font-mono">{formatTime(item.time)}</td>
+                          <td className={cls('py-1 text-right font-mono', changeColorClass(item.funding_rate))}>
+                            {item.funding_rate ? `${Number(item.funding_rate) >= 0 ? '+' : ''}${(Number(item.funding_rate) * 100).toFixed(4)}%` : '--'}
+                          </td>
+                          <td className="py-1 text-right font-mono">{formatPrice(item.mark_price, 2)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </Card>
           </div>
 
           <div className="lg:col-span-6 flex min-h-[300px] flex-col">
@@ -202,6 +301,33 @@ export function FuturesPage() {
           </div>
 
           <div className="lg:col-span-3 flex flex-col gap-2">
+            <Card title="Futures Account">
+              <div className="grid grid-cols-2 gap-2 p-3 text-xs">
+                <div>
+                  <span className="block text-nexa-500">Wallet Balance</span>
+                  <span className="font-mono text-nexa-100">{formatPrice(accountSummary?.wallet_balance, 2)} USDT</span>
+                </div>
+                <div>
+                  <span className="block text-nexa-500">Wallet Locked</span>
+                  <span className="font-mono text-nexa-100">{formatPrice(accountSummary?.wallet_locked, 2)} USDT</span>
+                </div>
+                <div>
+                  <span className="block text-nexa-500">Total Margin</span>
+                  <span className="font-mono text-nexa-100">{formatPrice(accountSummary?.total_margin, 2)} USDT</span>
+                </div>
+                <div>
+                  <span className="block text-nexa-500">Unrealized PnL</span>
+                  <span className={cls('font-mono', changeColorClass(accountSummary?.total_pnl))}>
+                    {formatPrice(accountSummary?.total_pnl, 2)} USDT
+                  </span>
+                </div>
+                <div className="col-span-2">
+                  <span className="block text-nexa-500">Open Positions</span>
+                  <span className="font-mono text-nexa-100">{accountSummary?.open_positions ?? '--'}</span>
+                </div>
+              </div>
+            </Card>
+
             <Card title="Futures Order">
               <form onSubmit={handleSubmit} className="space-y-3 p-3">
                 <div className="grid grid-cols-2 gap-2">
@@ -355,88 +481,180 @@ export function FuturesPage() {
               </form>
             </Card>
 
-            <Card className="flex min-h-[240px] flex-1 flex-col" title="Positions">
+            <Card className="flex min-h-[240px] flex-1 flex-col" title="Positions & Orders">
               <div className="flex border-b border-nexa-700">
                 <button
                   className={cls(
                     'flex-1 px-3 py-1.5 text-xs font-medium transition-colors',
-                    positionTab === 'open' ? 'border-b-2 border-accent text-nexa-100' : 'text-nexa-400 hover:text-nexa-300'
+                    panelTab === 'positions' ? 'border-b-2 border-accent text-nexa-100' : 'text-nexa-400 hover:text-nexa-300'
                   )}
-                  onClick={() => setPositionTab('open')}
+                  onClick={() => setPanelTab('positions')}
                 >
-                  Open ({openPositions.length})
+                  Positions
                 </button>
                 <button
                   className={cls(
                     'flex-1 px-3 py-1.5 text-xs font-medium transition-colors',
-                    positionTab === 'closed' ? 'border-b-2 border-accent text-nexa-100' : 'text-nexa-400 hover:text-nexa-300'
+                    panelTab === 'orders' ? 'border-b-2 border-accent text-nexa-100' : 'text-nexa-400 hover:text-nexa-300'
                   )}
-                  onClick={() => setPositionTab('closed')}
+                  onClick={() => setPanelTab('orders')}
                 >
-                  Closed ({closedPositions.length})
+                  Orders ({orders.length})
                 </button>
               </div>
 
               <div className="flex-1 overflow-auto p-2">
-                {positionTab === 'open' && (
+                {panelTab === 'positions' && (
                   <div className="space-y-2">
-                    {openPositions.map((p) => (
-                      <div key={p.id} className="rounded border border-nexa-700 bg-nexa-900 p-2 text-xs">
-                        <div className="mb-2 flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-nexa-100">{p.pair}</span>
-                            <Badge color={p.side === 'long' ? 'up' : 'down'}>{p.side.toUpperCase()}</Badge>
-                            <span className="text-nexa-400">{p.leverage}x</span>
+                    <div className="flex border-b border-nexa-700/50">
+                      <button
+                        className={cls(
+                          'flex-1 px-2 py-1 text-xs font-medium transition-colors',
+                          positionTab === 'open' ? 'text-nexa-100' : 'text-nexa-500 hover:text-nexa-300'
+                        )}
+                        onClick={() => setPositionTab('open')}
+                      >
+                        Open ({openPositions.length})
+                      </button>
+                      <button
+                        className={cls(
+                          'flex-1 px-2 py-1 text-xs font-medium transition-colors',
+                          positionTab === 'closed' ? 'text-nexa-100' : 'text-nexa-500 hover:text-nexa-300'
+                        )}
+                        onClick={() => setPositionTab('closed')}
+                      >
+                        Closed ({closedPositions.length})
+                      </button>
+                    </div>
+
+                    {positionTab === 'open' && (
+                      <div className="space-y-2">
+                        {openPositions.map((p) => (
+                          <div key={p.id} className="rounded border border-nexa-700 bg-nexa-900 p-2 text-xs">
+                            <div className="mb-2 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-nexa-100">{p.pair}</span>
+                                <Badge color={p.side === 'long' ? 'up' : 'down'}>{p.side.toUpperCase()}</Badge>
+                                <span className="text-nexa-400">{p.leverage}x</span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <Button size="sm" variant="ghost" onClick={() => toggleMarginEdit(p.id)}>
+                                  Margin
+                                </Button>
+                                <Button size="sm" variant="secondary" onClick={() => handleClose(p.id)}>
+                                  Close
+                                </Button>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-y-1 text-nexa-300">
+                              <div>Size: <span className="font-mono text-nexa-100">{formatQty(p.quantity, 6)}</span></div>
+                              <div>Entry: <span className="font-mono text-nexa-100">{formatPrice(p.entry_price, 2)}</span></div>
+                              <div>Mark: <span className="font-mono text-nexa-100">{formatPrice(p.mark_price, 2)}</span></div>
+                              <div>Liq: <span className="font-mono text-nexa-100">{formatPrice(p.liq_price, 2)}</span></div>
+                              <div className="col-span-2">
+                                PnL:{' '}
+                                <span className={cls('font-mono', changeColorClass(p.pnl))}>
+                                  {formatPrice(p.pnl, 2)} ({Number(p.pnl_pct || 0) >= 0 ? '+' : ''}{formatPrice(p.pnl_pct, 2)}%)
+                                </span>
+                              </div>
+                            </div>
+                            {marginEditId === p.id && (
+                              <div className="mt-2 flex items-center gap-1 border-t border-nexa-700/50 pt-2">
+                                <Input
+                                  type="number"
+                                  step="0.01"
+                                  placeholder="Amount"
+                                  value={marginAmount}
+                                  onChange={(e) => setMarginAmount(e.target.value)}
+                                  className="px-2 py-1 text-xs"
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="success"
+                                  onClick={() => handleAddMargin(p.id)}
+                                  isLoading={marginLoading}
+                                  className="px-2 py-1 text-xs"
+                                >
+                                  Add
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="danger"
+                                  onClick={() => handleReduceMargin(p.id)}
+                                  isLoading={marginLoading}
+                                  className="px-2 py-1 text-xs"
+                                >
+                                  Reduce
+                                </Button>
+                              </div>
+                            )}
                           </div>
-                          <Button size="sm" variant="secondary" onClick={() => handleClose(p.id)}>
-                            Close
-                          </Button>
-                        </div>
-                        <div className="grid grid-cols-2 gap-y-1 text-nexa-300">
-                          <div>Size: <span className="font-mono text-nexa-100">{formatQty(p.quantity, 6)}</span></div>
-                          <div>Entry: <span className="font-mono text-nexa-100">{formatPrice(p.entry_price, 2)}</span></div>
-                          <div>Mark: <span className="font-mono text-nexa-100">{formatPrice(p.mark_price, 2)}</span></div>
-                          <div>Liq: <span className="font-mono text-nexa-100">{formatPrice(p.liq_price, 2)}</span></div>
-                          <div className="col-span-2">
-                            PnL:{' '}
-                            <span className={cls('font-mono', changeColorClass(p.pnl))}>
-                              {formatPrice(p.pnl, 2)} ({Number(p.pnl_pct || 0) >= 0 ? '+' : ''}{formatPrice(p.pnl_pct, 2)}%)
-                            </span>
-                          </div>
-                        </div>
+                        ))}
+                        {openPositions.length === 0 && (
+                          <div className="py-6 text-center text-nexa-500">No open positions</div>
+                        )}
                       </div>
-                    ))}
-                    {openPositions.length === 0 && (
-                      <div className="py-6 text-center text-nexa-500">No open positions</div>
+                    )}
+
+                    {positionTab === 'closed' && (
+                      <div className="space-y-2">
+                        {closedPositions.map((p) => (
+                          <div key={p.id} className="rounded border border-nexa-700 bg-nexa-900 p-2 text-xs">
+                            <div className="mb-2 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-nexa-100">{p.pair}</span>
+                                <Badge color={p.side === 'long' ? 'up' : 'down'}>{p.side.toUpperCase()}</Badge>
+                                <span className="text-nexa-400">{p.leverage}x</span>
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-y-1 text-nexa-300">
+                              <div>Size: <span className="font-mono text-nexa-100">{formatQty(p.quantity, 6)}</span></div>
+                              <div>Entry: <span className="font-mono text-nexa-100">{formatPrice(p.entry_price, 2)}</span></div>
+                              <div className="col-span-2">
+                                PnL:{' '}
+                                <span className={cls('font-mono', changeColorClass(p.pnl))}>
+                                  {formatPrice(p.pnl, 2)} ({Number(p.pnl_pct || 0) >= 0 ? '+' : ''}{formatPrice(p.pnl_pct, 2)}%)
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                        {closedPositions.length === 0 && (
+                          <div className="py-6 text-center text-nexa-500">No closed positions</div>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
 
-                {positionTab === 'closed' && (
+                {panelTab === 'orders' && (
                   <div className="space-y-2">
-                    {closedPositions.map((p) => (
-                      <div key={p.id} className="rounded border border-nexa-700 bg-nexa-900 p-2 text-xs">
+                    {orders.map((o) => (
+                      <div key={o.id} className="rounded border border-nexa-700 bg-nexa-900 p-2 text-xs">
                         <div className="mb-2 flex items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium text-nexa-100">{p.pair}</span>
-                            <Badge color={p.side === 'long' ? 'up' : 'down'}>{p.side.toUpperCase()}</Badge>
-                            <span className="text-nexa-400">{p.leverage}x</span>
+                            <span className="font-medium text-nexa-100">{o.pair}</span>
+                            <Badge color={o.side === 'buy' ? 'up' : 'down'}>{o.side.toUpperCase()}</Badge>
+                            <span className="text-nexa-400">{o.leverage}x</span>
                           </div>
+                          <Button size="sm" variant="secondary" onClick={() => handleCancelOrder(o.id)}>
+                            Cancel
+                          </Button>
                         </div>
                         <div className="grid grid-cols-2 gap-y-1 text-nexa-300">
-                          <div>Size: <span className="font-mono text-nexa-100">{formatQty(p.quantity, 6)}</span></div>
-                          <div>Entry: <span className="font-mono text-nexa-100">{formatPrice(p.entry_price, 2)}</span></div>
+                          <div>Type: <span className="font-mono text-nexa-100">{o.type.toUpperCase()}</span></div>
+                          <div>Price: <span className="font-mono text-nexa-100">{o.price ? formatPrice(o.price, 2) : 'Market'}</span></div>
+                          <div>Qty: <span className="font-mono text-nexa-100">{formatQty(o.quantity, 6)}</span></div>
+                          <div>TP: <span className="font-mono text-nexa-100">{o.tp_price ? formatPrice(o.tp_price, 2) : '--'}</span></div>
+                          <div>SL: <span className="font-mono text-nexa-100">{o.sl_price ? formatPrice(o.sl_price, 2) : '--'}</span></div>
                           <div className="col-span-2">
-                            PnL:{' '}
-                            <span className={cls('font-mono', changeColorClass(p.pnl))}>
-                              {formatPrice(p.pnl, 2)} ({Number(p.pnl_pct || 0) >= 0 ? '+' : ''}{formatPrice(p.pnl_pct, 2)}%)
-                            </span>
+                            Created: <span className="font-mono text-nexa-100">{formatTime(o.created_at)}</span>
                           </div>
                         </div>
                       </div>
                     ))}
-                    {closedPositions.length === 0 && (
-                      <div className="py-6 text-center text-nexa-500">No closed positions</div>
+                    {orders.length === 0 && (
+                      <div className="py-6 text-center text-nexa-500">No open orders</div>
                     )}
                   </div>
                 )}

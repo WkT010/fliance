@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Layout } from '@/components/Layout';
 import { ChartPanel } from '@/components/trading/ChartPanel';
@@ -12,13 +12,29 @@ import { useMarketStore } from '@/store/marketStore';
 import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { Select } from '@/components/common/Select';
 import { formatPrice, changeColorClass } from '@/utils/format';
+import { getBalances } from '@/api/wallet';
+import type { Balance } from '@/types';
 
 export function TradingPage() {
   const [params, setParams] = useSearchParams();
   const [pair, setPair] = useState(params.get('pair') || 'BTC/USDT');
   const [leftTab, setLeftTab] = useState<'orderbook' | 'depth'>('orderbook');
+  const [balances, setBalances] = useState<Balance[]>([]);
   useMarket(pair);
   const ticker = useMarketStore((s) => s.tickers[pair]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getBalances()
+      .then((b) => { if (!cancelled) setBalances(b); })
+      .catch(() => { /* ignore, fallback to default max notional */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  const maxNotional = useMemo(() => {
+    const usdt = balances.find((b) => b.asset === 'USDT');
+    return usdt ? Number(usdt.available) || 0 : 10000;
+  }, [balances]);
 
   const changePair = (p: string) => { setPair(p); setParams({ pair: p }); };
 
@@ -56,7 +72,7 @@ export function TradingPage() {
             <div className="flex-1"><ChartPanel pair={pair} /></div>
             <div className="h-48"><OrdersPanel pair={pair} /></div>
           </div>
-          <div className="lg:col-span-3"><OrderForm pair={pair} /></div>
+          <div className="lg:col-span-3"><OrderForm pair={pair} maxNotional={maxNotional} markPrice={ticker?.last} /></div>
         </div>
       </div>
     </Layout>

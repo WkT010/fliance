@@ -1,13 +1,19 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { placeOrder } from '@/api/order';
 import { Button } from '../common/Button';
 import { Input } from '../common/Input';
 import { Select } from '../common/Select';
 import { Badge } from '../common/Badge';
-import { cls } from '@/utils/format';
+import { cls, formatPrice } from '@/utils/format';
 import type { OrderSide, OrderType } from '@/types';
 
-export function OrderForm({ pair }: { pair: string }) {
+interface OrderFormProps {
+  pair: string;
+  maxNotional?: number;
+  markPrice?: number | string;
+}
+
+export function OrderForm({ pair, maxNotional = 10000, markPrice }: OrderFormProps) {
   const [side, setSide] = useState<OrderSide>('buy');
   const [type, setType] = useState<OrderType>('limit');
   const [price, setPrice] = useState('');
@@ -21,6 +27,25 @@ export function OrderForm({ pair }: { pair: string }) {
 
   const needsPrice = ['limit', 'post_only', 'stop_limit', 'iceberg'].includes(type);
   const needsStop = ['stop_loss', 'stop_limit'].includes(type);
+
+  const effectivePrice = useMemo(() => {
+    const entered = needsPrice ? Number(price) : 0;
+    const mark = Number(markPrice) || 0;
+    return entered > 0 ? entered : mark;
+  }, [needsPrice, price, markPrice]);
+
+  const notional = useMemo(() => {
+    const q = Number(quantity) || 0;
+    return effectivePrice > 0 ? effectivePrice * q : 0;
+  }, [effectivePrice, quantity]);
+
+  const setQtyFromPct = (pct: number) => {
+    if (effectivePrice <= 0 || maxNotional <= 0) return;
+    const value = (maxNotional * pct) / effectivePrice;
+    setQuantity(value > 0 ? value.toFixed(6) : '');
+  };
+
+  const setMaxQty = () => setQtyFromPct(1);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,7 +99,30 @@ export function OrderForm({ pair }: { pair: string }) {
           <Input label="SL Price" type="number" step="0.01" value={slPrice} onChange={(e) => setSlPrice(e.target.value)} />
         </>
       )}
-      <Input label="Quantity" type="number" step="0.000001" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
+      <div className="space-y-1">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-nexa-300">Quantity</label>
+          <button type="button" onClick={setMaxQty} className="text-xs font-medium text-accent hover:text-accent/80">Max</button>
+        </div>
+        <Input type="number" step="0.000001" value={quantity} onChange={(e) => setQuantity(e.target.value)} required />
+        <div className="grid grid-cols-4 gap-1">
+          {[0.25, 0.5, 0.75, 1].map((pct) => (
+            <button
+              key={pct}
+              type="button"
+              onClick={() => setQtyFromPct(pct)}
+              disabled={effectivePrice <= 0}
+              className="rounded bg-nexa-700 px-1 py-1 text-xs font-medium text-nexa-200 transition-colors hover:bg-nexa-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {pct * 100}%
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-xs text-nexa-400">
+        <span>Est. Notional</span>
+        <span className="font-mono text-nexa-200">{notional > 0 ? `${formatPrice(String(notional), 2)} USDT` : '--'}</span>
+      </div>
       <Button type="submit" variant={side === 'buy' ? 'success' : 'danger'} isLoading={loading} className="mt-auto">{side === 'buy' ? 'Buy' : 'Sell'} {pair.split('/')[0]}</Button>
       {status && <Badge color={status === 'Order placed' ? 'up' : 'down'}>{status}</Badge>}
     </form>

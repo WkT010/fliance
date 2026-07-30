@@ -80,3 +80,11 @@ export async function reduceMargin(id: string, amount: string): Promise<FuturesP
   const res = await api.post(`/futures/positions/${id}/reduce-margin`, { amount });
   return res.data.position;
 }
+
+export async function getFundingHistory(
+  pair: string,
+  limit = 24
+): Promise<{ pair: string; history: { time: number; funding_rate: string; mark_price: string }[] }> {
+  const res = await api.get(`/futures/funding-history/${encodeURIComponent(pair)}?limit=${limit}`);
+  return res.data;
+}

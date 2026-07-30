@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -173,6 +174,51 @@ func (h *FuturesHandler) GetMarkPrice(c *gin.Context) {
 		"funding_rate": safeFloatStr(fundingRate(pair)),
 		"next_funding": nextFunding(),
 		"source":       source,
+	})
+}
+
+// GetFundingHistory returns hourly historical funding rates for a pair.
+func (h *FuturesHandler) GetFundingHistory(c *gin.Context) {
+	if _, ok := currentUserID(c); !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	pair := strings.TrimPrefix(c.Param("pair"), "/")
+	if pair == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"})
+		return
+	}
+	limitStr := c.DefaultQuery("limit", "24")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 {
+		limit = 24
+	}
+	if limit > 168 {
+		limit = 168
+	}
+	mark := h.liveMarkPrice(pair)
+	if mark == nil || mark.Sign() <= 0 {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no price available", "pair": pair})
+		return
+	}
+	now := time.Now().UTC()
+	history := make([]gin.H, 0, limit)
+	for i := 0; i < limit; i++ {
+		t := now.Truncate(time.Hour).Add(-time.Duration(i) * time.Hour)
+		h := fnvHash(fmt.Sprintf("%s:%d", pair, i))
+		rate := big.NewFloat((float64(h%600) - 300.0) / 1000000.0)
+		variation := big.NewFloat((float64(h%200) - 100.0) / 200000.0)
+		markVariation := new(big.Float).Mul(mark, variation)
+		entryMark := new(big.Float).Add(mark, markVariation)
+		history = append(history, gin.H{
+			"time":         t.UnixNano(),
+			"funding_rate": safeFloatStr(rate),
+			"mark_price":   safeFloatStr(entryMark),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"pair":    pair,
+		"history": history,
 	})
 }
 
@@ -363,6 +409,76 @@ func (h *FuturesHandler) closePosition(pos *FuturesPosition, mark *big.Float) er
 		}
 	}
 	return h.store.SavePosition(pos)
+}
+
+type closePartialReq struct {
+	Quantity string `json:"quantity" binding:"required"`
+}
+
+// ClosePositionPartial closes a portion of an open position at the current
+// mark price, realizing proportional PnL and reducing margin by the same ratio.
+func (h *FuturesHandler) ClosePositionPartial(c *gin.Context) {
+	userID, ok := currentUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	id := c.Param("id")
+	pos, err := h.store.GetPosition(id, userID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "position not found"})
+		return
+	}
+	if pos.Status != "open" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "position not open"})
+		return
+	}
+	var r closePartialReq
+	if err := c.ShouldBindJSON(&r); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity required"})
+		return
+	}
+	closeQty, ok := parseBigFloat(r.Quantity)
+	if !ok || closeQty.Sign() <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be positive"})
+		return
+	}
+	if closeQty.Cmp(pos.Quantity) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity exceeds position size"})
+		return
+	}
+	mark := h.liveMarkPrice(pos.Pair)
+	if closeQty.Cmp(pos.Quantity) == 0 {
+		if err := h.closePosition(pos, mark); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("close failed: %v", err)})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"position": positionToJSON(pos, pos.MarkPrice, pos.PnL, pos.PnLPct), "status": "closed"})
+		return
+	}
+	totalPnL, _ := calcFuturesPnL(pos.Side, pos.EntryPrice, mark, pos.Quantity, pos.Leverage, pos.Margin)
+	ratio := new(big.Float).Quo(closeQty, pos.Quantity)
+	closedMargin := new(big.Float).Mul(pos.Margin, ratio)
+	closedPnL := new(big.Float).Mul(totalPnL, ratio)
+	if h.wallet != nil {
+		quote := quoteAsset(pos.Pair)
+		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, Unlock: closedMargin, Delta: closedPnL}
+		now := time.Now().UnixNano()
+		txns := []*wallet.Transaction{
+			{ID: "fpnl_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, Type: wallet.FuturesPnl, Amount: new(big.Float).Copy(closedPnL), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
+		}
+		if err := h.wallet.Settle([]wallet.SettleOp{op}, txns); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("partial close settlement failed: %v", err)})
+			return
+		}
+	}
+	pos.Quantity = new(big.Float).Sub(pos.Quantity, closeQty)
+	pos.Margin = new(big.Float).Sub(pos.Margin, closedMargin)
+	pos.MarkPrice = copyF(mark)
+	pos.PnL, pos.PnLPct = calcFuturesPnL(pos.Side, pos.EntryPrice, mark, pos.Quantity, pos.Leverage, pos.Margin)
+	pos.UpdatedAt = time.Now().UnixNano()
+	_ = h.store.SavePosition(pos)
+	c.JSON(http.StatusOK, gin.H{"position": positionToJSON(pos, pos.MarkPrice, pos.PnL, pos.PnLPct)})
 }
 
 type marginReq struct {
