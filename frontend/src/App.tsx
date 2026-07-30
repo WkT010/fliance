@@ -1,6 +1,7 @@
 import { Routes, Route } from 'react-router-dom';
 import { TradingPage } from '@/pages/TradingPage';
 import { MarketsPage } from '@/pages/MarketsPage';
+import { FuturesPage } from '@/pages/FuturesPage';
 import { WalletPage } from '@/pages/WalletPage';
 import { AccountPage } from '@/pages/AccountPage';
 import { SettingsPage } from '@/pages/SettingsPage';
@@ -25,6 +26,7 @@ export default function App() {
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/" element={<ProtectedRoute><TradingPage /></ProtectedRoute>} />
       <Route path="/markets" element={<ProtectedRoute><MarketsPage /></ProtectedRoute>} />
+      <Route path="/futures" element={<ProtectedRoute><FuturesPage /></ProtectedRoute>} />
       <Route path="/wallet" element={<ProtectedRoute><WalletPage /></ProtectedRoute>} />
       <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />

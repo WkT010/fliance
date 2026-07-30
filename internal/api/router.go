@@ -4,12 +4,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/WkT010/nexa-exchange/internal/auth"
 	"github.com/WkT010/nexa-exchange/internal/config"
 	"github.com/WkT010/nexa-exchange/internal/observability"
 )
@@ -18,13 +16,13 @@ type Router struct {
 	engine    *gin.Engine
 	config    *config.Config
 	oh        *OrderHandler
-	eh        *ExchangeHandler
 	authH     *AuthHandler
 	wh        *WSHandler
 	ph        *PriceHandler
 	walletH   *WalletHandler
 	accountH  *AccountHandler
 	adminH    *AdminHandler
+	futuresH  *FuturesHandler
 	authMW    gin.HandlerFunc
 	apiKeyMW  gin.HandlerFunc
 	health    *observability.HealthCollector
@@ -34,13 +32,13 @@ type Router struct {
 
 func NewRouter(
 	oh *OrderHandler,
-	eh *ExchangeHandler,
 	authH *AuthHandler,
 	wh *WSHandler,
 	ph *PriceHandler,
 	walletH *WalletHandler,
 	accountH *AccountHandler,
 	adminH *AdminHandler,
+	futuresH *FuturesHandler,
 	authMW gin.HandlerFunc,
 	apiKeyMW gin.HandlerFunc,
 	cfg *config.Config,
@@ -50,13 +48,13 @@ func NewRouter(
 		engine:    gin.New(),
 		config:    cfg,
 		oh:        oh,
-		eh:        eh,
 		authH:     authH,
 		wh:        wh,
 		ph:        ph,
 		walletH:   walletH,
 		accountH:  accountH,
 		adminH:    adminH,
+		futuresH:  futuresH,
 		authMW:    authMW,
 		apiKeyMW:  apiKeyMW,
 		health:    health,
@@ -103,6 +101,14 @@ func (r *Router) Setup() *gin.Engine {
 	prot.POST("/account/api-keys", r.accountH.CreateAPIKey)
 	prot.GET("/account/api-keys", r.accountH.ListAPIKeys)
 	prot.DELETE("/account/api-keys/:id", r.accountH.RevokeAPIKey)
+
+	// Futures simulator
+	api.GET("/futures/mark-price/*pair", r.futuresH.GetMarkPrice)
+	prot.GET("/futures/positions", r.futuresH.GetPositions)
+	prot.POST("/futures/positions", r.futuresH.OpenPosition)
+	prot.POST("/futures/positions/:id/close", r.futuresH.ClosePosition)
+	prot.GET("/futures/orders", r.futuresH.ListOrders)
+	prot.POST("/futures/orders", r.futuresH.CreateOrder)
 
 	// Market data — all use *pair catch-all to support BTC/USDT format
 	api.GET("/tickers/24h", r.oh.ListTickers)

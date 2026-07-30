@@ -21,6 +21,113 @@ export interface Order {
 export interface PlaceOrderReq {
   pair: string; side: OrderSide; type: OrderType; price?: string; stop_price?: string;
   quantity: string; time_in_force?: 'gtc' | 'ioc' | 'fok'; client_order_id?: string;
+  tp_price?: string; sl_price?: string;
 }
 export interface Balance { asset: string; available: string; locked: string; total: string; }
 export interface APIKey { id: string; name: string; key?: string; created_at: number; }
+
+export interface FillMessage {
+  order_id: string;
+  pair: string;
+  price: string;
+  quantity: string;
+  side: 'buy' | 'sell';
+  time: number;
+}
+
+export interface PriceComparison {
+  pair: string;
+  internal: { available: boolean; last: string };
+  uniswap: { available: boolean; last?: string; error?: string };
+}
+
+export type FuturesSide = 'long' | 'short';
+export type MarginMode = 'isolated' | 'cross';
+
+export interface FuturesPosition {
+  id: string;
+  pair: string;
+  side: FuturesSide;
+  leverage: number;
+  margin_mode: MarginMode;
+  entry_price: string;
+  mark_price: string;
+  quantity: string;
+  margin: string;
+  pnl: string;
+  pnl_pct: string;
+  liq_price: string;
+  status: 'open' | 'closed';
+  created_at: number;
+  updated_at: number;
+}
+
+export interface FuturesOrder {
+  id: string;
+  pair: string;
+  side: OrderSide;
+  type: OrderType;
+  price?: string;
+  stop_price?: string;
+  quantity: string;
+  leverage: number;
+  margin_mode: MarginMode;
+  tp_price?: string;
+  sl_price?: string;
+  status: string;
+  created_at: number;
+}
+
+export interface MarkPrice {
+  pair: string;
+  mark_price: string;
+  index_price: string;
+  funding_rate: string;
+  next_funding: number;
+}
+
+export interface PnLHistoryItem { date: string; realized: string; }
+export interface PnLSummary {
+  total_realized: string;
+  unrealized: string;
+  portfolio_value: string;
+  total_fees: string;
+  today_realized: string;
+  positions: Array<{ asset: string; qty: string; avg_cost: string }>;
+}
+export interface PnLHistory { history: PnLHistoryItem[]; }
+
+export interface Transaction {
+  id: string;
+  type: 'deposit' | 'withdrawal';
+  asset: string;
+  amount: string;
+  status: string;
+  created_at: number;
+}
+
+export interface WithdrawReq { asset: string; address: string; amount: string; }
+
+export interface WithdrawalReviewItem {
+  id: string;
+  user_id: string;
+  asset: string;
+  amount: string;
+  status: string;
+  created_at: number;
+}
+
+export interface AddressBookEntry {
+  id: string;
+  user_id: string;
+  asset: string;
+  address: string;
+  label?: string;
+  created_at: number;
+}
+
+export interface PairRiskConfig {
+  pair: string;
+  trading_enabled: boolean;
+  market_orders_enabled: boolean;
+}

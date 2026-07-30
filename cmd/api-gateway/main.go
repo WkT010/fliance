@@ -140,6 +140,7 @@ func main() {
 	walletH := api.NewWalletHandler(withdrawalSvc, clients)
 
 	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey)
+	futuresH := api.NewFuturesHandler(priceH)
 	if cfg.AlchemyAPIKey != "" {
 		log.Println("[NEXA] Alchemy price feed: active")
 	} else {
@@ -181,8 +182,8 @@ func main() {
 	}))
 
 	// ── HTTP router ──
-	router := api.NewRouter(orderH, authH, wsH, priceH, walletH, accountH, adminH,
-		authH.AuthMiddleware(), apiKeyStore, cfg, health)
+	router := api.NewRouter(orderH, authH, wsH, priceH, walletH, accountH, adminH, futuresH,
+		authH.AuthMiddleware(), api.APIKeyMiddleware(apiKeyStore), cfg, health)
 	staticDir := os.Getenv("STATIC_DIR")
 	if staticDir == "" {
 		staticDir = "./frontend/dist"

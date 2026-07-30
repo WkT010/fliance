@@ -10,7 +10,7 @@ import { getBalances, getTransactions, withdraw, getDepositAddress, getSupported
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
 import { formatPrice, formatQty, formatDate, cls } from '@/utils/format';
-import type { Balance, Transaction } from '@/types';
+
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);

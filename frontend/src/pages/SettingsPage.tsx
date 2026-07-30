@@ -54,7 +54,7 @@ export function SettingsPage() {
               <div>
                 <div className="text-xs uppercase tracking-wider text-nexa-500">Role</div>
                 <div className="mt-1">
-                  <Badge color={user?.role === 'admin' ? 'danger' : 'accent'}>{user?.role}</Badge>
+                  <Badge color={user?.role === 'admin' ? 'down' : 'accent'}>{user?.role}</Badge>
                 </div>
               </div>
               <div>
@@ -127,7 +127,7 @@ export function SettingsPage() {
                   <div className="font-medium text-nexa-100">Current Session</div>
                   <div className="text-sm text-nexa-400">You are currently signed in on this device.</div>
                 </div>
-                <Badge color="success">Active</Badge>
+                <Badge color="up">Active</Badge>
               </div>
             </div>
           </Card>

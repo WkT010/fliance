@@ -305,3 +305,163 @@ export function cci(data: Candle[], period = 20): LinePoint[] {
   }
   return out;
 }
+
+export interface SuperTrendPoint {
+  time: number;
+  value: number;
+  direction: 1 | -1;
+}
+
+export function superTrend(data: Candle[], period = 10, multiplier = 3): SuperTrendPoint[] {
+  if (period <= 0 || data.length <= period) return [];
+  const atrData = atr(data, period);
+  const out: SuperTrendPoint[] = [];
+  let prevFinalUpper = 0;
+  let prevFinalLower = 0;
+  let prevClose = 0;
+  let direction: 1 | -1 = 1;
+
+  for (let i = period - 1; i < data.length; i++) {
+    const c = data[i];
+    const atrValue = atrData[i - (period - 1)]?.value ?? c.high - c.low;
+    const median = (c.high + c.low) / 2;
+    const upper = median + multiplier * atrValue;
+    const lower = median - multiplier * atrValue;
+
+    if (i === period - 1) {
+      prevFinalUpper = upper;
+      prevFinalLower = lower;
+      prevClose = c.close;
+      direction = c.close > upper ? 1 : -1;
+      out.push({ time: c.time, value: direction === 1 ? lower : upper, direction });
+      continue;
+    }
+
+    const finalUpper = upper < prevFinalUpper || prevClose > prevFinalUpper ? upper : prevFinalUpper;
+    const finalLower = lower > prevFinalLower || prevClose < prevFinalLower ? lower : prevFinalLower;
+
+    let newDirection: 1 | -1 = direction;
+    if (c.close > prevFinalUpper) newDirection = 1;
+    else if (c.close < prevFinalLower) newDirection = -1;
+
+    out.push({ time: c.time, value: newDirection === 1 ? finalLower : finalUpper, direction: newDirection });
+    prevFinalUpper = finalUpper;
+    prevFinalLower = finalLower;
+    prevClose = c.close;
+    direction = newDirection;
+  }
+  return out;
+}
+
+export interface IchimokuPoint {
+  time: number;
+  tenkan: number;
+  kijun: number;
+  senkouA: number;
+  senkouB: number;
+  chikou: number;
+}
+
+function donchianMid(data: Candle[], end: number, period: number): number {
+  let high = -Infinity;
+  let low = Infinity;
+  const start = Math.max(0, end - period + 1);
+  for (let i = start; i <= end; i++) {
+    high = Math.max(high, data[i].high);
+    low = Math.min(low, data[i].low);
+  }
+  return high === -Infinity ? data[end].close : (high + low) / 2;
+}
+
+export function ichimoku(
+  data: Candle[],
+  tenkan = 9,
+  kijun = 26,
+  senkouB = 52,
+  displacement = 26,
+): IchimokuPoint[] {
+  if (data.length < senkouB) return [];
+  const out: IchimokuPoint[] = [];
+  for (let i = senkouB - 1; i < data.length; i++) {
+    const t = donchianMid(data, i, tenkan);
+    const k = donchianMid(data, i, kijun);
+    const sb = donchianMid(data, i, senkouB);
+    const sa = (t + k) / 2;
+    const chikou = i >= displacement ? data[i - displacement].close : data[i].close;
+    out.push({ time: data[i].time, tenkan: t, kijun: k, senkouA: sa, senkouB: sb, chikou });
+  }
+  return out;
+}
+
+export interface FibonacciLevel {
+  level: number;
+  price: number;
+}
+
+export function fibonacciLevels(high: number, low: number): FibonacciLevel[] {
+  const diff = high - low;
+  const levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+  return levels.map((level) => ({ level, price: high - diff * level }));
+}
+
+export interface PivotPoint {
+  time: number;
+  pp: number;
+  r1: number;
+  r2: number;
+  r3: number;
+  s1: number;
+  s2: number;
+  s3: number;
+}
+
+export function pivotPoints(data: Candle[]): PivotPoint[] {
+  if (data.length < 2) return [];
+  const out: PivotPoint[] = [];
+  for (let i = 1; i < data.length; i++) {
+    const prev = data[i - 1];
+    const pp = (prev.high + prev.low + prev.close) / 3;
+    const r1 = 2 * pp - prev.low;
+    const s1 = 2 * pp - prev.high;
+    const r2 = pp + prev.high - prev.low;
+    const s2 = pp - r1 + s1;
+    const r3 = prev.high + 2 * (pp - prev.low);
+    const s3 = prev.low - 2 * (prev.high - pp);
+    out.push({ time: data[i].time, pp, r1, r2, r3, s1, s2, s3 });
+  }
+  return out;
+}
+
+export function obv(data: Candle[]): LinePoint[] {
+  if (data.length === 0) return [];
+  const out: LinePoint[] = [];
+  let value = 0;
+  for (let i = 0; i < data.length; i++) {
+    if (i > 0) {
+      const prev = data[i - 1];
+      if (data[i].close > prev.close) value += data[i].volume;
+      else if (data[i].close < prev.close) value -= data[i].volume;
+    }
+    out.push({ time: data[i].time, value });
+  }
+  return out;
+}
+
+export function mfi(data: Candle[], period = 14): LinePoint[] {
+  if (period <= 0 || data.length <= period) return [];
+  const tp = data.map((c) => (c.high + c.low + c.close) / 3);
+  const out: LinePoint[] = [];
+  for (let i = period; i < data.length; i++) {
+    let pos = 0;
+    let neg = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const moneyFlow = tp[j] * data[j].volume;
+      if (tp[j] > tp[j - 1]) pos += moneyFlow;
+      else if (tp[j] < tp[j - 1]) neg += moneyFlow;
+    }
+    const ratio = neg === 0 ? Infinity : pos / neg;
+    const value = ratio === Infinity ? 100 : 100 - 100 / (1 + ratio);
+    out.push({ time: data[i].time, value });
+  }
+  return out;
+}

@@ -347,7 +347,7 @@ export function ChartPanel({ pair }: { pair: string }) {
     if (activePanels.includes('kdj') && subRefs.current.kdj) {
       const data = kdj(rawCandles);
       subRefs.current.kdj.series[0].setData(data.map((r) => ({ time: r.time as Time, value: r.k })) as LineData<Time>[]);
-      subRefs.current.kdj.series[1].setData(data.map((r) => ({ time: r.time as Time, value: r.d })) as LineData<Time>[]);
+      subRefs.current.kdj.series[1].setData(data.map((r) => ({ time: r.time as Time, value: r.k })) as LineData<Time>[]);
       subRefs.current.kdj.series[2].setData(data.map((r) => ({ time: r.time as Time, value: r.j })) as LineData<Time>[]);
       subRefs.current.kdj.chart?.timeScale().fitContent();
     }
