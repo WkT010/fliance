@@ -1,7 +1,7 @@
 # Nexa Exchange — Legal Framework
 
 > Version 1.0 — Effective Date: 2026-07-28  
-> For all questions regarding licensing or legal matters, contact: **canival.b2b@hotmail.com**
+> For all questions regarding licensing or legal matters, contact: **AirSoftstudio@yeah.net**
 
 ---
 
@@ -19,7 +19,7 @@ Access to this repository does **not** grant any right to use, copy, modify, dep
 - **All rights are reserved.** No license, express or implied, is granted to any person or entity merely by accessing, viewing, cloning, downloading, or possessing the Software.
 - **Commercial licensing** is available for organizations that wish to obtain rights to use, modify, deploy, or distribute the Software.
 - The current **one-time source code license fee** is **USD $2,999.00** (two thousand nine hundred ninety-nine United States Dollars), unless otherwise agreed in writing.
-- To request a commercial license or discuss custom terms, email **canival.b2b@hotmail.com** with the subject line **"Nexa Exchange Source Code License Request"**.
+- To request a commercial license or discuss custom terms, email **AirSoftstudio@yeah.net** with the subject line **"Nexa Exchange Source Code License Request"**.
 
 For the complete terms governing access and use, please read the full `LICENSE` file.
 
@@ -111,7 +111,7 @@ Your information may be used to:
 ### User Rights
 
 - Depending on your jurisdiction, you may have rights to access, correct, restrict, or delete your personal data, or to object to certain processing activities.
-- To exercise your rights or ask questions about data handling, contact **canival.b2b@hotmail.com**.
+- To exercise your rights or ask questions about data handling, contact **AirSoftstudio@yeah.net**.
 
 ---
 
@@ -157,7 +157,7 @@ Unauthorized use, reproduction, distribution, modification, reverse-engineering,
 
 For licensing requests, legal inquiries, privacy questions, or other matters related to Nexa Exchange, please contact:
 
-**Email:** canival.b2b@hotmail.com  
+**Email:** AirSoftstudio@yeah.net  
 **Subject (for license requests):** Nexa Exchange Source Code License Request
 
 ---

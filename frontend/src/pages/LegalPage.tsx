@@ -40,10 +40,10 @@ export function LegalPage() {
                 <li>
                   To request a commercial license, email{' '}
                   <a
-                    href="mailto:canival.b2b@hotmail.com"
+                    href="mailto:AirSoftstudio@yeah.net"
                     className="text-accent hover:underline"
                   >
-                    canival.b2b@hotmail.com
+                    AirSoftstudio@yeah.net
                   </a>{' '}
                   with the subject line &quot;Nexa Exchange Source Code License Request&quot;.
                 </li>
@@ -152,10 +152,10 @@ export function LegalPage() {
                 <div>
                   Email:{" "}
                   <a
-                    href="mailto:canival.b2b@hotmail.com"
+                    href="mailto:AirSoftstudio@yeah.net"
                     className="text-accent hover:underline"
                   >
-                    canival.b2b@hotmail.com
+                    AirSoftstudio@yeah.net
                   </a>
                 </div>
                 <div className="text-nexa-400">
