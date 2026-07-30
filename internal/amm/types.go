@@ -65,17 +65,4 @@ func NewPool(id, pair, token0, token1 string, feeRate *big.Float) *Pool {
 	}
 }
 
-// PoolShare returns a new LP position for the supplied share amount.
-func (p *Pool) PoolShare(userID string, shares *big.Float) *LPPosition {
-	now := time.Now().UnixNano()
-	return &LPPosition{
-		ID:        "lp_" + nowText() + randSuffix(),
-		UserID:    userID,
-		PoolID:    p.ID,
-		Shares:    new(big.Float).Copy(shares),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-}
-
 func nowText() string { return strconv.FormatInt(time.Now().UnixNano(), 36) }

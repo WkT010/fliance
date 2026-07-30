@@ -110,7 +110,7 @@ func (s *PGAmmStore) SavePosition(pos *amm.LPPosition) error {
 		INSERT INTO amm_liquidity (id, user_id, pool_id, shares, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6)
 		ON CONFLICT (user_id, pool_id) DO UPDATE SET
-			shares = amm_liquidity.shares + EXCLUDED.shares,
+			shares = EXCLUDED.shares,
 			updated_at = EXCLUDED.updated_at`,
 		pos.ID, pos.UserID, pos.PoolID, textF(pos.Shares), pos.CreatedAt, pos.UpdatedAt)
 	if err != nil {
@@ -150,7 +150,7 @@ func (s *PGAmmStore) ListPositionsByUser(userID string) ([]*amm.LPPosition, erro
 		return nil, err
 	}
 	defer rows.Close()
-	return scanPositions(rows)
+	return scanAmmPositions(rows)
 }
 
 func (s *PGAmmStore) ListPositionsByPool(poolID string) ([]*amm.LPPosition, error) {
@@ -159,10 +159,10 @@ func (s *PGAmmStore) ListPositionsByPool(poolID string) ([]*amm.LPPosition, erro
 		return nil, err
 	}
 	defer rows.Close()
-	return scanPositions(rows)
+	return scanAmmPositions(rows)
 }
 
-func scanPositions(rows *sql.Rows) ([]*amm.LPPosition, error) {
+func scanAmmPositions(rows *sql.Rows) ([]*amm.LPPosition, error) {
 	var out []*amm.LPPosition
 	for rows.Next() {
 		pos := &amm.LPPosition{Shares: new(big.Float)}

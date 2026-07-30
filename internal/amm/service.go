@@ -78,7 +78,8 @@ func (s *Service) AddLiquidity(userID, poolID string, amount0, amount1 *big.Floa
 		return nil, nil, nil, nil, fmt.Errorf("update pool: %w", err)
 	}
 
-	// Upsert LP position.
+	// Upsert LP position: merge new shares with any existing position.
+	existing, _ := s.store.GetPositionByPool(userID, pool.ID)
 	pos := &LPPosition{
 		ID:        "lp_" + uuid.NewString(),
 		UserID:    userID,
@@ -86,6 +87,11 @@ func (s *Service) AddLiquidity(userID, poolID string, amount0, amount1 *big.Floa
 		Shares:    new(big.Float).Copy(shares),
 		CreatedAt: time.Now().UnixNano(),
 		UpdatedAt: time.Now().UnixNano(),
+	}
+	if existing != nil && existing.Shares != nil {
+		pos.ID = existing.ID
+		pos.CreatedAt = existing.CreatedAt
+		pos.Shares.Add(pos.Shares, existing.Shares)
 	}
 	if err := s.store.SavePosition(pos); err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("save position: %w", err)
