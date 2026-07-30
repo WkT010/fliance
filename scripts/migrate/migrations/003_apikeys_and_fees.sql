@@ -18,7 +18,7 @@ CREATE INDEX idx_apikeys_active ON api_keys(active) WHERE active = true;
 
 -- 004: add a ledger entry linking transactions to trades so we can reconcile
 -- wallet balances against the matching engine. The transactions table already
--- stores per-user ledger entries; this optional column links a trade-ledger row
+-- stores per-user ledger entries, and this optional column links a trade-ledger row
 -- back to its trade for audit/reconciliation.
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS trade_id TEXT REFERENCES trades(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_tx_trade ON transactions(trade_id) WHERE trade_id IS NOT NULL;
