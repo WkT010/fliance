@@ -14,6 +14,7 @@ export function Header() {
           <Link to="/" className="text-nexa-300 hover:text-nexa-100">Trading</Link>
           <Link to="/markets" className="text-nexa-300 hover:text-nexa-100">Markets</Link>
           <Link to="/futures" className="text-nexa-300 hover:text-nexa-100">Futures</Link>
+          <Link to="/amm" className="text-nexa-300 hover:text-nexa-100">AMM</Link>
           <Link to="/wallet" className="text-nexa-300 hover:text-nexa-100">Wallet</Link>
           <Link to="/account" className="text-nexa-300 hover:text-nexa-100">Account</Link>
           <Link to="/settings" className="text-nexa-300 hover:text-nexa-100">Settings</Link>

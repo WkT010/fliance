@@ -23,6 +23,7 @@ type Router struct {
 	accountH  *AccountHandler
 	adminH    *AdminHandler
 	futuresH  *FuturesHandler
+	ammH      *AmmHandler
 	authMW    gin.HandlerFunc
 	apiKeyMW  gin.HandlerFunc
 	health    *observability.HealthCollector
@@ -39,6 +40,7 @@ func NewRouter(
 	accountH *AccountHandler,
 	adminH *AdminHandler,
 	futuresH *FuturesHandler,
+	ammH *AmmHandler,
 	authMW gin.HandlerFunc,
 	apiKeyMW gin.HandlerFunc,
 	cfg *config.Config,
@@ -55,6 +57,7 @@ func NewRouter(
 		accountH:  accountH,
 		adminH:    adminH,
 		futuresH:  futuresH,
+		ammH:      ammH,
 		authMW:    authMW,
 		apiKeyMW:  apiKeyMW,
 		health:    health,
@@ -130,6 +133,18 @@ func (r *Router) Setup() *gin.Engine {
 	// AMM swap (public quote + unsigned tx builder).
 	api.POST("/swap/quote", r.ph.QuoteSwap)
 	api.POST("/swap/build", r.ph.BuildSwap)
+
+	// Internal AMM pools and swaps.
+	api.GET("/amm/pools", r.ammH.ListPools)
+	api.GET("/amm/pools/:id", r.ammH.GetPool)
+	api.POST("/amm/pools", r.ammH.CreatePool)
+	prot.GET("/amm/pools/:id/position", r.ammH.GetPosition)
+	prot.POST("/amm/pools/:id/add-liquidity", r.ammH.AddLiquidity)
+	prot.POST("/amm/pools/:id/remove-liquidity", r.ammH.RemoveLiquidity)
+	prot.GET("/amm/pools/:id/swaps", r.ammH.ListSwaps)
+	prot.GET("/amm/positions", r.ammH.ListPositions)
+	api.POST("/amm/swap/quote", r.ammH.QuoteSwap)
+	prot.POST("/amm/swap", r.ammH.ExecuteSwap)
 
 	// Admin
 	admin := api.Group("/admin")

@@ -7,8 +7,23 @@ interface Tab {
   content: React.ReactNode;
 }
 
-export function Tabs({ tabs, defaultTab }: { tabs: Tab[]; defaultTab?: string }) {
-  const [active, setActive] = useState(defaultTab || tabs[0]?.id);
+export function Tabs({
+  tabs,
+  defaultTab,
+  activeTab,
+  onChange,
+}: {
+  tabs: Tab[];
+  defaultTab?: string;
+  activeTab?: string;
+  onChange?: (id: string) => void;
+}) {
+  const [internalActive, setInternalActive] = useState(defaultTab || tabs[0]?.id);
+  const active = activeTab ?? internalActive;
+  const setActive = (id: string) => {
+    setInternalActive(id);
+    onChange?.(id);
+  };
   return (
     <div className="flex h-full flex-col">
       <div className="flex border-b border-nexa-700">

@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/WkT010/nexa-exchange/internal/amm"
 	"github.com/WkT010/nexa-exchange/internal/api"
 	"github.com/WkT010/nexa-exchange/internal/auth"
 	"github.com/WkT010/nexa-exchange/internal/config"
@@ -138,6 +139,14 @@ func main() {
 		futuresStore = store.NewPGFuturesStore(db)
 	}
 
+	// ── AMM persistence and service ──
+	var ammStore amm.Store
+	if db != nil {
+		ammStore = store.NewPGAmmStore(db)
+	}
+	ammSvc := amm.NewService(ammStore, walletSvc)
+	ammH := api.NewAmmHandler(ammSvc)
+
 	// ── Handlers ──
 	orderH := api.NewOrderHandlerWithExchange(exchange, orderStore, riskEng)
 	orderH.SetWallet(withdrawalSvc, withdrawalSvc)
@@ -219,7 +228,7 @@ func main() {
 	}))
 
 	// ── HTTP router ──
-	router := api.NewRouter(orderH, authH, wsH, priceH, walletH, accountH, adminH, futuresH,
+	router := api.NewRouter(orderH, authH, wsH, priceH, walletH, accountH, adminH, futuresH, ammH,
 		authH.AuthMiddleware(), api.APIKeyMiddleware(apiKeyStore), cfg, health)
 	staticDir := os.Getenv("STATIC_DIR")
 	if staticDir == "" {
