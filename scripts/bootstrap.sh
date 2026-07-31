@@ -39,15 +39,7 @@ su - postgres -c "/usr/lib/postgresql/16/bin/pg_ctl -D /var/lib/postgresql/16/ma
 echo "[NEXA] running migrations..."
 cd "$PROJECT_ROOT" && POSTGRES_DSN="$POSTGRES_DSN" go run ./scripts/migrate/main.go
 
-# 3. Backend
-echo "[NEXA] starting api-gateway..."
-pkill -f "${PROJECT_ROOT}/api-gateway" 2>/dev/null || true
-sleep 1
-cd "$PROJECT_ROOT" && nohup sh -c "POSTGRES_DSN=\"$POSTGRES_DSN\" ./api-gateway" > /tmp/nexa-api.log 2>&1 &
-echo $! > /tmp/nexa-api.pid
-sleep 3
-
-# 4. Frontend
+# 3. Frontend (build only; api-gateway serves static files)
 echo "[NEXA] preparing frontend..."
 cd "$PROJECT_ROOT/frontend"
 if [ ! -d node_modules ] || [ ! -f node_modules/.bin/vite ]; then
@@ -57,11 +49,12 @@ fi
 echo "[NEXA] building frontend..."
 npm run build
 
-echo "[NEXA] starting vite preview..."
-pkill -f "vite preview" 2>/dev/null || true
+# 4. Backend (serves API + static frontend on :8080)
+echo "[NEXA] starting api-gateway (serves API + frontend)..."
+pkill -f "${PROJECT_ROOT}/api-gateway" 2>/dev/null || true
 sleep 1
-nohup ./node_modules/.bin/vite preview --port 3000 --host 0.0.0.0 > /tmp/vite-preview.log 2>&1 &
-echo $! > /tmp/vite-preview.pid
+cd "$PROJECT_ROOT" && setsid bash -c 'POSTGRES_DSN="'"$POSTGRES_DSN"'" STATIC_DIR="./frontend/dist" ./api-gateway' > /tmp/nexa-api.log 2>&1 &
+echo $! > /tmp/nexa-api.pid
 sleep 3
 
 # 5. Sandbox keep-alive
@@ -75,16 +68,23 @@ echo $! > /tmp/sandbox-keepalive.pid
 echo "[NEXA] waiting for services..."
 for i in {1..30}; do
     backend_ok=false
-    frontend_ok=false
     curl -sf http://localhost:8080/health >/dev/null 2>&1 && backend_ok=true
-    curl -sf http://localhost:3000/ >/dev/null 2>&1 && frontend_ok=true
-    if "$backend_ok" && "$frontend_ok"; then
+    if "$backend_ok"; then
         break
     fi
     sleep 1
 done
 
+# 7. Intranet penetration (serveo.net)
+echo "[NEXA] starting serveo tunnel..."
+chmod +x "${PROJECT_ROOT}/scripts/serveo-tunnel.sh"
+setsid bash "${PROJECT_ROOT}/scripts/serveo-tunnel.sh" 8080 < /dev/null > /tmp/serveo-setup.log 2>&1 &
+sleep 10
+
 echo "[NEXA] bootstrap complete."
 echo "  backend : http://localhost:8080/health"
-echo "  frontend: http://localhost:3000/"
+echo "  frontend: http://localhost:8080/"
 echo "  keepalive log: /tmp/sandbox-keepalive.log"
+if [ -f /tmp/serveo-url.txt ]; then
+    echo "  public URL: $(cat /tmp/serveo-url.txt)"
+fi
