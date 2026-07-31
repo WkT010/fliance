@@ -4,7 +4,6 @@ import { get24hTickers, getOrderbook, getTrades } from '@/api/market';
 import { socket } from '@/ws/socket';
 
 export function useMarket(pair: string) {
-  const store = useMarketStore();
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -14,10 +13,11 @@ export function useMarket(pair: string) {
     const ac = new AbortController();
     abortRef.current = ac;
 
+    const store = useMarketStore.getState();
     store.setPair(pair);
     store.clearFills();
 
-    // initial snapshot 鈥?use AbortController to prevent race conditions
+    // initial snapshot — use AbortController to prevent race conditions
     getOrderbook(pair).then((ob) => {
       if (!ac.signal.aborted) store.setOrderbook(ob);
     });
@@ -32,7 +32,7 @@ export function useMarket(pair: string) {
         if (ac.signal.aborted) return;
         const map: Record<string, import('@/types').Ticker> = {};
         res.tickers.forEach((t) => (map[t.pair] = t));
-        store.setTickers(map);
+        useMarketStore.setState({ tickers: map });
       });
     }, 5000);
 
@@ -41,8 +41,8 @@ export function useMarket(pair: string) {
       if (intervalRef.current) clearInterval(intervalRef.current);
       socket.close();
     };
-  }, [pair, store]);
+  }, [pair]);
 
-  return store;
+  return useMarketStore();
 }
 
