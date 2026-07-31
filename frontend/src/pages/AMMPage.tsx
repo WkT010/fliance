@@ -75,6 +75,14 @@ export function AMMPage() {
     setTab(id as 'swap' | 'liquidity' | 'create');
   }, []);
 
+  const refreshAll = useCallback(() => {
+    refetchPools();
+    refetchPoolDetail();
+    refetchPosition();
+    refetchPositions();
+    refetchSwaps();
+  }, [refetchPools, refetchPoolDetail, refetchPosition, refetchPositions, refetchSwaps]);
+
   const tabItems = useMemo(
     () => [
       {
@@ -252,14 +260,6 @@ export function AMMPage() {
       </div>
     </Layout>
   );
-
-  const refreshAll = useCallback(() => {
-    refetchPools();
-    refetchPoolDetail();
-    refetchPosition();
-    refetchPositions();
-    refetchSwaps();
-  }, [refetchPools, refetchPoolDetail, refetchPosition, refetchPositions, refetchSwaps]);
 }
 
 function SwapPanel({

@@ -1,9 +1,13 @@
 # Binaries
 build/
+/api-gateway
 *.exe
 *.test
 *.out
 tmp/
+*.png
+*.jpg
+*.jpeg
 # Go
 vendor/
 # IDE
