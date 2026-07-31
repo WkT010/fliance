@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/common/Card';
 import { Button } from '@/components/common/Button';
@@ -44,8 +44,10 @@ export function AMMPage() {
   );
 
   useEffect(() => {
-    if (selectedPool && !selectedPoolId) setSelectedPoolId(selectedPool.id);
-  }, [selectedPool, selectedPoolId]);
+    if (pools?.length && !selectedPoolId) {
+      setSelectedPoolId(pools[0].id);
+    }
+  }, [pools, selectedPoolId]);
 
   const { data: poolDetail, refetch: refetchPoolDetail } = useFetch(
     () => (selectedPoolId ? getAmmPool(selectedPoolId) : Promise.resolve(null)),
@@ -68,6 +70,38 @@ export function AMMPage() {
   }, 4000);
 
   const pool = poolDetail || selectedPool;
+
+  const handleTabChange = useCallback((id: string) => {
+    setTab(id as 'swap' | 'liquidity' | 'create');
+  }, []);
+
+  const tabItems = useMemo(
+    () => [
+      {
+        id: 'swap',
+        label: 'Swap',
+        content: <SwapPanel pool={pool} onUpdate={refreshAll} setMsg={setMsg} />,
+      },
+      {
+        id: 'liquidity',
+        label: 'Liquidity',
+        content: (
+          <LiquidityPanel
+            pool={pool}
+            position={position}
+            onUpdate={refreshAll}
+            setMsg={setMsg}
+          />
+        ),
+      },
+      {
+        id: 'create',
+        label: 'Create Pool',
+        content: <CreatePoolPanel onUpdate={refreshAll} setMsg={setMsg} />,
+      },
+    ],
+    [pool, position, refreshAll, setMsg]
+  );
 
   return (
     <Layout>
@@ -173,31 +207,8 @@ export function AMMPage() {
 
           <Tabs
             activeTab={tab}
-            onChange={(id) => setTab(id as 'swap' | 'liquidity' | 'create')}
-            tabs={[
-              {
-                id: 'swap',
-                label: 'Swap',
-                content: <SwapPanel pool={pool} onUpdate={refreshAll} setMsg={setMsg} />,
-              },
-              {
-                id: 'liquidity',
-                label: 'Liquidity',
-                content: (
-                  <LiquidityPanel
-                    pool={pool}
-                    position={position}
-                    onUpdate={refreshAll}
-                    setMsg={setMsg}
-                  />
-                ),
-              },
-              {
-                id: 'create',
-                label: 'Create Pool',
-                content: <CreatePoolPanel onUpdate={refreshAll} setMsg={setMsg} />,
-              },
-            ]}
+            onChange={handleTabChange}
+            tabs={tabItems}
           />
 
           {pool && (
@@ -242,13 +253,13 @@ export function AMMPage() {
     </Layout>
   );
 
-  function refreshAll() {
+  const refreshAll = useCallback(() => {
     refetchPools();
     refetchPoolDetail();
     refetchPosition();
     refetchPositions();
     refetchSwaps();
-  }
+  }, [refetchPools, refetchPoolDetail, refetchPosition, refetchPositions, refetchSwaps]);
 }
 
 function SwapPanel({
