@@ -8,12 +8,15 @@ import { AccountPage } from '@/pages/AccountPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { AdminPage } from '@/pages/AdminPage';
 import { LegalPage } from '@/pages/LegalPage';
+import { LandingPage } from '@/pages/LandingPage';
 import { LoginPage, RegisterPage } from '@/pages/AuthPage';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { useAuthInit } from '@/hooks/useAuth';
+import { useAuthStore } from '@/store/authStore';
 
 export default function App() {
   const { loading } = useAuthInit();
+  const { user } = useAuthStore();
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-nexa-950 text-nexa-100">
@@ -26,7 +29,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
-      <Route path="/" element={<ProtectedRoute><TradingPage /></ProtectedRoute>} />
+      <Route path="/" element={user ? <ProtectedRoute><TradingPage /></ProtectedRoute> : <LandingPage />} />
       <Route path="/markets" element={<ProtectedRoute><MarketsPage /></ProtectedRoute>} />
       <Route path="/futures" element={<ProtectedRoute><FuturesPage /></ProtectedRoute>} />
       <Route path="/amm" element={<ProtectedRoute><AMMPage /></ProtectedRoute>} />
