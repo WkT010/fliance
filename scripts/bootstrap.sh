@@ -48,10 +48,19 @@ echo $! > /tmp/nexa-api.pid
 sleep 3
 
 # 4. Frontend
+echo "[NEXA] preparing frontend..."
+cd "$PROJECT_ROOT/frontend"
+if [ ! -d node_modules ] || [ ! -f node_modules/.bin/vite ]; then
+    echo "[NEXA] installing frontend dependencies..."
+    npm install
+fi
+echo "[NEXA] building frontend..."
+npm run build
+
 echo "[NEXA] starting vite preview..."
 pkill -f "vite preview" 2>/dev/null || true
 sleep 1
-cd "$PROJECT_ROOT/frontend" && nohup sh -c 'npx vite preview --port 3000 --host 0.0.0.0' > /tmp/vite-preview.log 2>&1 &
+nohup ./node_modules/.bin/vite preview --port 3000 --host 0.0.0.0 > /tmp/vite-preview.log 2>&1 &
 echo $! > /tmp/vite-preview.pid
 sleep 3
 
@@ -61,6 +70,19 @@ pkill -f "${PROJECT_ROOT}/scripts/sandbox-keepalive.sh" 2>/dev/null || true
 sleep 1
 setsid "${PROJECT_ROOT}/scripts/sandbox-keepalive.sh" &
 echo $! > /tmp/sandbox-keepalive.pid
+
+# 6. Health check
+echo "[NEXA] waiting for services..."
+for i in {1..30}; do
+    backend_ok=false
+    frontend_ok=false
+    curl -sf http://localhost:8080/health >/dev/null 2>&1 && backend_ok=true
+    curl -sf http://localhost:3000/ >/dev/null 2>&1 && frontend_ok=true
+    if "$backend_ok" && "$frontend_ok"; then
+        break
+    fi
+    sleep 1
+done
 
 echo "[NEXA] bootstrap complete."
 echo "  backend : http://localhost:8080/health"
