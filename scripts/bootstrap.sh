@@ -81,6 +81,12 @@ chmod +x "${PROJECT_ROOT}/scripts/serveo-tunnel.sh"
 setsid bash "${PROJECT_ROOT}/scripts/serveo-tunnel.sh" 8080 < /dev/null > /tmp/serveo-setup.log 2>&1 &
 sleep 10
 
+# 8. Lucky (DDNS / 反向代理 / 端口转发工具)
+echo "[NEXA] starting Lucky..."
+chmod +x "${PROJECT_ROOT}/scripts/lucky-start.sh"
+setsid bash "${PROJECT_ROOT}/scripts/lucky-start.sh" < /dev/null > /tmp/lucky-setup.log 2>&1 &
+sleep 5
+
 echo "[NEXA] bootstrap complete."
 echo "  backend : http://localhost:8080/health"
 echo "  frontend: http://localhost:8080/"
@@ -88,3 +94,4 @@ echo "  keepalive log: /tmp/sandbox-keepalive.log"
 if [ -f /tmp/serveo-url.txt ]; then
     echo "  public URL: $(cat /tmp/serveo-url.txt)"
 fi
+echo "  Lucky    : http://localhost:16601 (默认账号 666/666)"
