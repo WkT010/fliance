@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useMarketStore } from '@/store/marketStore';
 import { Card } from '../common/Card';
 import { formatPrice, formatQty } from '@/utils/format';
@@ -17,6 +18,7 @@ interface HoverInfo {
 }
 
 export function DepthChart({ pair, compact }: { pair: string; compact?: boolean }) {
+  const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const ob = useMarketStore((s) => s.orderbook);
@@ -66,7 +68,7 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
     const { bids, asks, maxCum, minP, maxP, midP } = buildDepth();
     if (bids.length === 0 && asks.length === 0) {
       ctx.fillStyle = '#5d6b7a'; ctx.font = '14px Inter, sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText('Waiting for orderbook data...', w / 2, h / 2);
+      ctx.fillText(t('trading.waitingOrderbook'), w / 2, h / 2);
       return;
     }
     const ml = 65; const mr = 12; const mt = 20; const mb = 40;
@@ -110,15 +112,15 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
     ctx.fillStyle = '#f0b90b'; ctx.font = '11px JetBrains Mono, monospace'; ctx.textAlign = 'center';
     ctx.fillText(formatPrice(midP, 2), midX, mt - 4);
     ctx.fillStyle = '#8b97a8'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('Price', w / 2, h - 2);
+    ctx.fillText(t('trading.price'), w / 2, h - 2);
     ctx.save(); ctx.translate(12, mt + chartH / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center';
-    ctx.fillStyle = '#8b97a8'; ctx.font = '11px Inter, sans-serif'; ctx.fillText('Cumulative Depth', 0, 0); ctx.restore();
+    ctx.fillStyle = '#8b97a8'; ctx.font = '11px Inter, sans-serif'; ctx.fillText(t('trading.cumulativeDepth'), 0, 0); ctx.restore();
     ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'left';
     ctx.fillStyle = '#0ecb81'; ctx.fillRect(w - mr - 100, mt + 6, 10, 10);
-    ctx.fillText('Bids', w - mr - 86, mt + 15);
+    ctx.fillText(t('trading.bids'), w - mr - 86, mt + 15);
     ctx.fillStyle = '#f6465d'; ctx.fillRect(w - mr - 52, mt + 6, 10, 10);
-    ctx.fillText('Asks', w - mr - 38, mt + 15);
-  }, [dim, ob, buildDepth]);
+    ctx.fillText(t('trading.asks'), w - mr - 38, mt + 15);
+  }, [dim, ob, buildDepth, t]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -136,7 +138,7 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
   }, [dim, buildDepth]);
 
   const handleMouseLeave = useCallback(() => setHover(null), []);
-  const title = compact ? undefined : `Depth Chart ${pair}`;
+  const title = compact ? undefined : `${t('trading.depth')} ${pair}`;
 
   return (
     <Card className="flex h-full flex-col" title={title}>
@@ -144,10 +146,10 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
         <canvas ref={canvasRef} className="h-full w-full cursor-crosshair" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} />
         {hover && (
           <div className="pointer-events-none absolute z-10 rounded border border-nexa-600 bg-nexa-900/95 px-3 py-2 text-xs shadow-lg" style={{ left: Math.min(hover.x + 14, dim.w - 160), top: Math.max(hover.y - 80, 4) }}>
-            <div className="mb-1 font-medium text-nexa-100">Price: {formatPrice(hover.price, 2)}</div>
-            <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-up" /><span className="text-nexa-300">Bid Depth:</span><span className="text-up">{formatQty(hover.bidCum, 4)}</span></div>
-            <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-down" /><span className="text-nexa-300">Ask Depth:</span><span className="text-down">{formatQty(hover.askCum, 4)}</span></div>
-            {hover.bidCum > 0 && hover.askCum > 0 && <div className="mt-0.5 border-t border-nexa-700 pt-0.5 text-nexa-400">Bid/Ask Ratio: {(hover.bidCum / Math.max(hover.askCum, 0.0001)).toFixed(2)}x</div>}
+            <div className="mb-1 font-medium text-nexa-100">{t('trading.price')}: {formatPrice(hover.price, 2)}</div>
+            <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-up" /><span className="text-nexa-300">{t('trading.bidDepth')}:</span><span className="text-up">{formatQty(hover.bidCum, 4)}</span></div>
+            <div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-down" /><span className="text-nexa-300">{t('trading.askDepth')}:</span><span className="text-down">{formatQty(hover.askCum, 4)}</span></div>
+            {hover.bidCum > 0 && hover.askCum > 0 && <div className="mt-0.5 border-t border-nexa-700 pt-0.5 text-nexa-400">{t('trading.bidAskRatio')}: {(hover.bidCum / Math.max(hover.askCum, 0.0001)).toFixed(2)}x</div>}
           </div>
         )}
       </div>

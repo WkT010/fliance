@@ -13,8 +13,11 @@ vendor/
 # IDE
 .idea/
 .vscode/
+.trae/
 *.swp
 *.swo
+# Local toolchain (downloaded Go SDK, build artifacts, backups)
+.tools/
 # OS
 .DS_Store
 Thumbs.db

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/common/Card';
 import { Button } from '@/components/common/Button';
@@ -7,6 +8,7 @@ import { Select } from '@/components/common/Select';
 import { Tabs } from '@/components/common/Tabs';
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
+import { useAuthStore } from '@/store/authStore';
 import { formatQty, formatPrice, cls } from '@/utils/format';
 import {
   getAmmPools,
@@ -31,6 +33,8 @@ function poolPrice(pool: AmmPool) {
 }
 
 export function AMMPage() {
+  const { t } = useTranslation();
+  const { isAdmin } = useAuthStore();
   const { data: pools, refetch: refetchPools } = useFetch(getAmmPools, []);
   const { data: positions, refetch: refetchPositions } = useFetch(getAmmPositions, []);
 
@@ -84,41 +88,55 @@ export function AMMPage() {
   }, [refetchPools, refetchPoolDetail, refetchPosition, refetchPositions, refetchSwaps]);
 
   const tabItems = useMemo(
-    () => [
-      {
-        id: 'swap',
-        label: 'Swap',
-        content: <SwapPanel pool={pool} onUpdate={refreshAll} setMsg={setMsg} />,
-      },
-      {
-        id: 'liquidity',
-        label: 'Liquidity',
-        content: (
-          <LiquidityPanel
-            pool={pool}
-            position={position}
-            onUpdate={refreshAll}
-            setMsg={setMsg}
-          />
-        ),
-      },
-      {
-        id: 'create',
-        label: 'Create Pool',
-        content: <CreatePoolPanel onUpdate={refreshAll} setMsg={setMsg} />,
-      },
-    ],
-    [pool, position, refreshAll, setMsg]
+    () => {
+      const items = [
+        {
+          id: 'swap',
+          label: t('amm.swap'),
+          content: <SwapPanel pool={pool} onUpdate={refreshAll} setMsg={setMsg} />,
+        },
+        {
+          id: 'liquidity',
+          label: t('amm.liquidity'),
+          content: (
+            <LiquidityPanel
+              pool={pool}
+              position={position}
+              onUpdate={refreshAll}
+              setMsg={setMsg}
+            />
+          ),
+        },
+      ];
+      // Only admins can create pools (POST /amm/pools is admin-guarded on the
+      // backend). Hiding the tab avoids surfacing a form a regular user could
+      // never submit successfully.
+      if (isAdmin) {
+        items.push({
+          id: 'create',
+          label: t('amm.createPool'),
+          content: <CreatePoolPanel onUpdate={refreshAll} setMsg={setMsg} />,
+        });
+      }
+      return items;
+    },
+    [pool, position, refreshAll, setMsg, isAdmin, t]
   );
+
+  // If the user lost admin rights (e.g. logged out + back in as a regular user)
+  // while on the create tab, snap back to swap.
+  useEffect(() => {
+    if (tab === 'create' && !isAdmin) setTab('swap');
+  }, [tab, isAdmin]);
 
   return (
     <Layout>
       <div className="mx-auto grid max-w-7xl grid-cols-1 gap-4 p-4 lg:grid-cols-3">
         <div className="space-y-4 lg:col-span-1">
-          <Card title="AMM Pools">
+          <Card title={t('amm.pools')}>
             <div className="max-h-[28rem] overflow-y-auto p-2">
               {(pools || []).length === 0 && (
-                <div className="p-4 text-center text-sm text-nexa-500">No pools yet</div>
+                <div className="p-4 text-center text-sm text-nexa-500">{t('amm.noPools')}</div>
               )}
               {(pools || []).map((p) => (
                 <button
@@ -143,10 +161,10 @@ export function AMMPage() {
             </div>
           </Card>
 
-          <Card title="My Liquidity">
+          <Card title={t('amm.myLiquidity')}>
             <div className="max-h-64 space-y-2 overflow-y-auto p-2">
               {(positions || []).length === 0 && (
-                <div className="p-2 text-center text-sm text-nexa-500">No LP positions</div>
+                <div className="p-2 text-center text-sm text-nexa-500">{t('amm.noPositions')}</div>
               )}
               {(positions || []).map((pos) => {
                 const p = pools?.find((x) => x.id === pos.pool_id);
@@ -172,29 +190,29 @@ export function AMMPage() {
 
         <div className="space-y-4 lg:col-span-2">
           {pool && (
-            <Card title={`${pool.pair} Pool`}>
+            <Card title={t('amm.poolCard', { pair: pool.pair })}>
               <div className="grid grid-cols-2 gap-4 p-4 text-sm md:grid-cols-4">
                 <div>
-                  <div className="text-xs text-nexa-500">Price</div>
+                  <div className="text-xs text-nexa-500">{t('amm.price')}</div>
                   <div className="font-mono text-nexa-100">{formatPrice(poolPrice(pool))}</div>
                 </div>
                 <div>
-                  <div className="text-xs text-nexa-500">{pool.token0} Reserve</div>
+                  <div className="text-xs text-nexa-500">{pool.token0} {t('amm.reserve')}</div>
                   <div className="font-mono text-nexa-100">{formatQty(pool.reserve0, 6)}</div>
                 </div>
                 <div>
-                  <div className="text-xs text-nexa-500">{pool.token1} Reserve</div>
+                  <div className="text-xs text-nexa-500">{pool.token1} {t('amm.reserve')}</div>
                   <div className="font-mono text-nexa-100">{formatQty(pool.reserve1, 6)}</div>
                 </div>
                 <div>
-                  <div className="text-xs text-nexa-500">LP Shares</div>
+                  <div className="text-xs text-nexa-500">{t('amm.lpShares')}</div>
                   <div className="font-mono text-nexa-100">{formatQty(pool.lp_shares, 6)}</div>
                 </div>
               </div>
               {position && (
                 <div className="border-t border-nexa-800/50 px-4 py-3 text-sm">
-                  <span className="text-nexa-400">Your position:</span>{' '}
-                  <span className="font-mono text-nexa-100">{formatQty(position.shares, 6)}</span> shares
+                  <span className="text-nexa-400">{t('amm.yourPositionLabel')}</span>{' '}
+                  <span className="font-mono text-nexa-100">{formatQty(position.shares, 6)}</span> {t('amm.shares')}
                 </div>
               )}
             </Card>
@@ -220,21 +238,21 @@ export function AMMPage() {
           />
 
           {pool && (
-            <Card title="Recent Swaps">
+            <Card title={t('amm.recentSwaps')}>
               <div className="max-h-64 overflow-y-auto p-2">
                 <table className="w-full text-left text-sm">
                   <thead className="text-nexa-400">
                     <tr>
-                      <th className="px-3 py-2">Time</th>
-                      <th className="px-3 py-2">In</th>
-                      <th className="px-3 py-2">Out</th>
+                      <th className="px-3 py-2">{t('trading.time')}</th>
+                      <th className="px-3 py-2">{t('amm.in')}</th>
+                      <th className="px-3 py-2">{t('amm.out')}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {(swaps || []).length === 0 && (
                       <tr>
                         <td colSpan={3} className="px-3 py-4 text-center text-nexa-500">
-                          No swaps
+                          {t('amm.noSwaps')}
                         </td>
                       </tr>
                     )}
@@ -271,6 +289,7 @@ function SwapPanel({
   onUpdate: () => void;
   setMsg: (m: { text: string; type: 'success' | 'error' } | null) => void;
 }) {
+  const { t } = useTranslation();
   const [amountIn, setAmountIn] = useState('');
   const [tokenIn, setTokenIn] = useState('');
   const [quoting, setQuoting] = useState(false);
@@ -300,7 +319,7 @@ function SwapPanel({
     return () => { cancelled = true; };
   }, [pool, amountIn, tokenIn]);
 
-  if (!pool) return <div className="p-4 text-sm text-nexa-500">Select or create a pool first.</div>;
+  if (!pool) return <div className="p-4 text-sm text-nexa-500">{t('amm.noPools')}</div>;
 
   const tokenOut = tokenIn === pool.token0 ? pool.token1 : pool.token0;
 
@@ -311,12 +330,12 @@ function SwapPanel({
     setMsg(null);
     try {
       await executeAmmSwap({ pool_id: pool.id, token_in: tokenIn, amount_in: amountIn });
-      setMsg({ text: `Swapped ${amountIn} ${tokenIn} → ${quote?.amount_out || ''} ${tokenOut}`, type: 'success' });
+      setMsg({ text: t('amm.swapped', { amountIn, tokenIn, amountOut: quote?.amount_out || '', tokenOut }), type: 'success' });
       setAmountIn('');
       setQuote(null);
       onUpdate();
     } catch (err: unknown) {
-      setMsg({ text: err instanceof Error ? err.message : 'Swap failed', type: 'error' });
+      setMsg({ text: err instanceof Error ? err.message : t('amm.swap'), type: 'error' });
     } finally {
       setSwapping(false);
     }
@@ -324,12 +343,12 @@ function SwapPanel({
 
   return (
     <form onSubmit={submit} className="space-y-4 p-2">
-      <Select label="Token In" value={tokenIn} onChange={(e) => setTokenIn(e.target.value)}>
+      <Select label={t('amm.tokenIn')} value={tokenIn} onChange={(e) => setTokenIn(e.target.value)}>
         <option value={pool.token0}>{pool.token0}</option>
         <option value={pool.token1}>{pool.token1}</option>
       </Select>
       <Input
-        label={`Amount In (${tokenIn})`}
+        label={`${t('amm.amountIn')} (${tokenIn})`}
         type="number"
         step="any"
         value={amountIn}
@@ -339,20 +358,20 @@ function SwapPanel({
       {quote && (
         <div className="space-y-1 rounded border border-nexa-700 bg-nexa-900/50 p-3 text-sm">
           <div className="flex justify-between">
-            <span className="text-nexa-400">You receive</span>
+            <span className="text-nexa-400">{t('amm.youReceive')}</span>
             <span className="font-mono text-nexa-100">
               {formatQty(quote.amount_out, 6)} {tokenOut}
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-nexa-400">Fee</span>
+            <span className="text-nexa-400">{t('amm.fee')}</span>
             <span className="font-mono text-nexa-100">{formatQty(quote.fee, 6)} {tokenIn}</span>
           </div>
         </div>
       )}
-      {quoting && <div className="text-xs text-nexa-500">Updating quote...</div>}
+      {quoting && <div className="text-xs text-nexa-500">{t('amm.updatingQuote')}</div>}
       <Button type="submit" isLoading={swapping} className="w-full">
-        Swap {tokenIn} → {tokenOut}
+        {t('amm.swap')} {tokenIn} → {tokenOut}
       </Button>
     </form>
   );
@@ -369,13 +388,14 @@ function LiquidityPanel({
   onUpdate: () => void;
   setMsg: (m: { text: string; type: 'success' | 'error' } | null) => void;
 }) {
+  const { t } = useTranslation();
   const [amount0, setAmount0] = useState('');
   const [amount1, setAmount1] = useState('');
   const [adding, setAdding] = useState(false);
   const [removeShares, setRemoveShares] = useState('');
   const [removing, setRemoving] = useState(false);
 
-  if (!pool) return <div className="p-4 text-sm text-nexa-500">Select or create a pool first.</div>;
+  if (!pool) return <div className="p-4 text-sm text-nexa-500">{t('amm.noPools')}</div>;
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -385,14 +405,14 @@ function LiquidityPanel({
     try {
       const res = await addLiquidity(pool.id, { amount0, amount1 });
       setMsg({
-        text: `Added liquidity: ${formatQty(res.amount0, 4)} ${pool.token0} + ${formatQty(res.amount1, 4)} ${pool.token1} → ${formatQty(res.shares_minted, 6)} shares`,
+        text: `${t('amm.addLiquidity')}: ${formatQty(res.amount0, 4)} ${pool.token0} + ${formatQty(res.amount1, 4)} ${pool.token1} → ${formatQty(res.shares_minted, 6)}`,
         type: 'success',
       });
       setAmount0('');
       setAmount1('');
       onUpdate();
     } catch (err: unknown) {
-      setMsg({ text: err instanceof Error ? err.message : 'Add liquidity failed', type: 'error' });
+      setMsg({ text: err instanceof Error ? err.message : t('amm.addLiquidity'), type: 'error' });
     } finally {
       setAdding(false);
     }
@@ -406,13 +426,13 @@ function LiquidityPanel({
     try {
       const res = await removeLiquidity(pool.id, { shares: removeShares });
       setMsg({
-        text: `Removed liquidity: ${formatQty(res.shares, 6)} shares → ${formatQty(res.amount0, 4)} ${pool.token0} + ${formatQty(res.amount1, 4)} ${pool.token1}`,
+        text: `${t('amm.removeLiquidity')}: ${formatQty(res.shares, 6)} → ${formatQty(res.amount0, 4)} ${pool.token0} + ${formatQty(res.amount1, 4)} ${pool.token1}`,
         type: 'success',
       });
       setRemoveShares('');
       onUpdate();
     } catch (err: unknown) {
-      setMsg({ text: err instanceof Error ? err.message : 'Remove liquidity failed', type: 'error' });
+      setMsg({ text: err instanceof Error ? err.message : t('amm.removeLiquidity'), type: 'error' });
     } finally {
       setRemoving(false);
     }
@@ -421,9 +441,9 @@ function LiquidityPanel({
   return (
     <div className="grid grid-cols-1 gap-4 p-2 md:grid-cols-2">
       <form onSubmit={add} className="space-y-3">
-        <h3 className="text-sm font-medium text-nexa-100">Add Liquidity</h3>
+        <h3 className="text-sm font-medium text-nexa-100">{t('amm.addLiquidity')}</h3>
         <Input
-          label={`${pool.token0} Amount`}
+          label={`${pool.token0} ${t('wallet.amount')}`}
           type="number"
           step="any"
           value={amount0}
@@ -431,7 +451,7 @@ function LiquidityPanel({
           required
         />
         <Input
-          label={`${pool.token1} Amount`}
+          label={`${pool.token1} ${t('wallet.amount')}`}
           type="number"
           step="any"
           value={amount1}
@@ -439,14 +459,14 @@ function LiquidityPanel({
           required
         />
         <Button type="submit" isLoading={adding} className="w-full">
-          Add Liquidity
+          {t('amm.addLiquidity')}
         </Button>
       </form>
 
       <form onSubmit={remove} className="space-y-3">
-        <h3 className="text-sm font-medium text-nexa-100">Remove Liquidity</h3>
+        <h3 className="text-sm font-medium text-nexa-100">{t('amm.removeLiquidity')}</h3>
         <Input
-          label="Shares to Burn"
+          label={t('amm.sharesToBurn')}
           type="number"
           step="any"
           value={removeShares}
@@ -454,10 +474,10 @@ function LiquidityPanel({
           required
         />
         {position && (
-          <div className="text-xs text-nexa-400">Max: {formatQty(position.shares, 6)} shares</div>
+          <div className="text-xs text-nexa-400">{t('amm.max')}: {formatQty(position.shares, 6)}</div>
         )}
         <Button type="submit" variant="secondary" isLoading={removing} className="w-full">
-          Remove Liquidity
+          {t('amm.removeLiquidity')}
         </Button>
       </form>
     </div>
@@ -471,6 +491,7 @@ function CreatePoolPanel({
   onUpdate: () => void;
   setMsg: (m: { text: string; type: 'success' | 'error' } | null) => void;
 }) {
+  const { t } = useTranslation();
   const [pair, setPair] = useState('');
   const [token0, setToken0] = useState('');
   const [token1, setToken1] = useState('');
@@ -484,13 +505,13 @@ function CreatePoolPanel({
     setMsg(null);
     try {
       await createAmmPool({ pair, token0, token1, fee_rate: parseFloat(fee) });
-      setMsg({ text: `Pool ${pair} created`, type: 'success' });
+      setMsg({ text: t('amm.poolCreated', { pair }), type: 'success' });
       setPair('');
       setToken0('');
       setToken1('');
       onUpdate();
     } catch (err: unknown) {
-      setMsg({ text: err instanceof Error ? err.message : 'Create pool failed', type: 'error' });
+      setMsg({ text: err instanceof Error ? err.message : t('amm.createPool'), type: 'error' });
     } finally {
       setCreating(false);
     }
@@ -498,12 +519,12 @@ function CreatePoolPanel({
 
   return (
     <form onSubmit={submit} className="space-y-4 p-2 md:max-w-md">
-      <Input label="Pair (e.g. ETH/USDT)" value={pair} onChange={(e) => setPair(e.target.value)} required />
-      <Input label="Token 0" value={token0} onChange={(e) => setToken0(e.target.value)} required />
-      <Input label="Token 1" value={token1} onChange={(e) => setToken1(e.target.value)} required />
-      <Input label="Fee Rate" type="number" step="any" value={fee} onChange={(e) => setFee(e.target.value)} required />
+      <Input label={`${t('amm.pair')} (e.g. ETH/USDT)`} value={pair} onChange={(e) => setPair(e.target.value)} required />
+      <Input label={t('amm.token0')} value={token0} onChange={(e) => setToken0(e.target.value)} required />
+      <Input label={t('amm.token1')} value={token1} onChange={(e) => setToken1(e.target.value)} required />
+      <Input label={t('amm.feeRate')} type="number" step="any" value={fee} onChange={(e) => setFee(e.target.value)} required />
       <Button type="submit" isLoading={creating} className="w-full">
-        Create Pool
+        {t('amm.createPool')}
       </Button>
     </form>
   );

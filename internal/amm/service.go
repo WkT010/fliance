@@ -237,3 +237,55 @@ func (s *Service) ListPositionsByUser(userID string) ([]*LPPosition, error) {
 func (s *Service) ListSwaps(poolID string, limit, offset int) ([]*Swap, error) {
 	return s.store.ListSwaps(poolID, limit, offset)
 }
+
+// GetPoolByPair returns the pool for a trading pair, if one exists.
+func (s *Service) GetPoolByPair(pair string) (*Pool, error) {
+	return s.store.GetPoolByPair(pair)
+}
+
+// SavePoolReserves persists a pool's current reserves + LP shares without
+// touching any wallet. Used by the AMM market simulator and the bootstrap
+// seeder so they can move pool state (and therefore the derived price)
+// without debiting a real user.
+func (s *Service) SavePoolReserves(pool *Pool) error {
+	if pool == nil {
+		return ErrInvalidAmount
+	}
+	return s.store.UpdatePoolReserves(pool.ID, textF(pool.Reserve0), textF(pool.Reserve1), textF(pool.LPShares))
+}
+
+// SaveSwapRecord persists a swap record (e.g. a simulated market-maker swap)
+// without wallet settlement, so admin swap history reflects simulator activity.
+func (s *Service) SaveSwapRecord(sw *Swap) error {
+	if sw == nil {
+		return ErrInvalidAmount
+	}
+	if sw.ID == "" {
+		sw.ID = "swap_" + uuid.NewString()
+	}
+	if sw.CreatedAt == 0 {
+		sw.CreatedAt = time.Now().UnixNano()
+	}
+	return s.store.SaveSwap(sw)
+}
+
+// SeedPoolReserves injects initial liquidity into a pool by writing reserves
+// directly (bypassing AddLiquidity's wallet debit). LP shares are minted as
+// sqrt(reserve0 * reserve1), matching the first-deposit formula in AddLiquidity.
+// Used once at bootstrap to give every market starting depth and a starting price.
+func (s *Service) SeedPoolReserves(poolID string, reserve0, reserve1 *big.Float) error {
+	if reserve0 == nil || reserve0.Sign() <= 0 || reserve1 == nil || reserve1.Sign() <= 0 {
+		return ErrInvalidAmount
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pool, err := s.store.GetPool(poolID)
+	if err != nil {
+		return err
+	}
+	pool.Reserve0 = new(big.Float).Copy(reserve0)
+	pool.Reserve1 = new(big.Float).Copy(reserve1)
+	pool.LPShares = sqrtBigFloat(new(big.Float).Mul(reserve0, reserve1))
+	pool.UpdatedAt = time.Now().UnixNano()
+	return s.store.UpdatePoolReserves(pool.ID, textF(pool.Reserve0), textF(pool.Reserve1), textF(pool.LPShares))
+}

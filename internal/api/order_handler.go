@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/WkT010/nexa-exchange/internal/market"
 	"github.com/WkT010/nexa-exchange/internal/matching"
 	"github.com/WkT010/nexa-exchange/internal/risk"
 )
@@ -32,6 +33,15 @@ type OrderReleaser interface {
 	ReleaseOrder(orderID, userID string) error
 }
 
+// MarketDataProvider supplies external (reference) market depth and recent
+// trades. The order handler uses it to fall back to a real book / trade tape
+// when the matching engine's own state is empty, so the trading UI never shows
+// blank panels on a fresh deployment with no resting orders or fills.
+type MarketDataProvider interface {
+	MarketDepth(pair string, limit int) (*market.Depth, error)
+	RecentTrades(pair string, limit int) ([]market.RecentTrade, error)
+}
+
 type OrderHandler struct {
 	engines     map[string]*matching.MatchingEngine
 	exchange    *matching.ExchangeEngine
@@ -40,6 +50,7 @@ type OrderHandler struct {
 	wallet      WalletService
 	releaser    OrderReleaser
 	risk        *risk.Engine
+	prices      MarketDataProvider
 }
 
 // NewOrderHandlerWithExchange constructs an order handler backed by the
@@ -60,6 +71,12 @@ func (h *OrderHandler) SetWallet(ws WalletService, releaser OrderReleaser) {
 
 func (h *OrderHandler) SetCandleStore(cs CandlestickStore) {
 	h.candleStore = cs
+}
+
+// SetPriceProvider wires an external market-data provider used as a fallback
+// when the matching engine's own order book is empty.
+func (h *OrderHandler) SetPriceProvider(p MarketDataProvider) {
+	h.prices = p
 }
 
 func (h *OrderHandler) getEngine(pair string) *matching.MatchingEngine {
@@ -120,7 +137,33 @@ func (h *OrderHandler) GetOrderbook(c *gin.Context) {
 		return
 	}
 	depth := ob.Depth(100)
+	// If the matching engine has no resting orders (fresh deployment, no
+	// traders yet), fall back to a real L2 book from Binance so the trading UI
+	// shows live market depth instead of a blank panel. The SeqNo stays at the
+	// engine's value so clients can still detect real matching-engine updates.
+	if len(depth.Bids) == 0 && len(depth.Asks) == 0 && h.prices != nil {
+		if md, err := h.prices.MarketDepth(pair, 100); err == nil && md != nil && (len(md.Bids) > 0 || len(md.Asks) > 0) {
+			c.JSON(http.StatusOK, externalDepthToJSON(md, depth.SeqNo))
+			return
+		}
+	}
 	c.JSON(http.StatusOK, matching.OrderBookDepth{Pair: pair, Bids: depth.Bids, Asks: depth.Asks, SeqNo: depth.SeqNo})
+}
+
+// externalDepthToJSON converts a market.Depth (external reference book) into the
+// same JSON shape the matching engine emits via OrderBookDepth.MarshalJSON, so
+// the frontend's Orderbook type renders it without any client-side special
+// casing. Prices/quantities are stringified to match OrderbookLevel.
+func externalDepthToJSON(md *market.Depth, seqNo uint64) gin.H {
+	bids := make([]gin.H, 0, len(md.Bids))
+	for _, l := range md.Bids {
+		bids = append(bids, gin.H{"price": safeFloatStr(l.Price), "quantity": safeFloatStr(l.Quantity), "count": 1})
+	}
+	asks := make([]gin.H, 0, len(md.Asks))
+	for _, l := range md.Asks {
+		asks = append(asks, gin.H{"price": safeFloatStr(l.Price), "quantity": safeFloatStr(l.Quantity), "count": 1})
+	}
+	return gin.H{"pair": md.Pair, "bids": bids, "asks": asks, "seq": seqNo}
 }
 
 // GetTrades with *pair support
@@ -138,6 +181,29 @@ func (h *OrderHandler) GetTrades(c *gin.Context) {
 	var trades []*matching.Trade
 	if h.store != nil {
 		trades, _ = h.store.GetTrades(pair, limit)
+	}
+	// Fall back to Binance's recent trade tape when the matching engine has no
+	// recorded fills, so the recent-trades panel shows live market activity
+	// instead of staying blank on a fresh deployment.
+	if len(trades) == 0 && h.prices != nil {
+		if rt, err := h.prices.RecentTrades(pair, limit); err == nil && len(rt) > 0 {
+			out := make([]gin.H, 0, len(rt))
+			for _, t := range rt {
+				side := "sell"
+				if t.IsBuyer {
+					side = "buy"
+				}
+				out = append(out, gin.H{
+					"pair":     t.Pair,
+					"price":    safeFloatStr(t.Price),
+					"quantity": safeFloatStr(t.Quantity),
+					"time":     t.Time * int64(1e6),
+					"side":     side,
+				})
+			}
+			c.JSON(http.StatusOK, gin.H{"trades": out})
+			return
+		}
 	}
 	if trades == nil {
 		trades = make([]*matching.Trade, 0)
@@ -256,18 +322,25 @@ func candleToJSON(cd *matching.Candle) gin.H {
 }
 
 func tradeToJSON(t *matching.Trade) gin.H {
+	// `time` and `side` mirror the frontend's Trade type (RecentTrades.tsx reads
+	// t.time / t.side). `created_at` and `taker_side` are kept for any
+	// programmatic consumers that expect the engine's raw field names. Both
+	// `time` and `created_at` are nanoseconds (time.Now().UnixNano()), which is
+	// what the frontend's formatTime() expects (it divides by 1e6 to get ms).
 	return gin.H{
-		"id":           t.ID,
-		"buy_order_id": t.BuyOrderID,
+		"id":            t.ID,
+		"buy_order_id":  t.BuyOrderID,
 		"sell_order_id": t.SellOrderID,
-		"buyer_id":     t.BuyerID,
-		"seller_id":    t.SellerID,
-		"pair":         t.Pair,
-		"price":        safeFloatStr(t.Price),
-		"quantity":     safeFloatStr(t.Quantity),
-		"taker_side":   t.TakerSide.String(),
-		"fee":          safeFloatStr(t.Fee),
-		"created_at":   t.CreatedAt,
+		"buyer_id":      t.BuyerID,
+		"seller_id":     t.SellerID,
+		"pair":          t.Pair,
+		"price":         safeFloatStr(t.Price),
+		"quantity":      safeFloatStr(t.Quantity),
+		"side":          t.TakerSide.String(),
+		"taker_side":    t.TakerSide.String(),
+		"fee":           safeFloatStr(t.Fee),
+		"time":          t.CreatedAt,
+		"created_at":    t.CreatedAt,
 	}
 }
 

@@ -1,9 +1,9 @@
-version: "3.9"
 services:
   postgres:
     image: postgres:16-alpine
     environment: { POSTGRES_USER: nexa, POSTGRES_PASSWORD: nexa_dev, POSTGRES_DB: nexa }
-    ports: ["5432:5432"]
+    # Host port 5433 to avoid shadowing any native postgres on 5432.
+    ports: ["5433:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U nexa"], interval: 5s, timeout: 3s, retries: 5 }
   redis:
@@ -20,4 +20,6 @@ services:
     depends_on: [zookeeper]
     environment: { KAFKA_BROKER_ID: 1, KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181, KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092, KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1 }
     ports: ["9092:9092"]
-volumes: { pgdata:, redisdata: }
+volumes:
+  pgdata:
+  redisdata:

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { ChartPanel } from '@/components/trading/ChartPanel';
 import { OrderbookPanel } from '@/components/trading/OrderbookPanel';
@@ -16,6 +17,7 @@ import { getBalances } from '@/api/wallet';
 import type { Balance } from '@/types';
 
 export function TradingPage() {
+  const { t } = useTranslation();
   const [params, setParams] = useSearchParams();
   const [pair, setPair] = useState(params.get('pair') || 'BTC/USDT');
   const [leftTab, setLeftTab] = useState<'orderbook' | 'depth'>('orderbook');
@@ -40,9 +42,10 @@ export function TradingPage() {
 
   return (
     <Layout>
-      <div className="flex h-full flex-col gap-2 p-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+      <div className="flex h-full flex-col gap-2 overflow-y-auto p-2 lg:overflow-hidden">
+        {/* Price header — always first on every breakpoint */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-3">
             <Select className="w-40" value={pair} onChange={(e) => changePair(e.target.value)} options={SUPPORTED_PAIRS.map((p) => ({ value: p, label: p }))} />
             <div className="flex items-center gap-4">
               <span className="text-xl font-semibold font-mono tabular-nums"><span className={changeColorClass(ticker?.change_pct_24h)}>{formatPrice(ticker?.last, 2)}</span></span>
@@ -50,29 +53,36 @@ export function TradingPage() {
                 {ticker?.change_24h ? `${Number(ticker.change_24h) >= 0 ? '+' : ''}${formatPrice(ticker.change_24h, 2)}` : '--'} {ticker?.change_pct_24h ? `(${Number(ticker.change_pct_24h) >= 0 ? '+' : ''}${Number(ticker.change_pct_24h).toFixed(2)}%)` : ''}
               </span>
               <div className="hidden sm:flex items-center gap-4 text-xs text-nexa-400">
-                <div><span className="block text-nexa-500">High</span><span className="font-mono">{formatPrice(ticker?.high_24h, 2) || '--'}</span></div>
-                <div><span className="block text-nexa-500">Low</span><span className="font-mono">{formatPrice(ticker?.low_24h, 2) || '--'}</span></div>
-                <div><span className="block text-nexa-500">Vol</span><span className="font-mono">{ticker?.volume_24h ? Number(ticker.volume_24h).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '--'}</span></div>
+                <div><span className="block text-nexa-500">{t('trading.high')}</span><span className="font-mono">{formatPrice(ticker?.high_24h, 2) || '--'}</span></div>
+                <div><span className="block text-nexa-500">{t('trading.low')}</span><span className="font-mono">{formatPrice(ticker?.low_24h, 2) || '--'}</span></div>
+                <div><span className="block text-nexa-500">{t('trading.vol')}</span><span className="font-mono">{ticker?.volume_24h ? Number(ticker.volume_24h).toLocaleString('en-US', { maximumFractionDigits: 0 }) : '--'}</span></div>
               </div>
             </div>
           </div>
         </div>
+
+        {/* Desktop: 3-column grid. Mobile: stacked in trading-friendly order. */}
         <div className="grid flex-1 grid-cols-1 gap-2 lg:grid-cols-12">
-          <div className="lg:col-span-3 flex flex-col gap-2">
-            <div className="h-1/2 flex flex-col">
+          {/* Desktop left column: book + trades. On mobile this block renders after the form. */}
+          <div className="order-3 flex flex-col gap-2 lg:order-1 lg:col-span-3">
+            <div className="flex min-h-[320px] flex-col lg:h-1/2">
               <div className="flex border-b border-nexa-700">
-                <button className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${leftTab === 'orderbook' ? 'border-b-2 border-accent text-nexa-100' : 'text-nexa-400 hover:text-nexa-300'}`} onClick={() => setLeftTab('orderbook')}>Order Book</button>
-                <button className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${leftTab === 'depth' ? 'border-b-2 border-accent text-nexa-100' : 'text-nexa-400 hover:text-nexa-300'}`} onClick={() => setLeftTab('depth')}>Depth</button>
+                <button className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${leftTab === 'orderbook' ? 'border-b-2 border-accent text-nexa-100' : 'text-nexa-400 hover:text-nexa-300'}`} onClick={() => setLeftTab('orderbook')}>{t('trading.orderBook')}</button>
+                <button className={`flex-1 px-3 py-1.5 text-xs font-medium transition-colors ${leftTab === 'depth' ? 'border-b-2 border-accent text-nexa-100' : 'text-nexa-400 hover:text-nexa-300'}`} onClick={() => setLeftTab('depth')}>{t('trading.depth')}</button>
               </div>
               <div className="flex-1 min-h-0">{leftTab === 'orderbook' ? <OrderbookPanel pair={pair} compact /> : <DepthChart pair={pair} compact />}</div>
             </div>
-            <div className="h-1/2"><RecentTrades pair={pair} /></div>
+            <div className="min-h-[240px] lg:h-1/2"><RecentTrades pair={pair} /></div>
           </div>
-          <div className="lg:col-span-6 flex flex-col gap-2">
-            <div className="flex-1"><ChartPanel pair={pair} /></div>
-            <div className="h-48"><OrdersPanel pair={pair} /></div>
+
+          {/* Center column: chart + my orders. First on mobile so the user sees price action immediately. */}
+          <div className="order-1 flex flex-col gap-2 lg:order-2 lg:col-span-6">
+            <div className="min-h-[360px] flex-1"><ChartPanel pair={pair} /></div>
+            <div className="min-h-[180px] lg:h-48"><OrdersPanel pair={pair} /></div>
           </div>
-          <div className="lg:col-span-3"><OrderForm pair={pair} maxNotional={maxNotional} markPrice={ticker?.last} /></div>
+
+          {/* Right column: order form. Second on mobile so it's reachable right under the chart. */}
+          <div className="order-2 lg:order-3 lg:col-span-3"><OrderForm pair={pair} maxNotional={maxNotional} markPrice={ticker?.last} /></div>
         </div>
       </div>
     </Layout>

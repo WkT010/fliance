@@ -96,16 +96,26 @@ func (u *UniswapRPCProvider) FetchTicker(pair string) (*Ticker, error) {
 	if err := json.Unmarshal(res, &hexStr); err != nil {
 		return nil, fmt.Errorf("decode slot0 result: %w", err)
 	}
-	price, err := sqrtPriceX96ToPrice(hexStr, meta.Decimals0, meta.Decimals1)
+	raw, err := sqrtPriceX96ToPrice(hexStr, meta.Decimals0, meta.Decimals1)
 	if err != nil {
 		return nil, err
 	}
-	inv := new(big.Float).Quo(big.NewFloat(1), price)
+	// sqrtPriceX96ToPrice returns token1/token0 (after decimal adjustment).
+	// The display pair is "BASE/QUOTE" and callers expect quote-per-base. When
+	// the pool's token0 is the base token, raw is already quote/base; otherwise
+	// token0 is the quote token and raw is base/quote (inverted), so flip it.
+	parts := strings.Split(pair, "/")
+	price := raw
+	if len(parts) == 2 && meta.Token0 != parts[0] {
+		price = new(big.Float).Quo(big.NewFloat(1), raw)
+	}
+	// An AMM pool exposes a single mid price; there is no native bid/ask
+	// book, so report the mid for both sides rather than fabricating a spread.
 	return &Ticker{
 		Pair:      pair,
 		Last:      price,
 		Bid:       price,
-		Ask:       inv,
+		Ask:       price,
 		Volume24h: new(big.Float),
 		Timestamp: time.Now().UnixMilli(),
 	}, nil

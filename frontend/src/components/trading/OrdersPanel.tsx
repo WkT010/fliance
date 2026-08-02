@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { listOrders, cancelOrder } from '@/api/order';
 import { useMarketStore } from '@/store/marketStore';
 import { Card } from '../common/Card';
@@ -8,6 +9,7 @@ import { formatPrice, formatQty, formatTime } from '@/utils/format';
 import type { Order } from '@/types';
 
 export function OrdersPanel({ pair }: { pair: string }) {
+  const { t } = useTranslation();
   const [orders, setOrders] = useState<Order[]>([]);
   const fills = useMarketStore((s) => s.fills);
 
@@ -21,18 +23,18 @@ export function OrdersPanel({ pair }: { pair: string }) {
   const active = orders.filter((o) => ['new', 'partially_filled'].includes(o.status));
 
   return (
-    <Card className="h-full" title="Open Orders">
+    <Card className="h-full" title={t('trading.openOrders')}>
       <div className="overflow-auto px-4 pb-4">
         <table className="w-full text-left text-xs">
           <thead className="text-nexa-400">
             <tr>
-              <th className="py-2">Side</th>
-              <th>Type</th>
-              <th>Price</th>
-              <th>Qty</th>
-              <th>Filled</th>
-              <th>Status</th>
-              <th>Time</th>
+              <th className="py-2">{t('trading.side')}</th>
+              <th>{t('trading.type')}</th>
+              <th>{t('trading.price')}</th>
+              <th>{t('trading.qty')}</th>
+              <th>{t('trading.filled')}</th>
+              <th>{t('trading.status')}</th>
+              <th>{t('trading.time')}</th>
               <th></th>
             </tr>
           </thead>
@@ -46,10 +48,10 @@ export function OrdersPanel({ pair }: { pair: string }) {
                 <td className="text-nexa-300">{formatQty(o.filled_qty || '0', 6)}</td>
                 <td><Badge color="accent">{o.status}</Badge></td>
                 <td className="text-nexa-500">{formatTime(o.created_at)}</td>
-                <td><Button size="sm" variant="danger" onClick={() => cancelOrder(o.id).then(load)}>Cancel</Button></td>
+                <td><Button size="sm" variant="danger" onClick={() => cancelOrder(o.id).then(load)}>{t('trading.cancel')}</Button></td>
               </tr>
             ))}
-            {active.length === 0 && <tr><td colSpan={8} className="py-4 text-center text-nexa-500">No open orders</td></tr>}
+            {active.length === 0 && <tr><td colSpan={8} className="py-4 text-center text-nexa-500">{t('trading.noOpenOrders')}</td></tr>}
           </tbody>
         </table>
       </div>

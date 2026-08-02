@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/common/Card';
 import { Button } from '@/components/common/Button';
@@ -8,6 +9,7 @@ import { changePassword } from '@/api/auth';
 import { useAuthStore } from '@/store/authStore';
 
 export function SettingsPage() {
+  const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -19,22 +21,22 @@ export function SettingsPage() {
     e.preventDefault();
     setMsg(null);
     if (next.length < 8) {
-      setMsg({ text: 'New password must be at least 8 characters', type: 'error' });
+      setMsg({ text: t('settings.passwordTooShort'), type: 'error' });
       return;
     }
     if (next !== confirm) {
-      setMsg({ text: 'Passwords do not match', type: 'error' });
+      setMsg({ text: t('settings.passwordMismatch'), type: 'error' });
       return;
     }
     setLoading(true);
     try {
       await changePassword({ current_password: current, new_password: next });
-      setMsg({ text: 'Password updated successfully', type: 'success' });
+      setMsg({ text: t('settings.passwordUpdated'), type: 'success' });
       setCurrent('');
       setNext('');
       setConfirm('');
     } catch (err: unknown) {
-      const text = err instanceof Error ? err.message : 'Failed to update password';
+      const text = err instanceof Error ? err.message : t('settings.updateFailed');
       setMsg({ text, type: 'error' });
     } finally {
       setLoading(false);
@@ -45,20 +47,20 @@ export function SettingsPage() {
     <Layout>
       <div className="mx-auto grid max-w-5xl grid-cols-1 gap-6 p-4 lg:grid-cols-3">
         <div className="lg:col-span-1">
-          <Card title="Account">
+          <Card title={t('settings.account')}>
             <div className="space-y-4 p-4">
               <div>
-                <div className="text-xs uppercase tracking-wider text-nexa-500">Email</div>
+                <div className="text-xs uppercase tracking-wider text-nexa-500">{t('settings.email')}</div>
                 <div className="mt-1 font-medium text-nexa-100">{user?.email}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-nexa-500">Role</div>
+                <div className="text-xs uppercase tracking-wider text-nexa-500">{t('settings.role')}</div>
                 <div className="mt-1">
                   <Badge color={user?.role === 'admin' ? 'down' : 'accent'}>{user?.role}</Badge>
                 </div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-nexa-500">User ID</div>
+                <div className="text-xs uppercase tracking-wider text-nexa-500">{t('settings.userId')}</div>
                 <div className="mt-1 break-all font-mono text-xs text-nexa-400">{user?.id}</div>
               </div>
             </div>
@@ -66,24 +68,24 @@ export function SettingsPage() {
         </div>
 
         <div className="lg:col-span-2 space-y-6">
-          <Card title="Security">
+          <Card title={t('settings.security')}>
             <form onSubmit={submit} className="space-y-4 p-4">
               <Input
-                label="Current Password"
+                label={t('settings.currentPassword')}
                 type="password"
                 value={current}
                 onChange={(e) => setCurrent(e.target.value)}
                 required
               />
               <Input
-                label="New Password"
+                label={t('settings.newPassword')}
                 type="password"
                 value={next}
                 onChange={(e) => setNext(e.target.value)}
                 required
               />
               <Input
-                label="Confirm New Password"
+                label={t('settings.confirmNewPassword')}
                 type="password"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
@@ -101,33 +103,33 @@ export function SettingsPage() {
                 </div>
               )}
               <Button type="submit" isLoading={loading} variant="primary">
-                Update Password
+                {t('settings.updatePassword')}
               </Button>
             </form>
           </Card>
 
-          <Card title="Two-Factor Authentication">
+          <Card title={t('settings.twoFactor')}>
             <div className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-medium text-nexa-100">Authenticator App</div>
-                  <div className="text-sm text-nexa-400">Add an extra layer of security to your account.</div>
+                  <div className="font-medium text-nexa-100">{t('settings.authenticatorApp')}</div>
+                  <div className="text-sm text-nexa-400">{t('settings.twoFactorDesc')}</div>
                 </div>
                 <Button variant="secondary" disabled>
-                  Coming Soon
+                  {t('settings.comingSoon')}
                 </Button>
               </div>
             </div>
           </Card>
 
-          <Card title="Sessions">
+          <Card title={t('settings.sessions')}>
             <div className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-medium text-nexa-100">Current Session</div>
-                  <div className="text-sm text-nexa-400">You are currently signed in on this device.</div>
+                  <div className="font-medium text-nexa-100">{t('settings.currentSession')}</div>
+                  <div className="text-sm text-nexa-400">{t('settings.sessionDesc')}</div>
                 </div>
-                <Badge color="up">Active</Badge>
+                <Badge color="up">{t('settings.active')}</Badge>
               </div>
             </div>
           </Card>

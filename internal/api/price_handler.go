@@ -11,9 +11,18 @@ import (
 )
 
 type PriceHandler struct {
-	feed    *market.WSPriceFeed
-	uniswap *market.UniswapRPCProvider
-	binance *market.BinancePriceFeed
+	// ammFeed is the primary, self-contained price source. Every ticker, depth
+	// and recent-trade the handler exposes is derived from AMM pool reserves,
+	// so the exchange shows a live market with no external dependency.
+	ammFeed *market.AMMPriceFeed
+	// External sources are kept but only consulted when externalFallback is
+	// enabled (opt-in, default off) AND the AMM feed has no data for a pair.
+	// This preserves the "不依赖于源" contract by default while leaving a
+	// escape hatch for operators who want to blend in real-world prices.
+	feed             *market.WSPriceFeed
+	uniswap          *market.UniswapRPCProvider
+	binance          *market.BinancePriceFeed
+	externalFallback bool
 }
 
 func NewPriceHandler(apiKey string) *PriceHandler {
@@ -24,15 +33,37 @@ func NewPriceHandler(apiKey string) *PriceHandler {
 	}
 }
 
+// SetAMMFeed wires the self-contained AMM price feed as the primary source.
+// Once set, all ticker/depth/recent-trade reads prefer the AMM feed.
+func (h *PriceHandler) SetAMMFeed(f *market.AMMPriceFeed) {
+	h.ammFeed = f
+}
+
+// SetExternalFallback enables/disables consulting Binance/Uniswap/Alchemy when
+// the AMM feed has no data for a pair. Default is off (fully self-contained).
+func (h *PriceHandler) SetExternalFallback(on bool) {
+	h.externalFallback = on
+}
+
 func (h *PriceHandler) bestTicker(pair string) (*market.Ticker, string) {
+	// Primary: AMM feed (self-contained, always available once seeded).
+	if h.ammFeed != nil {
+		if t, err := h.ammFeed.FetchTicker(pair); err == nil && t != nil && t.Last != nil && t.Last.Sign() > 0 {
+			return t, "amm"
+		}
+	}
+	if !h.externalFallback {
+		return nil, ""
+	}
+	// Opt-in external fallback only when the AMM feed has nothing for the pair.
+	if t, err := h.binance.FetchTicker(pair); err == nil && t != nil {
+		return t, "binance"
+	}
 	if t, err := h.uniswap.FetchTicker(pair); err == nil && t != nil {
 		return t, "uniswap-v3-rpc"
 	}
 	if t := h.feed.Get(pair); t != nil {
 		return t, "alchemy-ws"
-	}
-	if t, err := h.binance.FetchTicker(pair); err == nil && t != nil {
-		return t, "binance"
 	}
 	return nil, ""
 }
@@ -43,6 +74,33 @@ func (h *PriceHandler) BestPrice(pair string) (*big.Float, string, error) {
 		return nil, "", fmt.Errorf("no price available for %s", pair)
 	}
 	return new(big.Float).Copy(t.Last), source, nil
+}
+
+// MarketDepth returns an L2 order book synthesized from the AMM pool's mid
+// price + fee. Used by the order handler when the matching engine's own book
+// is empty (the common case on a fresh deployment), so the trading UI shows a
+// realistic, self-contained book instead of a blank panel or external data.
+func (h *PriceHandler) MarketDepth(pair string, limit int) (*market.Depth, error) {
+	if h.ammFeed != nil {
+		return h.ammFeed.FetchDepth(pair, limit)
+	}
+	if h.externalFallback {
+		return h.binance.FetchDepth(pair, limit)
+	}
+	return nil, fmt.Errorf("amm: no feed available")
+}
+
+// RecentTrades returns the simulator's recent trade tape for `pair`. Used by
+// the order handler as a fallback when the matching engine has no recorded
+// fills, so the recent-trades panel shows live, self-contained activity.
+func (h *PriceHandler) RecentTrades(pair string, limit int) ([]market.RecentTrade, error) {
+	if h.ammFeed != nil {
+		return h.ammFeed.FetchRecentTrades(pair, limit)
+	}
+	if h.externalFallback {
+		return h.binance.FetchRecentTrades(pair, limit)
+	}
+	return nil, fmt.Errorf("amm: no feed available")
 }
 
 func (h *PriceHandler) GetTicker(c *gin.Context) {
@@ -71,49 +129,54 @@ func (h *PriceHandler) GetAllTickers(c *gin.Context) {
 
 func (h *PriceHandler) allTickers() []gin.H {
 	merged := make(map[string]*market.Ticker)
-	// Prefer Binance for 24h stats when available, then overlay Uniswap EVM prices.
-	if all, err := h.binance.FetchAllTickers(); err == nil {
-		for pair, t := range all {
-			merged[pair] = t
-		}
-	}
-	for pair, meta := range market.UniV3Pools {
-		if t, err := h.uniswap.FetchTicker(pair); err == nil && t != nil {
-			// Preserve Binance 24h stats if present, otherwise use Uniswap entirely.
-			if existing, ok := merged[pair]; ok && existing != nil {
-				t.Volume24h = existing.Volume24h
-				t.QuoteVolume24h = existing.QuoteVolume24h
-				t.High24h = existing.High24h
-				t.Low24h = existing.Low24h
-				t.Open24h = existing.Open24h
-				t.Change24h = existing.Change24h
-				t.ChangePct24h = existing.ChangePct24h
+	// Primary: AMM feed covers every seeded market and is always available.
+	if h.ammFeed != nil {
+		if all, err := h.ammFeed.FetchAllTickers(); err == nil {
+			for pair, t := range all {
+				merged[pair] = t
 			}
-			merged[pair] = t
 		}
-		_ = meta
 	}
-	for pair, t := range h.feed.GetAll() {
-		if _, ok := merged[pair]; !ok {
-			merged[pair] = t
+	// Opt-in external fallback only fills pairs the AMM feed does not cover.
+	if h.externalFallback {
+		if all, err := h.binance.FetchAllTickers(); err == nil {
+			for pair, t := range all {
+				if existing, ok := merged[pair]; ok && existing != nil && existing.Last != nil && existing.Last.Sign() > 0 {
+					continue
+				}
+				merged[pair] = t
+			}
+		}
+		for pair := range market.UniV3Pools {
+			if existing, ok := merged[pair]; ok && existing != nil && existing.Last != nil && existing.Last.Sign() > 0 {
+				continue
+			}
+			if t, err := h.uniswap.FetchTicker(pair); err == nil && t != nil {
+				merged[pair] = t
+			}
+		}
+		for pair, t := range h.feed.GetAll() {
+			if _, ok := merged[pair]; !ok {
+				merged[pair] = t
+			}
 		}
 	}
 	out := make([]gin.H, 0, len(merged))
 	for _, t := range merged {
 		out = append(out, gin.H{
 			"pair":           t.Pair,
-			"last":           safeFloatStr(t.Last),
-			"bid":            safeFloatStr(t.Bid),
-			"ask":            safeFloatStr(t.Ask),
-			"source":         "composite",
-			"volume_24h":     safeFloatStr(t.Volume24h),
+			"last":            safeFloatStr(t.Last),
+			"bid":             safeFloatStr(t.Bid),
+			"ask":             safeFloatStr(t.Ask),
+			"source":          "amm",
+			"volume_24h":      safeFloatStr(t.Volume24h),
 			"quote_volume_24h": safeFloatStr(t.QuoteVolume24h),
-			"high_24h":       safeFloatStr(t.High24h),
-			"low_24h":        safeFloatStr(t.Low24h),
-			"open_24h":       safeFloatStr(t.Open24h),
-			"change_24h":     safeFloatStr(t.Change24h),
-			"change_pct_24h": safeFloatStr(t.ChangePct24h),
-			"timestamp":      t.Timestamp,
+			"high_24h":        safeFloatStr(t.High24h),
+			"low_24h":         safeFloatStr(t.Low24h),
+			"open_24h":        safeFloatStr(t.Open24h),
+			"change_24h":      safeFloatStr(t.Change24h),
+			"change_pct_24h":  safeFloatStr(t.ChangePct24h),
+			"timestamp":       t.Timestamp,
 		})
 	}
 	return out

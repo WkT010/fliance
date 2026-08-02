@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/common/Card';
 import { Tabs } from '@/components/common/Tabs';
@@ -13,6 +14,7 @@ import { formatPrice, formatQty, formatDate, cls } from '@/utils/format';
 
 
 function CopyButton({ text }: { text: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -23,12 +25,13 @@ function CopyButton({ text }: { text: string }) {
   };
   return (
     <Button size="sm" variant="ghost" onClick={copy}>
-      {copied ? 'Copied' : 'Copy'}
+      {copied ? t('wallet.copied') : t('wallet.copy')}
     </Button>
   );
 }
 
 export function WalletPage() {
+  const { t } = useTranslation();
   const { data: balances, refetch: refetchBalances } = useFetch(getBalances, []);
   const { data: txs, refetch: refetchTxs } = useFetch(getTransactions, []);
   const { data: supportedAssets } = useFetch(getSupportedAssets, []);
@@ -67,13 +70,13 @@ export function WalletPage() {
     setWithdrawing(true);
     try {
       await withdraw({ asset, address, amount });
-      setMsg({ text: 'Withdrawal submitted for review', type: 'success' });
+      setMsg({ text: t('wallet.withdrawalSubmitted'), type: 'success' });
       setAddress('');
       setAmount('');
       refetchTxs();
       refetchBalances();
     } catch (err: unknown) {
-      setMsg({ text: err instanceof Error ? err.message : 'Withdrawal failed', type: 'error' });
+      setMsg({ text: err instanceof Error ? err.message : t('wallet.withdrawalFailed'), type: 'error' });
     } finally {
       setWithdrawing(false);
     }
@@ -86,16 +89,16 @@ export function WalletPage() {
       const res = await getDepositAddress(asset);
       setDepositAddress(res.address || '');
     } catch (err: unknown) {
-      setMsg({ text: err instanceof Error ? err.message : 'Failed', type: 'error' });
+      setMsg({ text: err instanceof Error ? err.message : t('common.failed'), type: 'error' });
     } finally {
       setDepositLoading(false);
     }
   };
 
   const filteredTxs = useMemo(() => {
-    return (txs || []).filter((t) => {
-      if (txFilter !== 'all' && t.type !== txFilter) return false;
-      if (txStatus !== 'all' && t.status.toLowerCase() !== txStatus) return false;
+    return (txs || []).filter((tx) => {
+      if (txFilter !== 'all' && tx.type !== txFilter) return false;
+      if (txStatus !== 'all' && tx.status.toLowerCase() !== txStatus) return false;
       return true;
     });
   }, [txs, txFilter, txStatus]);
@@ -109,20 +112,20 @@ export function WalletPage() {
     <Layout>
       <div className="mx-auto grid max-w-6xl grid-cols-1 gap-4 p-4 lg:grid-cols-3">
         {/* Overview */}
-        <Card className="lg:col-span-2" title="Asset Overview">
+        <Card className="lg:col-span-2" title={t('wallet.assetOverview')}>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-nexa-400">
                 <tr>
-                  <th className="px-4 py-3">Asset</th>
-                  <th className="px-4 py-3">Available</th>
-                  <th className="px-4 py-3">Locked</th>
-                  <th className="px-4 py-3 text-right">Total</th>
+                  <th className="px-4 py-3">{t('wallet.asset')}</th>
+                  <th className="px-4 py-3">{t('wallet.available')}</th>
+                  <th className="px-4 py-3">{t('wallet.locked')}</th>
+                  <th className="px-4 py-3 text-right">{t('wallet.total')}</th>
                 </tr>
               </thead>
               <tbody>
                 {(balances || []).length === 0 && (
-                  <tr><td colSpan={4} className="px-4 py-6 text-center text-nexa-500">No balances</td></tr>
+                  <tr><td colSpan={4} className="px-4 py-6 text-center text-nexa-500">{t('wallet.noBalances')}</td></tr>
                 )}
                 {(balances || []).map((b) => (
                   <tr
@@ -144,10 +147,10 @@ export function WalletPage() {
           </div>
         </Card>
 
-        <Card title="Total Estimated Value">
+        <Card title={t('wallet.totalValue')}>
           <div className="flex h-full flex-col justify-center p-6">
             <div className="text-3xl font-bold text-nexa-100">{formatPrice(totalBalance.toString(), 6)}</div>
-            <div className="mt-1 text-sm text-nexa-400">Total across all assets</div>
+            <div className="mt-1 text-sm text-nexa-400">{t('wallet.totalAcross')}</div>
             <div className="mt-4 text-xs text-nexa-500">
               {balances?.length || 0} asset{(balances?.length || 0) === 1 ? '' : 's'}
             </div>
@@ -155,30 +158,30 @@ export function WalletPage() {
         </Card>
 
         {/* Actions */}
-        <Card className="lg:col-span-1" title="Actions">
+        <Card className="lg:col-span-1" title={t('wallet.actions')}>
           <div className="p-2">
             <Tabs
               defaultTab="deposit"
               tabs={[
                 {
                   id: 'deposit',
-                  label: 'Deposit',
+                  label: t('wallet.deposit'),
                   content: (
                     <div className="space-y-4 pt-2">
-                      <Select label="Asset" value={asset} onChange={(e) => { setAsset(e.target.value); setDepositAddress(''); }}>
+                      <Select label={t('wallet.asset')} value={asset} onChange={(e) => { setAsset(e.target.value); setDepositAddress(''); }}>
                         {assets.map((a) => <option key={a} value={a}>{a}</option>)}
                       </Select>
                       {selectedBalance && (
                         <div className="text-xs text-nexa-400">
-                          Available: <span className="font-mono text-nexa-200">{formatQty(selectedBalance.available, 8)} {asset}</span>
+                          {t('wallet.availableColon')} <span className="font-mono text-nexa-200">{formatQty(selectedBalance.available, 8)} {asset}</span>
                         </div>
                       )}
                       <Button onClick={deposit} isLoading={depositLoading} className="w-full">
-                        Get Deposit Address
+                        {t('wallet.getDepositAddress')}
                       </Button>
                       {depositAddress && (
                         <div className="space-y-2 rounded border border-nexa-700 bg-nexa-900/50 p-3">
-                          <div className="text-xs text-nexa-500">Deposit Address</div>
+                          <div className="text-xs text-nexa-500">{t('wallet.depositAddress')}</div>
                           <div className="break-all font-mono text-sm text-nexa-200">{depositAddress}</div>
                           <div className="flex gap-2">
                             <CopyButton text={depositAddress} />
@@ -187,7 +190,7 @@ export function WalletPage() {
                       )}
                       {depositAddress === '' && !depositLoading && (
                         <div className="text-xs text-nexa-500">
-                          Generate an address to deposit {asset}. Deposits may require network confirmations.
+                          {t('wallet.depositHint', { asset })}
                         </div>
                       )}
                     </div>
@@ -195,26 +198,26 @@ export function WalletPage() {
                 },
                 {
                   id: 'withdraw',
-                  label: 'Withdraw',
+                  label: t('wallet.withdraw'),
                   content: (
                     <form onSubmit={submitWithdraw} className="space-y-4 pt-2">
-                      <Select label="Asset" value={asset} onChange={(e) => setAsset(e.target.value)}>
+                      <Select label={t('wallet.asset')} value={asset} onChange={(e) => setAsset(e.target.value)}>
                         {assets.map((a) => <option key={a} value={a}>{a}</option>)}
                       </Select>
                       {selectedBalance && (
                         <div className="text-xs text-nexa-400">
-                          Available: <span className="font-mono text-nexa-200">{formatQty(selectedBalance.available, 8)} {asset}</span>
+                          {t('wallet.availableColon')} <span className="font-mono text-nexa-200">{formatQty(selectedBalance.available, 8)} {asset}</span>
                         </div>
                       )}
-                      <Input label="Destination Address" value={address} onChange={(e) => setAddress(e.target.value)} required />
-                      <Input label="Amount" type="number" step="0.000001" value={amount} onChange={(e) => setAmount(e.target.value)} required />
+                      <Input label={t('wallet.destinationAddress')} value={address} onChange={(e) => setAddress(e.target.value)} required />
+                      <Input label={t('wallet.amount')} type="number" step="0.000001" value={amount} onChange={(e) => setAmount(e.target.value)} required />
                       {msg && (
                         <div className={cls('rounded px-3 py-2 text-sm border', msg.type === 'success' ? 'bg-up/10 text-up border-up/20' : 'bg-down/10 text-down border-down/20')}>
                           {msg.text}
                         </div>
                       )}
                       <Button type="submit" variant="danger" isLoading={withdrawing} className="w-full">
-                        Withdraw
+                        {t('wallet.withdraw')}
                       </Button>
                     </form>
                   ),
@@ -225,43 +228,43 @@ export function WalletPage() {
         </Card>
 
         {/* Transactions */}
-        <Card className="lg:col-span-2" title="Transaction History">
+        <Card className="lg:col-span-2" title={t('wallet.transactionHistory')}>
           <div className="space-y-3 p-4">
             <div className="flex flex-wrap gap-3">
               <Select label="" value={txFilter} onChange={(e) => setTxFilter(e.target.value as typeof txFilter)} className="w-36">
-                <option value="all">All Types</option>
-                <option value="deposit">Deposit</option>
-                <option value="withdrawal">Withdrawal</option>
+                <option value="all">{t('wallet.allTypes')}</option>
+                <option value="deposit">{t('wallet.deposit')}</option>
+                <option value="withdrawal">{t('wallet.withdraw')}</option>
               </Select>
               <Select label="" value={txStatus} onChange={(e) => setTxStatus(e.target.value as typeof txStatus)} className="w-36">
-                <option value="all">All Status</option>
-                <option value="pending">Pending</option>
-                <option value="completed">Completed</option>
-                <option value="failed">Failed</option>
+                <option value="all">{t('wallet.allStatus')}</option>
+                <option value="pending">{t('common.pending')}</option>
+                <option value="completed">{t('common.completed')}</option>
+                <option value="failed">{t('common.failed')}</option>
               </Select>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="text-nexa-400">
                   <tr>
-                    <th className="px-3 py-2">Type</th>
-                    <th className="px-3 py-2">Asset</th>
-                    <th className="px-3 py-2">Amount</th>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2">Date</th>
+                    <th className="px-3 py-2">{t('trading.type')}</th>
+                    <th className="px-3 py-2">{t('wallet.asset')}</th>
+                    <th className="px-3 py-2">{t('wallet.amount')}</th>
+                    <th className="px-3 py-2">{t('trading.status')}</th>
+                    <th className="px-3 py-2">{t('trading.time')}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredTxs.length === 0 && (
-                    <tr><td colSpan={5} className="px-3 py-6 text-center text-nexa-500">No matching transactions</td></tr>
+                    <tr><td colSpan={5} className="px-3 py-6 text-center text-nexa-500">{t('wallet.noMatchingTx')}</td></tr>
                   )}
-                  {filteredTxs.map((t) => (
-                    <tr key={t.id} className="border-b border-nexa-800/50">
-                      <td className="px-3 py-2 capitalize">{t.type}</td>
-                      <td className="px-3 py-2">{t.asset}</td>
-                      <td className="px-3 py-2 font-mono">{formatPrice(t.amount, 8)}</td>
-                      <td className="px-3 py-2"><Badge>{t.status}</Badge></td>
-                      <td className="px-3 py-2 text-nexa-400">{formatDate(t.created_at)}</td>
+                  {filteredTxs.map((tx) => (
+                    <tr key={tx.id} className="border-b border-nexa-800/50">
+                      <td className="px-3 py-2 capitalize">{tx.type}</td>
+                      <td className="px-3 py-2">{tx.asset}</td>
+                      <td className="px-3 py-2 font-mono">{formatPrice(tx.amount, 8)}</td>
+                      <td className="px-3 py-2"><Badge>{tx.status}</Badge></td>
+                      <td className="px-3 py-2 text-nexa-400">{formatDate(tx.created_at)}</td>
                     </tr>
                   ))}
                 </tbody>

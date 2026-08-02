@@ -10,32 +10,41 @@ export class NexaSocket {
   private pair: string | null = null;
   private manualClose = false;
   private reconnectAttempts = 0;
-  private MAX_RETRIES = 5;
+  // No upper bound on retries: a transiently-unavailable backend should not
+  // permanently sever the stream. Backoff is capped (MAX_BACKOFF_MS), so the
+  // attempt rate stays bounded and recovers automatically when the server
+  // comes back. Previously the client gave up after 5 tries, leaving the page
+  // silently disconnected until a full reload.
+  private MAX_BACKOFF_MS = 30000;
 
   connect(pair: string) {
     this.pair = pair;
     this.manualClose = false;
     this.reconnectAttempts = 0;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.doConnect();
   }
 
   private doConnect() {
-    if (this.reconnectAttempts >= this.MAX_RETRIES) {
-      console.warn('[WS] Max reconnect attempts reached, giving up');
-      return;
-    }
     const token = useAuthStore.getState().token;
     const url = token ? `${WS_URL}?token=${token}` : WS_URL;
-    this.ws = new WebSocket(url);
+    // Capture the instance so handlers can detect whether they belong to the
+    // currently-active connection. Without this, a late onclose from a previous
+    // (superseded) socket triggers spurious reconnects — especially under React
+    // StrictMode, which mounts/unmounts/remounts and shares this singleton.
+    const ws = new WebSocket(url);
+    this.ws = ws;
 
-    this.ws.onopen = () => {
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
       this.reconnectAttempts = 0;
       this.subscribe(WS_CHANNELS.ORDERBOOK, [this.pair!]);
       this.subscribe(WS_CHANNELS.TRADES, [this.pair!]);
       this.startHeartbeat();
     };
 
-    this.ws.onmessage = (event) => {
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
       try {
         const lines = event.data.split('\n');
         for (const line of lines) {
@@ -48,17 +57,20 @@ export class NexaSocket {
       } catch (err) { /* ignore */ }
     };
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      // Ignore closes from a superseded socket — a newer connection (or an
+      // explicit close()) has already taken over.
+      if (this.ws !== ws) return;
       this.stopHeartbeat();
       if (!this.manualClose) {
         this.reconnectAttempts++;
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
-        console.warn(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.MAX_RETRIES})`);
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), this.MAX_BACKOFF_MS);
+        console.warn(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
         this.reconnectTimer = setTimeout(() => this.doConnect(), delay);
       }
     };
 
-    this.ws.onerror = () => { this.ws?.close(); };
+    ws.onerror = () => { if (this.ws === ws) ws.close(); };
   }
 
   private startHeartbeat() {

@@ -113,6 +113,18 @@ export function ChartPanel({ pair }: { pair: string }) {
       watermark: { visible: true, text: `NEXA ${pair}`, fontSize: 28, color: 'rgba(212, 219, 227, 0.06)', vertAlign: 'center', horzAlign: 'center' },
     });
     chartRef.current = chart;
+    // A fresh chart has no series. Clear stale refs left over from a previous
+    // (now removed) chart so the data effect doesn't call removeSeries() on
+    // dead series, which throws "Value is undefined" inside lightweight-charts.
+    mainSeriesRef.current = null;
+    volumeSeriesRef.current = null;
+    volumeMaSeriesRef.current = null;
+    indicatorSeriesRef.current = [];
+    bollingerSeriesRef.current = [];
+    superTrendSeriesRef.current = null;
+    ichimokuSeriesRef.current = [];
+    fibSeriesRef.current = [];
+    pivotSeriesRef.current = [];
 
     const handleResize = () => {
       if (chartContainerRef.current) {

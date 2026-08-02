@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"math/big"
 	"net/http"
@@ -145,6 +146,27 @@ func main() {
 		ammStore = store.NewPGAmmStore(db)
 	}
 	ammSvc := amm.NewService(ammStore, walletSvc)
+
+	// Bootstrap AMM pools with seed liquidity so every market has starting depth
+	// and a starting price. Idempotent: only creates/seeds when the store is empty.
+	seeded, err := bootstrapAMMPools(ammSvc)
+	if err != nil {
+		log.Printf("[NEXA] AMM bootstrap failed: %v (price feed will be empty until pools exist)", err)
+	} else if seeded {
+		log.Printf("[NEXA] AMM pools seeded with initial liquidity")
+	}
+
+	// AMM price feed: a fully self-contained price source derived from pool
+	// reserves. This is the primary source for tickers/depth/trades — no
+	// external dependency on Binance/Uniswap/Alchemy.
+	ammFeed := market.NewAMMPriceFeed(ammSvc)
+	ammFeed.SetTradeRecorder(candleSvc) // simulator trades -> K-lines
+	if err := ammFeed.Reload(); err != nil {
+		log.Printf("[NEXA] AMM feed reload failed: %v", err)
+	} else {
+		log.Printf("[NEXA] AMM feed loaded %d pools", len(ammFeed.Pairs()))
+	}
+
 	ammH := api.NewAmmHandler(ammSvc)
 
 	// ── Handlers ──
@@ -155,6 +177,19 @@ func main() {
 	walletH := api.NewWalletHandler(withdrawalSvc, clients)
 
 	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey)
+	// AMM feed is the primary price source. External sources (Binance/Uniswap/
+	// Alchemy) are only consulted when ENABLE_EXTERNAL_PRICE_FALLBACK=true AND
+	// the AMM feed has no data for a pair — default off keeps the exchange fully
+	// self-contained.
+	priceH.SetAMMFeed(ammFeed)
+	if os.Getenv("ENABLE_EXTERNAL_PRICE_FALLBACK") == "true" {
+		priceH.SetExternalFallback(true)
+		log.Printf("[NEXA] external price fallback: enabled (opt-in)")
+	}
+	// Order book / recent-trades fallback for the matching engine (which is
+	// empty on a fresh deployment with no resting orders) comes from the same
+	// AMM feed, so the trading UI shows live, self-contained depth and tape.
+	orderH.SetPriceProvider(priceH)
 	futuresH := api.NewFuturesHandler(priceH, walletSvc, futuresStore)
 
 	// ── Futures liquidation / TP-SL / funding / order processing ──
@@ -246,6 +281,29 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	// ── AMM market simulator ──
+	// Periodically runs small swaps against every pool so prices move even when
+	// no real trader is active. This is what makes the exchange's market
+	// self-contained: the AMM pools themselves produce all price action.
+	simInterval := 3 * time.Second
+	if v := os.Getenv("MARKET_SIM_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			simInterval = d
+		}
+	}
+	simulator := market.NewSimulator(ammFeed, simInterval)
+	simulator.Start()
+	// Expose simulator control + bootstrap to admin endpoints (start/stop/status/seed).
+	adminH.SetAMMSimulator(simulator)
+	adminH.SetAMMFeed(ammFeed)
+	adminH.SetAMMBootstrap(func() error {
+		_, err := bootstrapAMMPools(ammSvc)
+		if err != nil {
+			return err
+		}
+		return ammFeed.Reload()
+	})
+
 	// ── Graceful shutdown ──
 	go func() {
 		sig := make(chan os.Signal, 1)
@@ -254,6 +312,7 @@ func main() {
 		log.Printf("[NEXA] received %v, shutting down...", s)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		simulator.Stop()
 		bridge.Stop()
 		exchange.Stop()
 		_ = srv.Shutdown(ctx)
@@ -309,4 +368,64 @@ func defaultPairRisk(pair string) *risk.PairConfig {
 		MarketOrdersEnabled: true,
 		TradingEnabled:      true,
 	}
+}
+
+// ammSeedSpec defines the seed liquidity for a market. token0 is the base
+// asset, token1 is USDT; the product reserve0*reserve1 sets the price (price =
+// reserve1/reserve0). Reserves are chosen so each pool has meaningful depth
+// relative to typical trade sizes.
+type ammSeedSpec struct {
+	Pair                          string
+	Token0, Token1                string
+	Reserve0, Reserve1            float64
+}
+
+// defaultAMMSeeds is the set of markets bootstrapped on a fresh store. Adding a
+// pair here also makes the AMM feed cover it automatically once seeded.
+var defaultAMMSeeds = []ammSeedSpec{
+	// BTC @ ~63000, ETH @ ~3000, SOL @ ~150, BNB @ ~600, ADA @ ~0.5
+	{"BTC/USDT", "BTC", "USDT", 10, 630000},
+	{"ETH/USDT", "ETH", "USDT", 100, 300000},
+	{"SOL/USDT", "SOL", "USDT", 2000, 300000},
+	{"BNB/USDT", "BNB", "USDT", 500, 300000},
+	{"ADA/USDT", "ADA", "USDT", 200000, 100000},
+}
+
+// bootstrapAMMPools ensures every default market has a pool with seed liquidity.
+// It creates missing pools and seeds reserves for pools that have no liquidity
+// yet. Returns true if any pool was created or seeded. Idempotent: a fully-seeded
+// store returns (false, nil) on subsequent calls.
+func bootstrapAMMPools(svc *amm.Service) (bool, error) {
+	existing, err := svc.ListPools()
+	if err != nil {
+		return false, fmt.Errorf("list pools: %w", err)
+	}
+	byPair := make(map[string]*amm.Pool, len(existing))
+	for _, p := range existing {
+		byPair[p.Pair] = p
+	}
+	anyChanged := false
+	fee := big.NewFloat(0.003) // 30 bps
+	for _, spec := range defaultAMMSeeds {
+		pool, ok := byPair[spec.Pair]
+		if !ok || pool == nil {
+			// Create the pool.
+			p, err := svc.CreatePool(spec.Pair, spec.Token0, spec.Token1, fee)
+			if err != nil {
+				return anyChanged, fmt.Errorf("create pool %s: %w", spec.Pair, err)
+			}
+			pool = p
+			anyChanged = true
+		}
+		// Seed reserves only if the pool is empty (no liquidity yet). This
+		// preserves any real liquidity a user may have added since boot.
+		if pool.Reserve0 == nil || pool.Reserve0.Sign() <= 0 ||
+			pool.Reserve1 == nil || pool.Reserve1.Sign() <= 0 {
+			if err := svc.SeedPoolReserves(pool.ID, big.NewFloat(spec.Reserve0), big.NewFloat(spec.Reserve1)); err != nil {
+				return anyChanged, fmt.Errorf("seed pool %s: %w", spec.Pair, err)
+			}
+			anyChanged = true
+		}
+	}
+	return anyChanged, nil
 }

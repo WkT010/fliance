@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/WkT010/nexa-exchange/internal/market"
 	"github.com/WkT010/nexa-exchange/internal/matching"
 	"github.com/WkT010/nexa-exchange/internal/risk"
 	"github.com/WkT010/nexa-exchange/internal/wallet"
@@ -46,6 +47,12 @@ type AdminHandler struct {
 	withdrawals WithdrawalManager
 	risk        RiskManager
 	exchange    ExchangeManager
+
+	// AMM admin hooks. Wired from cmd/api-gateway when the AMM price engine is
+	// enabled; nil otherwise (endpoints return 503 if not configured).
+	ammSim       *market.Simulator
+	ammFeed      *market.AMMPriceFeed
+	ammBootstrap func() error // create+seed default pools then reload feed
 }
 
 // NewAdminHandler constructs an admin handler.

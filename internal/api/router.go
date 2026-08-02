@@ -69,6 +69,12 @@ func NewRouter(
 func (r *Router) SetStaticDir(dir string) { r.staticDir = dir }
 
 func (r *Router) Setup() *gin.Engine {
+	// CORS: reflect configured origins. In production, set CORS_ALLOW_ORIGINS to
+	// the bound domain (e.g. https://trade.yourdomain.com) and
+	// CORS_ALLOW_CREDENTIALS=true. When serving the SPA from the same origin as
+	// the API (the common deployment here), CORS is a no-op but harmless.
+	r.engine.Use(CORSMiddlewareConfig(r.config.CORSAllowOrigins, r.config.CORSAllowCreds))
+
 	r.engine.GET("/health", r.health.Handler())
 	r.engine.GET("/ready", r.health.ReadyHandler())
 	r.engine.GET("/metrics", observability.MetricsHandler())
@@ -135,9 +141,10 @@ func (r *Router) Setup() *gin.Engine {
 	api.POST("/swap/build", r.ph.BuildSwap)
 
 	// Internal AMM pools and swaps.
+	// ListPools/GetPool/QuoteSwap are public (read-only); CreatePool is
+	// admin-only (see admin group below) so ordinary users cannot mint markets.
 	api.GET("/amm/pools", r.ammH.ListPools)
 	api.GET("/amm/pools/:id", r.ammH.GetPool)
-	api.POST("/amm/pools", r.ammH.CreatePool)
 	prot.GET("/amm/pools/:id/position", r.ammH.GetPosition)
 	prot.POST("/amm/pools/:id/add-liquidity", r.ammH.AddLiquidity)
 	prot.POST("/amm/pools/:id/remove-liquidity", r.ammH.RemoveLiquidity)
@@ -150,6 +157,12 @@ func (r *Router) Setup() *gin.Engine {
 	admin := api.Group("/admin")
 	admin.Use(r.authMW, AdminOnly())
 	admin.GET("/users", r.accountH.AdminListUsers)
+	// AMM admin: create pools, re-seed, control the market simulator.
+	admin.POST("/amm/pools", r.ammH.CreatePool)
+	admin.POST("/amm/seed", r.adminH.SeedAMM)
+	admin.POST("/amm/simulator/start", r.adminH.StartSimulator)
+	admin.POST("/amm/simulator/stop", r.adminH.StopSimulator)
+	admin.GET("/amm/simulator", r.adminH.SimulatorStatus)
 	admin.GET("/withdrawals", r.adminH.ListWithdrawals)
 	admin.POST("/withdrawals/:id/approve", r.adminH.ApproveWithdrawal)
 	admin.POST("/withdrawals/:id/reject", r.adminH.RejectWithdrawal)

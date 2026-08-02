@@ -56,3 +56,35 @@ export async function resumePair(pair: string): Promise<void> {
 export async function setUserDailyLimit(userId: string, asset: string, dailyLimit: string): Promise<void> {
   await api.post(`/admin/users/${userId}/limits`, { asset, daily_limit: dailyLimit });
 }
+
+// ── AMM admin ──
+
+export interface AmmSimulatorStatus {
+  running?: boolean;
+  configured?: boolean;
+  interval_ms?: number;
+  prices?: Record<string, string>;
+  pairs?: string[];
+  status?: string;
+}
+
+// Re-seed default AMM pools with bootstrap liquidity.
+export async function seedAmmPools(): Promise<{ status: string; pairs: string[] }> {
+  const res = await api.post('/admin/amm/seed');
+  return res.data;
+}
+
+export async function startAmmSimulator(): Promise<AmmSimulatorStatus> {
+  const res = await api.post('/admin/amm/simulator/start');
+  return res.data;
+}
+
+export async function stopAmmSimulator(): Promise<AmmSimulatorStatus> {
+  const res = await api.post('/admin/amm/simulator/stop');
+  return res.data;
+}
+
+export async function getAmmSimulatorStatus(): Promise<AmmSimulatorStatus> {
+  const res = await api.get('/admin/amm/simulator');
+  return res.data;
+}

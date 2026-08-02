@@ -53,7 +53,11 @@ func Load() *Config {
 		JWTIssuer:  getEnv("JWT_ISSUER", "nexa-exchange"),
 		ListenAddr: getEnv("LISTEN_ADDR", ":8080"),
 		GRPCAddr:   getEnv("GRPC_ADDR", ":50051"),
-		PostgresDSN: getEnv("POSTGRES_DSN", "postgres://nexa:nexa_dev@localhost:5432/nexa?sslmode=disable"),
+		// Default matches deploy/docker/docker-compose.yml (user=nexa, password=nexa_dev,
+		// db=nexa, host port 5433). Use 127.0.0.1 instead of localhost so the Go
+		// resolver picks IPv4 — on Windows, "localhost" often resolves to IPv6 ::1,
+		// which WSL's port relay can shadow and route to the wrong database.
+		PostgresDSN: getEnv("POSTGRES_DSN", "postgres://nexa:nexa_dev@127.0.0.1:5433/nexa?sslmode=disable"),
 		RedisAddr:   getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPass:   getEnv("REDIS_PASSWORD", ""),
 		RedisDB:     getEnvAsInt("REDIS_DB", 0),

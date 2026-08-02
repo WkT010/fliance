@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { login, register, getAccount } from '@/api/auth';
 import { useAuthStore } from '@/store/authStore';
 import { Button } from '@/components/common/Button';
@@ -7,6 +8,7 @@ import { Input } from '@/components/common/Input';
 import { Card } from '@/components/common/Card';
 
 export function LoginPage() {
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -29,18 +31,15 @@ export function LoginPage() {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { status?: number; data?: { error?: string } } };
         const status = axiosErr.response?.status;
-        if (status === 401) { setError('Email or password incorrect'); return; }
-        if (status === 400) { setError(axiosErr.response?.data?.error || 'Invalid input'); return; }
-        if (status === 429) {
-          setError('Too many attempts. Please wait and try again');
-          return;
-        }
+        if (status === 401) { setError(t('auth.invalidCredentials')); return; }
+        if (status === 400) { setError(axiosErr.response?.data?.error || t('auth.invalidCredentials')); return; }
+        if (status === 429) { setError(t('auth.invalidCredentials')); return; }
         if (axiosErr.response?.data?.error) {
           setError(axiosErr.response.data.error);
           return;
         }
       }
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : t('auth.invalidCredentials'));
     } finally {
       setLoading(false);
     }
@@ -49,17 +48,17 @@ export function LoginPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-nexa-950 p-4">
       <Card className="w-full max-w-md p-6">
-        <h1 className="mb-6 text-center text-2xl font-bold text-accent">NEXA</h1>
+        <h1 className="mb-6 text-center text-2xl font-bold text-accent">{t('brand')}</h1>
         <form onSubmit={submit} className="space-y-4">
-          <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-          <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <Input label={t('auth.email')} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <Input label={t('auth.password')} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
           {error && (
             <div className="rounded border border-down/20 bg-down/10 px-3 py-2 text-sm text-down">{error}</div>
           )}
-          <Button type="submit" isLoading={loading} className="w-full">Sign In</Button>
+          <Button type="submit" isLoading={loading} className="w-full">{t('auth.signIn')}</Button>
         </form>
         <p className="mt-4 text-center text-sm text-nexa-400">
-          No account? <Link to="/register" className="text-accent hover:underline">Register</Link>
+          {t('auth.noAccount')} <Link to="/register" className="text-accent hover:underline">{t('auth.register')}</Link>
         </p>
       </Card>
     </div>
@@ -67,6 +66,7 @@ export function LoginPage() {
 }
 
 export function RegisterPage() {
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -88,9 +88,9 @@ export function RegisterPage() {
       if (err && typeof err === 'object' && 'response' in err) {
         const axiosErr = err as { response?: { status?: number; data?: { error?: string } } };
         if (axiosErr.response?.status === 409) { setError('already_registered'); return; }
-        if (axiosErr.response?.status === 400) { setError(axiosErr.response?.data?.error || 'Invalid input'); return; }
+        if (axiosErr.response?.status === 400) { setError(axiosErr.response?.data?.error || t('auth.emailExists')); return; }
       }
-      setError(err instanceof Error ? err.message : 'Registration failed');
+      setError(err instanceof Error ? err.message : t('auth.emailExists'));
     } finally {
       setLoading(false);
     }
@@ -100,22 +100,22 @@ export function RegisterPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-nexa-950 p-4">
       <Card className="w-full max-w-md p-6">
-        <h1 className="mb-6 text-center text-2xl font-bold text-accent">NEXA</h1>
+        <h1 className="mb-6 text-center text-2xl font-bold text-accent">{t('brand')}</h1>
         <form onSubmit={submit} className="space-y-4">
-          <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-          <Input label="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <Input label={t('auth.email')} type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          <Input label={t('auth.password')} type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
           {error && error === 'already_registered' ? (
             <div className="rounded border border-down/20 bg-down/10 px-3 py-2 text-sm text-down">
-              This email is already registered.{' '}
-              <Link to="/login" className="text-accent font-medium hover:underline">Sign In</Link>
+              {t('auth.emailExists')}{' '}
+              <Link to="/login" className="text-accent font-medium hover:underline">{t('auth.signIn')}</Link>
             </div>
           ) : (
             error && <p className="text-sm text-down">{error}</p>
           )}
-          <Button type="submit" isLoading={loading} className="w-full">Create Account</Button>
+          <Button type="submit" isLoading={loading} className="w-full">{t('auth.register')}</Button>
         </form>
         <p className="mt-4 text-center text-sm text-nexa-400">
-          Already have an account? <Link to="/login" className="text-accent hover:underline">Sign In</Link>
+          {t('auth.hasAccount')} <Link to="/login" className="text-accent hover:underline">{t('auth.signIn')}</Link>
         </p>
       </Card>
     </div>

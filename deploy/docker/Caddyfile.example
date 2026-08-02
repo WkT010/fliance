@@ -1,0 +1,48 @@
+# Caddyfile — reverse proxy + automatic TLS for the Nexa Exchange gateway.
+#
+# Caddy is the recommended front-end for domain binding because it obtains and
+# renews Let's Encrypt certificates automatically (zero config). Install Caddy
+# (https://caddyserver.com/docs/install) and then:
+#
+#   1. Copy this file to ./Caddyfile and edit the domain.
+#   2. Make sure ports 80 + 443 are reachable from the internet (router port-
+#      forward / cloud security group) and that your DNS A record points here.
+#   3. Run `caddy run --config ./Caddyfile` (or `caddy start` to daemonize).
+#
+# Replace trade.yourdomain.com with your actual domain.
+
+trade.yourdomain.com {
+	# Terminal TLS with a 13-month cert (>= 30 days recommended by LE).
+	# Caddy handles ACME issuance + renewal automatically — no manual certbot.
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	# Encode responses (gzip/zstd) for snappier page loads.
+	encode zstd gzip
+
+	# Reverse proxy everything to the api-gateway, which also serves the built
+	# SPA from STATIC_DIR. Keep WebSocket upgrades alive (the /ws route) and
+	# forward the real client IP / host so the backend sees the origin domain.
+	reverse_proxy 127.0.0.1:8080 {
+		# Flush immediately so streaming responses (WebSocket, SSE) aren't buffered.
+		flush_interval -1
+		header_up Host {host}
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# Long-lived requests (WebSocket at /ws, market data streams) need generous
+	# timeouts so Caddy doesn't cut them off.
+	request_body {
+		max_size 10MB
+	}
+}
+
+# Optional: a bare-domain redirect (yourdomain.com -> www.yourdomain.com or vice
+# versa). Uncomment and edit if you want both apex + www to land on the app.
+#
+# yourdomain.com {
+# 	redir https://trade.yourdomain.com{uri} permanent
+# }
