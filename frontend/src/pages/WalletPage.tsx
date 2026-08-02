@@ -7,10 +7,11 @@ import { Button } from '@/components/common/Button';
 import { Input } from '@/components/common/Input';
 import { Badge } from '@/components/common/Badge';
 import { Select } from '@/components/common/Select';
-import { getBalances, getTransactions, withdraw, getDepositAddress, getSupportedAssets } from '@/api/wallet';
+import { getBalances, getTransactions, withdraw, deposit, getDepositAddress, getSupportedAssets } from '@/api/wallet';
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
 import { formatPrice, formatQty, formatDate, cls } from '@/utils/format';
+import { SUPPORTED_PAIRS } from '@/utils/constants';
 
 
 function CopyButton({ text }: { text: string }) {
@@ -39,6 +40,10 @@ export function WalletPage() {
 
   const assets = useMemo(() => {
     const set = new Set<string>(supportedAssets || []);
+    // Always allow depositing the quote currency (USDT) and every traded base
+    // currency, even when no on-chain client is registered (simulated deposit).
+    set.add('USDT');
+    SUPPORTED_PAIRS.forEach((p) => { const base = p.split('/')[0]; if (base) set.add(base); });
     (balances || []).forEach((b) => set.add(b.asset));
     return Array.from(set).sort();
   }, [supportedAssets, balances]);
@@ -55,6 +60,8 @@ export function WalletPage() {
 
   const [depositAddress, setDepositAddress] = useState('');
   const [depositLoading, setDepositLoading] = useState(false);
+  const [depositAmount, setDepositAmount] = useState('');
+  const [depositing, setDepositing] = useState(false);
 
   const [txFilter, setTxFilter] = useState<'all' | 'deposit' | 'withdrawal'>('all');
   const [txStatus, setTxStatus] = useState<'all' | 'pending' | 'completed' | 'failed'>('all');
@@ -82,7 +89,7 @@ export function WalletPage() {
     }
   };
 
-  const deposit = async () => {
+  const fetchDepositAddress = async () => {
     setDepositLoading(true);
     setMsg(null);
     try {
@@ -92,6 +99,28 @@ export function WalletPage() {
       setMsg({ text: err instanceof Error ? err.message : t('common.failed'), type: 'error' });
     } finally {
       setDepositLoading(false);
+    }
+  };
+
+  const doDeposit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMsg(null);
+    const amt = Number(depositAmount);
+    if (!amt || amt <= 0) {
+      setMsg({ text: t('wallet.depositFailed'), type: 'error' });
+      return;
+    }
+    setDepositing(true);
+    try {
+      await deposit(asset, depositAmount);
+      setMsg({ text: t('wallet.depositSuccess', { amount: formatQty(depositAmount, 8), asset }), type: 'success' });
+      setDepositAmount('');
+      refetchBalances();
+      refetchTxs();
+    } catch (err: unknown) {
+      setMsg({ text: err instanceof Error ? err.message : t('wallet.depositFailed'), type: 'error' });
+    } finally {
+      setDepositing(false);
     }
   };
 
@@ -176,21 +205,47 @@ export function WalletPage() {
                           {t('wallet.availableColon')} <span className="font-mono text-nexa-200">{formatQty(selectedBalance.available, 8)} {asset}</span>
                         </div>
                       )}
-                      <Button onClick={deposit} isLoading={depositLoading} className="w-full">
-                        {t('wallet.getDepositAddress')}
-                      </Button>
-                      {depositAddress && (
-                        <div className="space-y-2 rounded border border-nexa-700 bg-nexa-900/50 p-3">
-                          <div className="text-xs text-nexa-500">{t('wallet.depositAddress')}</div>
-                          <div className="break-all font-mono text-sm text-nexa-200">{depositAddress}</div>
-                          <div className="flex gap-2">
+
+                      {/* On-chain deposit address (only for assets with a registered blockchain client) */}
+                      <div className="space-y-2">
+                        <Button onClick={fetchDepositAddress} isLoading={depositLoading} variant="secondary" className="w-full">
+                          {t('wallet.getDepositAddress')}
+                        </Button>
+                        {depositAddress && (
+                          <div className="space-y-2 rounded border border-nexa-700 bg-nexa-900/50 p-3">
+                            <div className="text-xs text-nexa-500">{t('wallet.onChainAddress')}</div>
+                            <div className="break-all font-mono text-sm text-nexa-200">{depositAddress}</div>
                             <CopyButton text={depositAddress} />
                           </div>
+                        )}
+                        {!depositAddress && !depositLoading && (
+                          <div className="text-xs text-nexa-500">{t('wallet.manualOnly')}</div>
+                        )}
+                      </div>
+
+                      {/* Simulated deposit — credits the account instantly. Works for
+                          every asset including internally-issued USDT (no on-chain client). */}
+                      <form onSubmit={doDeposit} className="space-y-3 rounded border border-accent/20 bg-accent/5 p-3">
+                        <div>
+                          <div className="mb-1 text-xs font-medium text-accent">{t('wallet.simulated')}</div>
+                          <p className="text-xs text-nexa-500">{t('wallet.simulatedHint')}</p>
                         </div>
-                      )}
-                      {depositAddress === '' && !depositLoading && (
-                        <div className="text-xs text-nexa-500">
-                          {t('wallet.depositHint', { asset })}
+                        <Input
+                          label={t('wallet.depositAmount')}
+                          type="number"
+                          step="0.000001"
+                          value={depositAmount}
+                          onChange={(e) => setDepositAmount(e.target.value)}
+                          required
+                        />
+                        <Button type="submit" isLoading={depositing} className="w-full">
+                          {t('wallet.confirmDeposit')} {asset}
+                        </Button>
+                      </form>
+
+                      {msg && (
+                        <div className={cls('rounded px-3 py-2 text-sm border', msg.type === 'success' ? 'bg-up/10 text-up border-up/20' : 'bg-down/10 text-down border-down/20')}>
+                          {msg.text}
                         </div>
                       )}
                     </div>

@@ -21,6 +21,15 @@ export async function getDepositAddress(asset: string): Promise<{ address: strin
   return res.data;
 }
 
+// deposit credits the authenticated user's wallet immediately. In production
+// deposits are detected on-chain by the wallet-service; on this self-contained
+// exchange (no real chain) it is a simulated credit that works for every
+// asset, including internally-issued USDT which has no blockchain client.
+export async function deposit(asset: string, amount: string, txHash?: string): Promise<{ status: string; asset: string; amount: string }> {
+  const res = await api.post('/wallet/deposit', { asset, amount, tx_hash: txHash });
+  return res.data;
+}
+
 export async function getSupportedAssets(): Promise<string[]> {
   const res = await api.get<{ assets: string[] }>('/wallet/assets');
   return res.data.assets || [];
