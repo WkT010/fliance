@@ -52,4 +52,24 @@ make test && make bench    # Tests + benchmarks
 {"type":"subscribe","channel":"orderbook","pairs":["BTC/USDT"]}
 ```
 
+## Deployment: Supabase（可选托管数据库 / Optional Managed Database）
+
+Instead of self-hosting PostgreSQL, you can point the exchange at a managed
+Supabase project:
+
+1. Create a Supabase project at https://supabase.com and wait for it to finish provisioning.
+2. Open **Project Settings → Database → Connection string** and copy the **Transaction pooler** string (port `6543`). Use the **Direct** string (port `5432`) only if you later need session-level features (LISTEN/NOTIFY, advisory locks).
+3. Fill `.env` with the connection string, replacing the password placeholder and keeping `sslmode=require` (Supabase enforces TLS):
+   ```bash
+   POSTGRES_DSN=postgresql://postgres.[PROJECT-REF]:[YOUR-PASSWORD]@aws-0-<region>.pooler.supabase.com:6543/postgres?sslmode=require
+   ```
+4. Run the migrations against Supabase (they are versioned via the `schema_migrations` table):
+   ```bash
+   make migrate   # or: go run ./scripts/migrate
+   ```
+5. Start the services as usual (`make run-engine`, `make run-api`, `make run-wallet`); they read `POSTGRES_DSN` at startup.
+
+> Note: the transaction pooler (PgBouncer) is compatible with this codebase —
+> no prepared-statement caching, LISTEN/NOTIFY, or session state is used.
+
 ## License MIT

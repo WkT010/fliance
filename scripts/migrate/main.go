@@ -32,7 +32,7 @@ func runMigrations(db *sql.DB) error {
 		db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=$1`, ver).Scan(&applied)
 		if applied > 0 { slog.Info("skip migration", "file", filepath.Base(f)); continue }
 		sqlBytes, _ := os.ReadFile(f)
-		for _, stmt := range strings.Split(string(sqlBytes), ";") {
+		for _, stmt := range strings.Split(stripCommentLines(string(sqlBytes)), ";") {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" { continue }
 			if _, err := db.Exec(stmt); err != nil { return fmt.Errorf("%s: %w", filepath.Base(f), err) }
@@ -41,4 +41,19 @@ func runMigrations(db *sql.DB) error {
 		slog.Info("applied migration", "file", filepath.Base(f))
 	}
 	return nil
+}
+
+// stripCommentLines removes full-line "--" comments before the SQL is split
+// on ';' — otherwise a semicolon inside a comment (e.g. "reserves; the
+// remainder") breaks the statement stream.
+func stripCommentLines(sql string) string {
+	lines := strings.Split(sql, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, l := range lines {
+		if strings.HasPrefix(strings.TrimSpace(l), "--") {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	return strings.Join(kept, "\n")
 }

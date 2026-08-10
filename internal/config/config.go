@@ -68,6 +68,11 @@ func Load() *Config {
 		// db=nexa, host port 5433). Use 127.0.0.1 instead of localhost so the Go
 		// resolver picks IPv4 — on Windows, "localhost" often resolves to IPv6 ::1,
 		// which WSL's port relay can shadow and route to the wrong database.
+		//
+		// Supabase (managed PostgreSQL): set POSTGRES_DSN to the Transaction
+		// pooler string (port 6543) with sslmode=require — Supabase enforces
+		// TLS. The store layer (lib/pq, no LISTEN/NOTIFY or session state) is
+		// compatible with PgBouncer transaction pooling. See .env.example.
 		PostgresDSN:       getEnv("POSTGRES_DSN", "postgres://nexa:nexa_dev@127.0.0.1:5433/nexa?sslmode=disable"),
 		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPass:         getEnv("REDIS_PASSWORD", ""),
