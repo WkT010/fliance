@@ -7,7 +7,7 @@ import { Badge } from '@/components/common/Badge';
 import { Input } from '@/components/common/Input';
 import {
   listWithdrawals, approveWithdrawal, rejectWithdrawal,
-  listPairRisk, updatePairRisk, setUserDailyLimit,
+  listPairRisk, updatePairRisk, setUserDailyLimit, adminDeposit,
   seedAmmPools, startAmmSimulator, stopAmmSimulator, getAmmSimulatorStatus,
   type AmmSimulatorStatus,
 } from '@/api/admin';
@@ -15,6 +15,7 @@ import { getAmmPools } from '@/api/amm';
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
 import { formatPrice, formatDate, formatQty } from '@/utils/format';
+import { toast } from '@/store/toastStore';
 import type { WithdrawalReviewItem, PairRiskConfig } from '@/types';
 
 export function AdminPage() {
@@ -34,7 +35,7 @@ export function AdminPage() {
 
   return (
     <Layout>
-      <div className="h-full overflow-y-auto p-4">
+      <div className="p-4 pb-8">
         <Tabs
           defaultTab="withdrawals"
           tabs={[
@@ -112,6 +113,11 @@ export function AdminPage() {
               ),
             },
             {
+              id: 'deposit',
+              label: t('admin.manualDeposit'),
+              content: <ManualDepositPanel />,
+            },
+            {
               id: 'amm',
               label: t('admin.ammPools'),
               content: <AmmAdminPanel />,
@@ -120,6 +126,42 @@ export function AdminPage() {
         />
       </div>
     </Layout>
+  );
+}
+
+// ManualDepositPanel credits balances via the admin-only deposit endpoint
+// (POST /admin/wallet/deposit) — the successor of the removed self-service
+// POST /wallet/deposit. The backend credits the caller's own account.
+function ManualDepositPanel() {
+  const { t } = useTranslation();
+  const [asset, setAsset] = useState('USDT');
+  const [amount, setAmount] = useState('');
+  const [txHash, setTxHash] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await adminDeposit(asset, amount, txHash || undefined);
+      toast.success(t('wallet.depositSuccess', { amount: formatQty(amount, 8), asset }));
+      setAmount('');
+      setTxHash('');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('wallet.depositFailed'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="max-w-md space-y-3">
+      <p className="text-xs text-nexa-500">{t('admin.depositHint')}</p>
+      <Input label={t('admin.asset')} value={asset} onChange={(e) => setAsset(e.target.value)} required />
+      <Input label={t('wallet.amount')} type="number" step="0.000001" value={amount} onChange={(e) => setAmount(e.target.value)} required />
+      <Input label={t('admin.txHash')} value={txHash} onChange={(e) => setTxHash(e.target.value)} />
+      <Button type="submit" isLoading={busy}>{t('wallet.confirmDeposit')}</Button>
+    </form>
   );
 }
 

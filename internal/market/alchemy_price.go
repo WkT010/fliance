@@ -9,7 +9,9 @@ import (
 	"time"
 )
 
-type AlchemyPriceResponse struct{ Data []AlchemyTokenPrice `json:"data"` }
+type AlchemyPriceResponse struct {
+	Data []AlchemyTokenPrice `json:"data"`
+}
 type AlchemyTokenPrice struct {
 	Symbol string         `json:"symbol"`
 	Prices []AlchemyPrice `json:"prices"`
@@ -42,19 +44,33 @@ var alchemyPairs = map[string]string{
 func (a *AlchemyPriceFeed) FetchAllTickers() (map[string]*Ticker, error) {
 	syms := make([]string, 0, len(alchemyPairs))
 	seen := map[string]bool{}
-	for _, s := range alchemyPairs { if !seen[s] { syms = append(syms, s); seen[s] = true } }
+	for _, s := range alchemyPairs {
+		if !seen[s] {
+			syms = append(syms, s)
+			seen[s] = true
+		}
+	}
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/tokens/by-symbol?symbols=%s", a.baseURL, strings.Join(syms, ",")), nil)
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	resp, err := a.client.Do(req)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer resp.Body.Close()
 	var r AlchemyPriceResponse
 	json.NewDecoder(resp.Body).Decode(&r)
 	tickers := map[string]*Ticker{}
 	for _, t := range r.Data {
 		pair := ""
-		for p, s := range alchemyPairs { if s == t.Symbol { pair = p; break } }
-		if pair == "" || len(t.Prices) == 0 { continue }
+		for p, s := range alchemyPairs {
+			if s == t.Symbol {
+				pair = p
+				break
+			}
+		}
+		if pair == "" || len(t.Prices) == 0 {
+			continue
+		}
 		p := t.Prices[0]
 		last, _ := new(big.Float).SetString(p.Value)
 		ts, _ := time.Parse(time.RFC3339Nano, p.LastUpdatedAt)
@@ -65,15 +81,21 @@ func (a *AlchemyPriceFeed) FetchAllTickers() (map[string]*Ticker, error) {
 
 func (a *AlchemyPriceFeed) FetchTicker(pair string) (*Ticker, error) {
 	s, ok := alchemyPairs[pair]
-	if !ok { return nil, fmt.Errorf("unsupported: %s", pair) }
+	if !ok {
+		return nil, fmt.Errorf("unsupported: %s", pair)
+	}
 	req, _ := http.NewRequest("GET", fmt.Sprintf("%s/tokens/by-symbol?symbols=%s", a.baseURL, s), nil)
 	req.Header.Set("Authorization", "Bearer "+a.apiKey)
 	resp, err := a.client.Do(req)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer resp.Body.Close()
 	var r AlchemyPriceResponse
 	json.NewDecoder(resp.Body).Decode(&r)
-	if len(r.Data) == 0 || len(r.Data[0].Prices) == 0 { return nil, fmt.Errorf("no data") }
+	if len(r.Data) == 0 || len(r.Data[0].Prices) == 0 {
+		return nil, fmt.Errorf("no data")
+	}
 	p := r.Data[0].Prices[0]
 	last, _ := new(big.Float).SetString(p.Value)
 	ts, _ := time.Parse(time.RFC3339Nano, p.LastUpdatedAt)

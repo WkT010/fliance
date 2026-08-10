@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/WkT010/nexa-exchange/internal/wallet"
+	"github.com/google/uuid"
 )
 
 // WalletService is the subset of wallet.Service required by the AMM engine.
@@ -166,8 +166,17 @@ func (s *Service) Quote(poolID, tokenIn string, amountIn *big.Float) (*big.Float
 }
 
 // ExecuteSwap performs a swap against the pool, debiting the input token and
-// crediting the output token.
+// crediting the output token. No slippage protection is applied; use
+// ExecuteSwapWithMinOut to enforce a minimum output.
 func (s *Service) ExecuteSwap(userID, poolID, tokenIn string, amountIn *big.Float) (*Swap, error) {
+	return s.ExecuteSwapWithMinOut(userID, poolID, tokenIn, amountIn, nil)
+}
+
+// ExecuteSwapWithMinOut performs a swap with optional slippage protection.
+// minAmountOut may be nil or <= 0 to skip the check (backward compatible);
+// otherwise the swap is rejected with ErrSlippageExceeded before any wallet
+// settlement or reserve mutation if the quoted output falls below it.
+func (s *Service) ExecuteSwapWithMinOut(userID, poolID, tokenIn string, amountIn, minAmountOut *big.Float) (*Swap, error) {
 	if amountIn == nil || amountIn.Sign() <= 0 {
 		return nil, ErrInvalidAmount
 	}
@@ -183,6 +192,12 @@ func (s *Service) ExecuteSwap(userID, poolID, tokenIn string, amountIn *big.Floa
 	amountOut, fee, _, err := QuoteSwap(pool, tokenIn, amountIn)
 	if err != nil {
 		return nil, err
+	}
+
+	// Slippage guard: reject before touching wallets or reserves.
+	if minAmountOut != nil && minAmountOut.Sign() > 0 && amountOut.Cmp(minAmountOut) < 0 {
+		return nil, fmt.Errorf("%w: quoted %s, required at least %s",
+			ErrSlippageExceeded, textF(amountOut), textF(minAmountOut))
 	}
 
 	var tokenOut string
@@ -207,6 +222,21 @@ func (s *Service) ExecuteSwap(userID, poolID, tokenIn string, amountIn *big.Floa
 		return nil, fmt.Errorf("update pool: %w", err)
 	}
 
+	// Attribute the fee: the wallet was debited the full amountIn, but only
+	// amountIn - fee entered the reserves. Credit the difference to the pool's
+	// protocol-fee accumulator (denominated in the input token) so it never
+	// vanishes from the ledger.
+	if fee != nil && fee.Sign() > 0 {
+		if tokenIn == pool.Token0 {
+			pool.ProtocolFees0.Add(pool.ProtocolFees0, fee)
+		} else {
+			pool.ProtocolFees1.Add(pool.ProtocolFees1, fee)
+		}
+		pool.UpdatedAt = time.Now().UnixNano()
+		if err := s.store.UpdatePoolProtocolFees(pool.ID, textF(pool.ProtocolFees0), textF(pool.ProtocolFees1)); err != nil {
+			return nil, fmt.Errorf("update protocol fees: %w", err)
+		}
+	}
 	// Record swap.
 	sw := &Swap{
 		ID:        "swap_" + uuid.NewString(),
@@ -226,8 +256,8 @@ func (s *Service) ExecuteSwap(userID, poolID, tokenIn string, amountIn *big.Floa
 	return sw, nil
 }
 
-func (s *Service) GetPool(id string) (*Pool, error)        { return s.store.GetPool(id) }
-func (s *Service) ListPools() ([]*Pool, error)             { return s.store.ListPools() }
+func (s *Service) GetPool(id string) (*Pool, error) { return s.store.GetPool(id) }
+func (s *Service) ListPools() ([]*Pool, error)      { return s.store.ListPools() }
 func (s *Service) GetPositionByPool(userID, poolID string) (*LPPosition, error) {
 	return s.store.GetPositionByPool(userID, poolID)
 }
@@ -241,6 +271,60 @@ func (s *Service) ListSwaps(poolID string, limit, offset int) ([]*Swap, error) {
 // GetPoolByPair returns the pool for a trading pair, if one exists.
 func (s *Service) GetPoolByPair(pair string) (*Pool, error) {
 	return s.store.GetPoolByPair(pair)
+}
+
+// GetProtocolFees returns the accumulated protocol fee totals for a pool,
+// denominated in token0 and token1 respectively. Intended for admin display;
+// HTTP exposure is handled by the API layer.
+func (s *Service) GetProtocolFees(poolID string) (*big.Float, *big.Float, error) {
+	pool, err := s.store.GetPool(poolID)
+	if err != nil {
+		return nil, nil, err
+	}
+	fee0 := pool.ProtocolFees0
+	if fee0 == nil {
+		fee0 = big.NewFloat(0)
+	}
+	fee1 := pool.ProtocolFees1
+	if fee1 == nil {
+		fee1 = big.NewFloat(0)
+	}
+	return new(big.Float).Copy(fee0), new(big.Float).Copy(fee1), nil
+}
+
+// CollectProtocolFees resets the pool's accumulated protocol fees to zero and
+// returns the collected amounts (token0, token1). Skeleton for a future admin
+// withdrawal flow: wallet settlement of the collected fees is intentionally
+// NOT wired yet — the collected tokens sit outside the reserves, so zeroing
+// the accumulators does not disturb x*y=k accounting.
+func (s *Service) CollectProtocolFees(poolID string) (*big.Float, *big.Float, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pool, err := s.store.GetPool(poolID)
+	if err != nil {
+		return nil, nil, err
+	}
+	fee0 := pool.ProtocolFees0
+	if fee0 == nil {
+		fee0 = big.NewFloat(0)
+	}
+	fee1 := pool.ProtocolFees1
+	if fee1 == nil {
+		fee1 = big.NewFloat(0)
+	}
+	collected0 := new(big.Float).Copy(fee0)
+	collected1 := new(big.Float).Copy(fee1)
+
+	pool.ProtocolFees0 = big.NewFloat(0)
+	pool.ProtocolFees1 = big.NewFloat(0)
+	pool.UpdatedAt = time.Now().UnixNano()
+	if err := s.store.UpdatePoolProtocolFees(pool.ID, textF(pool.ProtocolFees0), textF(pool.ProtocolFees1)); err != nil {
+		return nil, nil, fmt.Errorf("update protocol fees: %w", err)
+	}
+	// TODO(admin-withdrawal): settle collected0/collected1 to the protocol
+	// treasury wallet once the admin payout flow is implemented.
+	return collected0, collected1, nil
 }
 
 // SavePoolReserves persists a pool's current reserves + LP shares without

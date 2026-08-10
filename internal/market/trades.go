@@ -11,11 +11,11 @@ import (
 // (pair/price/quantity/time/side) so the recent-trades panel can render
 // reference activity when the matching engine has no recorded fills.
 type RecentTrade struct {
-	Pair      string
-	Price     *big.Float
-	Quantity  *big.Float
-	Time      int64 // unix milliseconds
-	IsBuyer   bool  // true => taker is buyer (aggressive buy)
+	Pair     string
+	Price    *big.Float
+	Quantity *big.Float
+	Time     int64 // unix milliseconds
+	IsBuyer  bool  // true => taker is buyer (aggressive buy)
 }
 
 // FetchRecentTrades pulls recent executed trades from Binance's aggTrades

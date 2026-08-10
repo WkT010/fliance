@@ -110,7 +110,7 @@ export function ChartPanel({ pair }: { pair: string }) {
       crosshair: { mode: CrosshairMode.Magnet },
       rightPriceScale: { borderColor: '#2a313c', scaleMargins: { top: 0.1, bottom: 0.2 } },
       timeScale: { borderColor: '#2a313c', timeVisible: true, secondsVisible: false },
-      watermark: { visible: true, text: `NEXA ${pair}`, fontSize: 28, color: 'rgba(212, 219, 227, 0.06)', vertAlign: 'center', horzAlign: 'center' },
+      watermark: { visible: true, text: `Fliance ${pair}`, fontSize: 28, color: 'rgba(212, 219, 227, 0.06)', vertAlign: 'center', horzAlign: 'center' },
     });
     chartRef.current = chart;
     // A fresh chart has no series. Clear stale refs left over from a previous
@@ -482,7 +482,7 @@ export function ChartPanel({ pair }: { pair: string }) {
   const lastPrice = tickers[pair]?.last;
 
   return (
-    <Card className="flex h-full flex-col" title={
+    <Card className="flex h-full min-h-[520px] flex-col" title={
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span>{pair} <span className="text-nexa-400">{formatPrice(lastPrice, 2)}</span></span>
         <div className="flex flex-wrap items-center gap-2">

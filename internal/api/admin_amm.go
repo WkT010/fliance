@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"github.com/WkT010/nexa-exchange/internal/market"
+	"github.com/gin-gonic/gin"
 )
 
 // SetAMMSimulator wires the AMM market simulator so admin endpoints can
@@ -29,6 +29,7 @@ func (h *AdminHandler) SeedAMM(c *gin.Context) {
 		return
 	}
 	if err := h.ammBootstrap(); err != nil {
+		h.audit.Log(c, "admin.amm.seed", "amm_pool", "all", nil, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -36,6 +37,7 @@ func (h *AdminHandler) SeedAMM(c *gin.Context) {
 	if h.ammFeed != nil {
 		pairs = h.ammFeed.Pairs()
 	}
+	h.audit.Log(c, "admin.amm.seed", "amm_pool", "all", gin.H{"pairs": pairs}, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "seeded", "pairs": pairs})
 }
 
@@ -47,6 +49,7 @@ func (h *AdminHandler) StartSimulator(c *gin.Context) {
 		return
 	}
 	h.ammSim.Start()
+	h.audit.Log(c, "admin.amm.simulator.start", "amm_simulator", "", nil, nil)
 	c.JSON(http.StatusOK, h.simulatorStatus())
 }
 
@@ -58,6 +61,7 @@ func (h *AdminHandler) StopSimulator(c *gin.Context) {
 		return
 	}
 	h.ammSim.Stop()
+	h.audit.Log(c, "admin.amm.simulator.stop", "amm_simulator", "", nil, nil)
 	c.JSON(http.StatusOK, h.simulatorStatus())
 }
 

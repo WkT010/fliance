@@ -22,21 +22,21 @@ type Position struct {
 
 // DailyPnL is a single day's realized profit/loss snapshot.
 type DailyPnL struct {
-	Date    string     `json:"date"`
+	Date     string     `json:"date"`
 	Realized *big.Float `json:"realized"`
 }
 
 // Summary is the user-facing PnL snapshot.
 type Summary struct {
-	UserID           string                `json:"user_id"`
-	Date             string                `json:"date"`
-	TodayRealized    *big.Float            `json:"today_realized"`
-	TotalRealized    *big.Float            `json:"total_realized"`
-	Unrealized       *big.Float            `json:"unrealized"`
-	TotalFees        *big.Float            `json:"total_fees"`
-	PortfolioValue   *big.Float            `json:"portfolio_value"`
-	Positions        map[string]*Position  `json:"positions"`
-	ReferencePrices  map[string]*big.Float `json:"reference_prices"`
+	UserID          string                `json:"user_id"`
+	Date            string                `json:"date"`
+	TodayRealized   *big.Float            `json:"today_realized"`
+	TotalRealized   *big.Float            `json:"total_realized"`
+	Unrealized      *big.Float            `json:"unrealized"`
+	TotalFees       *big.Float            `json:"total_fees"`
+	PortfolioValue  *big.Float            `json:"portfolio_value"`
+	Positions       map[string]*Position  `json:"positions"`
+	ReferencePrices map[string]*big.Float `json:"reference_prices"`
 }
 
 // Service tracks realized PnL from fill events. It is safe for concurrent use.
@@ -123,20 +123,29 @@ func (s *Service) updateUser(userID, base, quote string, side matching.Side, pri
 		if oldQty.Sign() < 0 {
 			realized.Neg(realized) // short: profit when buy price < avg sell price
 		}
-		if side == matching.Sell {
-			realized.Neg(realized) // flip to quote-asset PnL convention
-		}
 		pos.RealizedPnL.Add(pos.RealizedPnL, realized)
 		s.addDaily(userID, date, realized)
 	}
 
-	// Update average cost for remaining position.
-	oldCost := new(big.Float).Mul(oldQty, pos.AvgCost)
-	newCost := new(big.Float).Add(oldCost, costDelta)
-	if newQty.Sign() != 0 {
-		pos.AvgCost = new(big.Float).Quo(newCost, newQty)
-	} else {
+	// Update average cost. It only changes when the position grows in the
+	// same direction (weighted average of both fills) or flips sign (the
+	// remainder opened at this fill's price). Reducing a position keeps the
+	// original cost basis; folding the exit price into the remainder would
+	// double-count realized PnL on the next close.
+	adding := oldQty.Sign() == 0 || oldQty.Sign() == qtyDelta.Sign()
+	flipped := oldQty.Sign() != 0 && newQty.Sign() != 0 && oldQty.Sign() != newQty.Sign()
+	switch {
+	case newQty.Sign() == 0:
 		pos.AvgCost = new(big.Float)
+	case flipped:
+		// Sign flipped: the new-direction remainder opened at `price`.
+		pos.AvgCost = new(big.Float).Copy(price)
+	case adding:
+		oldCost := new(big.Float).Mul(oldQty, pos.AvgCost)
+		newCost := new(big.Float).Add(oldCost, costDelta)
+		pos.AvgCost = new(big.Float).Quo(newCost, newQty)
+	default:
+		// Pure reduction: keep the existing cost basis.
 	}
 	pos.Qty = newQty
 	pos.LastFillTime = time.Now().UTC().UnixNano()

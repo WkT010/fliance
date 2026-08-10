@@ -2,17 +2,25 @@ package grpc
 
 import (
 	"context"
+	"crypto/subtle"
+	"crypto/tls"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"net"
+	"os"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 
-	pb "github.com/WkT010/nexa-exchange/proto/exchange/v1"
 	"github.com/WkT010/nexa-exchange/internal/matching"
+	pb "github.com/WkT010/nexa-exchange/proto/exchange/v1"
 )
 
 type MatchingServer struct {
@@ -278,19 +286,19 @@ func tickerToProto(pair string, t *matching.Ticker) *pb.Ticker {
 		return &pb.Ticker{Pair: pair}
 	}
 	return &pb.Ticker{
-		Pair:             pair,
-		LastPrice:        floatStr(t.LastPrice),
-		Bid:              floatStr(t.Bid),
-		Ask:              floatStr(t.Ask),
-		Spread:           floatStr(t.Spread),
-		Volume_24H:       floatStr(t.Volume24H),
-		QuoteVolume_24H:  floatStr(t.QuoteVolume24H),
-		High_24H:         floatStr(t.High24H),
-		Low_24H:          floatStr(t.Low24H),
-		Open_24H:         floatStr(t.Open24H),
-		Change_24H:       floatStr(t.Change24H),
-		ChangePct_24H:    floatStr(t.ChangePct24H),
-		Timestamp:        t.Timestamp,
+		Pair:            pair,
+		LastPrice:       floatStr(t.LastPrice),
+		Bid:             floatStr(t.Bid),
+		Ask:             floatStr(t.Ask),
+		Spread:          floatStr(t.Spread),
+		Volume_24H:      floatStr(t.Volume24H),
+		QuoteVolume_24H: floatStr(t.QuoteVolume24H),
+		High_24H:        floatStr(t.High24H),
+		Low_24H:         floatStr(t.Low24H),
+		Open_24H:        floatStr(t.Open24H),
+		Change_24H:      floatStr(t.Change24H),
+		ChangePct_24H:   floatStr(t.ChangePct24H),
+		Timestamp:       t.Timestamp,
 	}
 }
 
@@ -426,15 +434,112 @@ func (s *StreamServer) StreamTicker(req *pb.StreamTickerRequest, stream pb.Strea
 	}
 }
 
+// --- Authentication & TLS ---------------------------------------------------
+
+// isDevelopment reports whether the process runs in the development
+// environment (mirrors internal/config: ENVIRONMENT defaults to
+// "development").
+func isDevelopment() bool {
+	env := strings.ToLower(strings.TrimSpace(os.Getenv("ENVIRONMENT")))
+	return env == "" || env == "development"
+}
+
+// authorize checks the shared bearer token from incoming metadata in constant
+// time.
+func authorize(ctx context.Context, token string) error {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing metadata")
+	}
+	vals := md.Get("authorization")
+	if len(vals) == 0 {
+		return status.Error(codes.Unauthenticated, "missing authorization header")
+	}
+	authz := strings.TrimSpace(vals[0])
+	const prefix = "Bearer "
+	if !strings.HasPrefix(authz, prefix) {
+		return status.Error(codes.Unauthenticated, "invalid authorization format")
+	}
+	provided := strings.TrimPrefix(authz, prefix)
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+		return status.Error(codes.Unauthenticated, "invalid token")
+	}
+	return nil
+}
+
+func authUnaryInterceptor(token string) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		if err := authorize(ctx, token); err != nil {
+			return nil, err
+		}
+		return handler(ctx, req)
+	}
+}
+
+func authStreamInterceptor(token string) grpc.StreamServerInterceptor {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if err := authorize(ss.Context(), token); err != nil {
+			return err
+		}
+		return handler(srv, ss)
+	}
+}
+
+// SecuredServerOptions builds grpc.ServerOptions enforcing shared-token
+// authentication (GRPC_SHARED_TOKEN) and optional TLS (GRPC_TLS_CERT /
+// GRPC_TLS_KEY). In non-development environments a missing token aborts the
+// process; without TLS credentials the server serves plaintext with a warning
+// (internal-network deployments only).
+func SecuredServerOptions() []grpc.ServerOption {
+	var opts []grpc.ServerOption
+	token := strings.TrimSpace(os.Getenv("GRPC_SHARED_TOKEN"))
+	if token != "" {
+		opts = append(opts,
+			grpc.UnaryInterceptor(authUnaryInterceptor(token)),
+			grpc.StreamInterceptor(authStreamInterceptor(token)),
+		)
+	} else if !isDevelopment() {
+		slog.Error("GRPC_SHARED_TOKEN is not set and ENVIRONMENT is not development: refusing to start without authentication")
+		os.Exit(1)
+	} else {
+		slog.Warn("GRPC_SHARED_TOKEN not set; authentication disabled (development only)")
+	}
+	certFile, keyFile := os.Getenv("GRPC_TLS_CERT"), os.Getenv("GRPC_TLS_KEY")
+	if certFile != "" && keyFile != "" {
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			slog.Error("failed to load TLS keypair", "cert", certFile, "key", keyFile, "err", err)
+			os.Exit(1)
+		}
+		opts = append(opts, grpc.Creds(credentials.NewTLS(&tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		})))
+		slog.Info("gRPC TLS enabled")
+	} else {
+		slog.Warn("GRPC_TLS_CERT/GRPC_TLS_KEY not set; serving plaintext (internal network only)")
+	}
+	return opts
+}
+
+// NewSecuredServer returns a grpc.Server wired with authentication/TLS
+// options derived from the environment. Prefer this over grpc.NewServer() in
+// every service entrypoint.
+func NewSecuredServer() *grpc.Server {
+	return grpc.NewServer(SecuredServerOptions()...)
+}
+
 func StartGRPCServer(addr string, engines map[string]*matching.MatchingEngine) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	s := grpc.NewServer()
+	s := NewSecuredServer()
 	pb.RegisterExchangeServiceServer(s, NewMatchingServer(engines))
 	pb.RegisterStreamServiceServer(s, NewStreamServer(engines))
-	reflection.Register(s)
-	log.Printf("[gRPC] listening on %s", addr)
+	if isDevelopment() {
+		reflection.Register(s)
+	}
+	slog.Info("gRPC listening", "addr", addr)
 	return s.Serve(lis)
 }

@@ -1,8 +1,11 @@
 package wallet
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
@@ -19,6 +22,18 @@ var (
 	ErrUnsupportedAsset    = errors.New("unsupported asset")
 	ErrInvalidPair         = errors.New("invalid trading pair")
 	ErrDuplicateTx         = errors.New("duplicate transaction")
+)
+
+const (
+	// defaultProcessedFillCapacity bounds the processed-fill dedup cache.
+	defaultProcessedFillCapacity = 100000
+	// defaultProcessedFillTTL expires dedup records after 7 days; a fill
+	// replayed after this window is treated as new (the ledger/DB layer
+	// remains the ultimate source of truth).
+	defaultProcessedFillTTL = 7 * 24 * time.Hour
+	// defaultReservationTTL bounds L2 reservation records; reservations are
+	// rewritten on every mutation, so live orders never expire in practice.
+	defaultReservationTTL = 30 * 24 * time.Hour
 )
 
 // WalletStore is the persistence interface for wallet balances, locks and the
@@ -108,18 +123,35 @@ type Service struct {
 	mu             sync.Mutex
 	// processedFills deduplicates fill settlement by FillNotification key so a
 	// replayed fill (e.g. after a restart that re-reads the channel) is a no-op.
-	processedFills map[string]bool
+	// It is a bounded LRU (container/list + map): eviction removes the
+	// least-recently-accessed entries, never recent ones, and entries older
+	// than the TTL expire. Guarded by mu.
+	processedFills *fillLRU
 	// reservations tracks per-order reserved funds so that cancellations and
 	// price-improvement leftovers can be released precisely. Keyed by order ID.
-	// In-memory: suitable for single-instance deployments; an HA deployment
-	// would persist this to a table.
+	// In-memory (L1); when a shared store is injected the records are written
+	// through to L2 for cross-instance consistency (plan 6.2).
 	reservations map[string]*reservation
+
+	// shared is the optional L2 store for cross-instance consistency
+	// (plan 6.2). nil = pure-local behaviour.
+	shared RedisLike
+	// sharedWarned ensures the L2 degradation warning is logged only once.
+	sharedWarned bool
+	// instanceID identifies this process in L2 fill claims.
+	instanceID string
 }
 
 // reservation records the asset and remaining locked amount for one order.
 type reservation struct {
 	asset     string
 	remaining *big.Float
+}
+
+// sharedReservation is the JSON wire format of a reservation in the L2 store.
+type sharedReservation struct {
+	Asset     string     `json:"asset"`
+	Remaining *big.Float `json:"remaining"`
 }
 
 // NewService constructs a wallet service. If fees is nil, a zero-fee schedule is
@@ -133,14 +165,56 @@ func NewService(store WalletStore, clients map[string]BlockchainClient, fees Fee
 			Default: FeeConfig{TakerRate: big.NewFloat(0), MakerRate: big.NewFloat(0)},
 		}
 	}
-	return &Service{
+	s := &Service{
 		store:          store,
 		clients:        clients,
 		confThresholds: map[string]int{"BTC": 12, "ETH": 24, "POLYGON": 24},
 		fees:           fees,
-		processedFills: make(map[string]bool),
+		processedFills: newFillLRU(defaultProcessedFillCapacity, defaultProcessedFillTTL),
 		reservations:   make(map[string]*reservation),
+		instanceID:     uuid.NewString(),
 	}
+	// Package-level env wiring (plan 6.2): if WALLET_SHARED_STORE_ADDR is set,
+	// the L2 store attaches automatically; cmd/ needs no change. Explicit
+	// SetSharedStore calls still override this.
+	if rs, err := SharedStoreFromEnv(); err != nil {
+		slog.Warn("wallet shared store env config invalid, staying local-only", "err", err)
+	} else if rs != nil {
+		s.shared = rs
+		slog.Info("wallet L2 shared store attached", "addr", EnvSharedStoreAddr)
+	}
+	return s
+}
+
+// SetSharedStore injects the optional L2 shared store used for cross-instance
+// consistency of processed fills and reservations (horizontal scaling, plan
+// 6.2). Pass nil to return to pure-local behaviour. Safe for concurrent use;
+// intended to be called once at startup:
+//
+//	rs, _ := wallet.SharedStoreFromEnv() // WALLET_SHARED_STORE_ADDR=...
+//	walletSvc.SetSharedStore(rs)
+func (s *Service) SetSharedStore(rs RedisLike) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shared = rs
+	s.sharedWarned = false
+}
+
+// SetProcessedFillCapacity overrides the capacity of the processed-fill
+// dedup cache. Least-recently-accessed entries are evicted when the new
+// capacity is exceeded. Safe for concurrent use.
+func (s *Service) SetProcessedFillCapacity(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processedFills.setCapacity(n)
+}
+
+// SetProcessedFillTTL overrides the expiry window of processed-fill dedup
+// records (d <= 0 disables time-based expiry). Safe for concurrent use.
+func (s *Service) SetProcessedFillTTL(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processedFills.setTTL(d)
 }
 
 func (s *Service) clientFor(asset string) BlockchainClient { return s.clients[asset] }
@@ -250,6 +324,11 @@ func (s *Service) Withdraw(userID, asset, address string, amount *big.Float) err
 	if c == nil {
 		return fmt.Errorf("%w: %s", ErrUnsupportedAsset, asset)
 	}
+	// Strict chain-specific format validation applies regardless of the
+	// underlying client implementation (including the development mock).
+	if err := ValidateWithdrawalAddress(asset, address); err != nil {
+		return err
+	}
 	if !c.IsValidAddress(address) {
 		return ErrInvalidAddress
 	}
@@ -329,12 +408,16 @@ func (s *Service) ReserveOrder(orderID, userID, pair string, side int, orderType
 	s.mu.Lock()
 	s.reservations[orderID] = &reservation{asset: asset, remaining: new(big.Float).Copy(amt)}
 	s.mu.Unlock()
+	// L2 write-through so another instance can release this reservation.
+	s.syncReservationsL2(orderID)
 	return nil
 }
 
 // ReleaseOrder releases any remaining reserved funds for an order (e.g. on
 // cancel, or after the order has fully filled). It is a no-op if the order had
-// no reservation (e.g. a market buy).
+// no reservation (e.g. a market buy). With an L2 store attached, reservations
+// created on another instance are loaded from L2, so any instance can release
+// any order (horizontal scaling, plan 6.2).
 func (s *Service) ReleaseOrder(orderID, userID string) error {
 	if s.store == nil {
 		return nil
@@ -344,14 +427,103 @@ func (s *Service) ReleaseOrder(orderID, userID string) error {
 	if ok {
 		delete(s.reservations, orderID)
 	}
+	shared := s.shared
 	s.mu.Unlock()
+	if !ok && shared != nil {
+		// Cross-instance release: the reservation may exist only in L2.
+		if loaded, err := loadReservationL2(shared, orderID); err != nil {
+			s.warnSharedOnce(fmt.Errorf("load reservation %s from L2: %w", orderID, err))
+		} else if loaded != nil {
+			r, ok = loaded, true
+		}
+	}
 	if !ok || r == nil || r.remaining.Sign() <= 0 {
 		return nil
 	}
 	// Use the atomic Settle path with a single unlock op (no balance delta) so
 	// the release is consistent with how settlements mutate locked balances.
 	ops := []SettleOp{{UserID: userID, Asset: r.asset, Unlock: r.remaining}}
-	return s.store.Settle(ops, nil)
+	if err := s.store.Settle(ops, nil); err != nil {
+		return err
+	}
+	// Release committed: drop the L2 record (best-effort).
+	if shared != nil {
+		if err := shared.Del(context.Background(), sharedResPrefix+orderID); err != nil && !errors.Is(err, ErrSharedKeyMissing) {
+			s.warnSharedOnce(fmt.Errorf("del reservation %s from L2: %w", orderID, err))
+		}
+	}
+	return nil
+}
+
+// loadReservationL2 fetches one reservation record from the L2 store. It
+// returns (nil, nil) when the key does not exist.
+func loadReservationL2(rs RedisLike, orderID string) (*reservation, error) {
+	data, err := rs.Get(context.Background(), sharedResPrefix+orderID)
+	if err != nil {
+		if errors.Is(err, ErrSharedKeyMissing) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var sr sharedReservation
+	if err := json.Unmarshal([]byte(data), &sr); err != nil || sr.Remaining == nil || sr.Asset == "" {
+		return nil, nil // corrupt record: treat as absent rather than fail
+	}
+	return &reservation{asset: sr.Asset, remaining: sr.Remaining}, nil
+}
+
+// syncReservationsL2 writes the current state of the given order reservations
+// through to the L2 store. Deleted/exhausted reservations are removed. All
+// failures are best-effort: a single warning is logged and local behaviour
+// continues unchanged (graceful degradation, plan 6.2).
+func (s *Service) syncReservationsL2(orderIDs ...string) {
+	s.mu.Lock()
+	shared := s.shared
+	type snap struct {
+		id     string
+		res    *reservation
+		exists bool
+	}
+	snaps := make([]snap, 0, len(orderIDs))
+	for _, id := range orderIDs {
+		if r, ok := s.reservations[id]; ok && r != nil {
+			snaps = append(snaps, snap{id, &reservation{asset: r.asset, remaining: new(big.Float).Copy(r.remaining)}, true})
+		} else {
+			snaps = append(snaps, snap{id, nil, false})
+		}
+	}
+	s.mu.Unlock()
+	if shared == nil {
+		return
+	}
+	ctx := context.Background()
+	for _, sn := range snaps {
+		if !sn.exists {
+			if err := shared.Del(ctx, sharedResPrefix+sn.id); err != nil && !errors.Is(err, ErrSharedKeyMissing) {
+				s.warnSharedOnce(fmt.Errorf("del reservation %s: %w", sn.id, err))
+			}
+			continue
+		}
+		data, err := json.Marshal(sharedReservation{Asset: sn.res.asset, Remaining: sn.res.remaining})
+		if err != nil {
+			continue
+		}
+		if err := shared.Set(ctx, sharedResPrefix+sn.id, string(data), defaultReservationTTL); err != nil {
+			s.warnSharedOnce(fmt.Errorf("set reservation %s: %w", sn.id, err))
+		}
+	}
+}
+
+// warnSharedOnce logs the L2 degradation warning exactly once per attachment.
+func (s *Service) warnSharedOnce(err error) {
+	s.mu.Lock()
+	if s.sharedWarned {
+		s.mu.Unlock()
+		return
+	}
+	s.sharedWarned = true
+	s.mu.Unlock()
+	slog.Warn("wallet L2 shared store unavailable, degrading to local-only consistency", "err", err)
 }
 
 // SettleFill settles a single trade fill between a taker and a maker. It:
@@ -373,13 +545,34 @@ func (s *Service) SettleFill(fillID, pair string, takerSide int, takerOrderID, m
 		return ErrNegativeAmount
 	}
 
-	// Idempotency on fillID.
+	// Idempotency on fillID: L1 (local LRU) is the fast path; when an L2
+	// shared store is attached, SetNX acts as the atomic cross-instance claim
+	// so two instances consuming the same fill settle it exactly once.
 	s.mu.Lock()
-	if s.processedFills[fillID] {
+	if s.processedFills.contains(fillID) {
 		s.mu.Unlock()
 		return nil
 	}
+	shared := s.shared
 	s.mu.Unlock()
+
+	claimedL2 := false
+	if shared != nil {
+		ok, err := shared.SetNX(context.Background(), sharedFillPrefix+fillID, s.instanceID, defaultProcessedFillTTL)
+		switch {
+		case err != nil:
+			// Degradation: proceed with local-only dedup (warning logged once).
+			s.warnSharedOnce(fmt.Errorf("claim fill %s in L2: %w", fillID, err))
+		case !ok:
+			// Another instance already claimed this fill: dedup no-op.
+			s.mu.Lock()
+			s.processedFills.add(fillID)
+			s.mu.Unlock()
+			return nil
+		default:
+			claimedL2 = true
+		}
+	}
 
 	base, quote, err := SplitPair(pair)
 	if err != nil {
@@ -404,6 +597,30 @@ func (s *Service) SettleFill(fillID, pair string, takerSide int, takerOrderID, m
 
 	// Compute unlock amounts from reservations. If an order has a reservation,
 	// unlock the fill's reserved portion; otherwise debit only (market buys).
+	// Cross-instance fills: hydrate reservations this instance never saw from
+	// the L2 store first.
+	if shared != nil {
+		for _, oid := range []string{buyerOrderID, sellerOrderID} {
+			s.mu.Lock()
+			_, local := s.reservations[oid]
+			s.mu.Unlock()
+			if local {
+				continue
+			}
+			r, err := loadReservationL2(shared, oid)
+			if err != nil {
+				s.warnSharedOnce(fmt.Errorf("hydrate reservation %s from L2: %w", oid, err))
+				continue
+			}
+			if r != nil {
+				s.mu.Lock()
+				if _, dup := s.reservations[oid]; !dup {
+					s.reservations[oid] = r
+				}
+				s.mu.Unlock()
+			}
+		}
+	}
 	buyerUnlock := new(big.Float)
 	buyerDebit := new(big.Float).Add(notional, buyerFee) // cost + fee
 	sellerUnlock := new(big.Float)
@@ -435,6 +652,8 @@ func (s *Service) SettleFill(fillID, pair string, takerSide int, takerOrderID, m
 		}
 	}
 	s.mu.Unlock()
+	// Write the updated reservation state through to L2 (best-effort).
+	s.syncReservationsL2(buyerOrderID, sellerOrderID)
 
 	var ops []SettleOp
 	// Buyer: unlock reserved quote (if any), debit (notional+buyerFee) quote, credit qty base.
@@ -471,19 +690,18 @@ func (s *Service) SettleFill(fillID, pair string, takerSide int, takerOrderID, m
 			s.reservations[sellerOrderID] = sellerRes
 		}
 		s.mu.Unlock()
+		s.syncReservationsL2(buyerOrderID, sellerOrderID)
+		if claimedL2 {
+			// Release the L2 claim so another instance (or a retry) can settle.
+			if err := shared.Del(context.Background(), sharedFillPrefix+fillID); err != nil && !errors.Is(err, ErrSharedKeyMissing) {
+				s.warnSharedOnce(fmt.Errorf("release L2 claim for fill %s: %w", fillID, err))
+			}
+		}
 		return fmt.Errorf("settle fill: %w", err)
 	}
 
 	s.mu.Lock()
-	s.processedFills[fillID] = true
-	if len(s.processedFills) > 100000 {
-		for k := range s.processedFills {
-			delete(s.processedFills, k)
-			if len(s.processedFills) <= 50000 {
-				break
-			}
-		}
-	}
+	s.processedFills.add(fillID)
 	s.mu.Unlock()
 	return nil
 }

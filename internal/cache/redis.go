@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/WkT010/nexa-exchange/internal/matching"
+	"github.com/redis/go-redis/v9"
 )
 
 type RedisCache struct {
@@ -29,8 +29,12 @@ func DefaultConfig() *Config {
 }
 
 func New(cfg *Config) *RedisCache {
-	if cfg == nil { cfg = DefaultConfig() }
-	if cfg.TTL == 0 { cfg.TTL = 5 * time.Second }
+	if cfg == nil {
+		cfg = DefaultConfig()
+	}
+	if cfg.TTL == 0 {
+		cfg.TTL = 5 * time.Second
+	}
 	rdb := redis.NewClient(&redis.Options{
 		Addr: cfg.Addr, Password: cfg.Pass, DB: cfg.DB,
 		DialTimeout: 3 * time.Second, ReadTimeout: 2 * time.Second, WriteTimeout: 2 * time.Second,
@@ -38,7 +42,7 @@ func New(cfg *Config) *RedisCache {
 	return &RedisCache{client: rdb, prefix: cfg.Prefix, ttl: cfg.TTL}
 }
 
-func (c *RedisCache) Close() error { return c.client.Close() }
+func (c *RedisCache) Close() error                   { return c.client.Close() }
 func (c *RedisCache) Ping(ctx context.Context) error { return c.client.Ping(ctx).Err() }
 
 func (c *RedisCache) keyOrderbook(pair string) string { return c.prefix + "orderbook:" + pair }
@@ -48,9 +52,13 @@ func (c *RedisCache) SetOrderbook(ctx context.Context, pair string, depth *match
 }
 func (c *RedisCache) GetOrderbook(ctx context.Context, pair string) (*matching.OrderBookDepth, error) {
 	data, err := c.client.Get(ctx, c.keyOrderbook(pair)).Bytes()
-	if err != nil { return nil, fmt.Errorf("get: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("get: %w", err)
+	}
 	var depth matching.OrderBookDepth
-	if err := json.Unmarshal(data, &depth); err != nil { return nil, fmt.Errorf("unmarshal: %w", err) }
+	if err := json.Unmarshal(data, &depth); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
 	return &depth, nil
 }
 
@@ -61,9 +69,13 @@ func (c *RedisCache) SetTicker(ctx context.Context, pair string, ticker map[stri
 }
 func (c *RedisCache) GetTicker(ctx context.Context, pair string) (map[string]interface{}, error) {
 	data, err := c.client.Get(ctx, c.keyTicker(pair)).Bytes()
-	if err != nil { return nil, fmt.Errorf("get: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("get: %w", err)
+	}
 	var ticker map[string]interface{}
-	if err := json.Unmarshal(data, &ticker); err != nil { return nil, fmt.Errorf("unmarshal: %w", err) }
+	if err := json.Unmarshal(data, &ticker); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
 	return ticker, nil
 }
 
@@ -74,9 +86,13 @@ func (c *RedisCache) SetOrder(ctx context.Context, o *matching.Order) error {
 }
 func (c *RedisCache) GetOrder(ctx context.Context, id string) (*matching.Order, error) {
 	data, err := c.client.Get(ctx, c.keyOrder(id)).Bytes()
-	if err != nil { return nil, fmt.Errorf("get: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("get: %w", err)
+	}
 	var o matching.Order
-	if err := json.Unmarshal(data, &o); err != nil { return nil, fmt.Errorf("unmarshal: %w", err) }
+	if err := json.Unmarshal(data, &o); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
 	return &o, nil
 }
 
@@ -86,8 +102,12 @@ func (c *RedisCache) RateLimit(ctx context.Context, key string, max int, window 
 	windowNano := window.Nanoseconds()
 	c.client.ZRemRangeByScore(ctx, rk, "0", fmt.Sprintf("%d", now-windowNano))
 	count, err := c.client.ZCard(ctx, rk).Result()
-	if err != nil { return false, err }
-	if int(count) >= max { return false, nil }
+	if err != nil {
+		return false, err
+	}
+	if int(count) >= max {
+		return false, nil
+	}
 	member := fmt.Sprintf("%d", now)
 	c.client.ZAdd(ctx, rk, redis.Z{Score: float64(now), Member: member})
 	c.client.Expire(ctx, rk, window)

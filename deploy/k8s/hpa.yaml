@@ -1,13 +1,13 @@
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: nexa-api-gateway
-  namespace: nexa
+  name: fliance-api-gateway
+  namespace: fliance
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: nexa-api-gateway
+    name: fliance-api-gateway
   minReplicas: 3
   maxReplicas: 20
   metrics:
@@ -23,13 +23,13 @@ spec:
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: nexa-matching-engine
-  namespace: nexa
+  name: fliance-matching-engine
+  namespace: fliance
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: nexa-matching-engine
+    name: fliance-matching-engine
   minReplicas: 2
   maxReplicas: 10
   metrics:
@@ -41,13 +41,13 @@ spec:
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: nexa-wallet-service
-  namespace: nexa
+  name: fliance-wallet-service
+  namespace: fliance
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: nexa-wallet-service
+    name: fliance-wallet-service
   minReplicas: 2
   maxReplicas: 8
   metrics:

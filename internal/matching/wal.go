@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -22,17 +23,17 @@ type WALRecord struct {
 	Op        string `json:"op"` // "order" | "cancel"
 
 	// Order fields
-	OrderID       string  `json:"order_id,omitempty"`
-	ClientOrderID string  `json:"client_order_id,omitempty"`
-	UserID        string  `json:"user_id,omitempty"`
-	Pair          string  `json:"pair,omitempty"`
-	Side          int8    `json:"side,omitempty"`
-	Type          int8    `json:"type,omitempty"`
-	Price         string  `json:"price,omitempty"`
-	StopPrice     string  `json:"stop_price,omitempty"`
-	Quantity      string  `json:"quantity,omitempty"`
-	TimeInForce   int8    `json:"tif,omitempty"`
-	STP           int8    `json:"stp,omitempty"`
+	OrderID       string `json:"order_id,omitempty"`
+	ClientOrderID string `json:"client_order_id,omitempty"`
+	UserID        string `json:"user_id,omitempty"`
+	Pair          string `json:"pair,omitempty"`
+	Side          int8   `json:"side,omitempty"`
+	Type          int8   `json:"type,omitempty"`
+	Price         string `json:"price,omitempty"`
+	StopPrice     string `json:"stop_price,omitempty"`
+	Quantity      string `json:"quantity,omitempty"`
+	TimeInForce   int8   `json:"tif,omitempty"`
+	STP           int8   `json:"stp,omitempty"`
 }
 
 // WALWriter appends records durably to a write-ahead log. Each matching engine
@@ -43,6 +44,15 @@ type WALWriter struct {
 	bw   *bufio.Writer
 	mu   sync.Mutex
 	seq  uint64
+
+	// fsync policy. syncEvery<=1 means fsync after every record (default, the
+	// safest mode). Otherwise fsync every syncEvery records or at most every
+	// syncInterval (when >0), whichever comes first. Records are always flushed
+	// out of the bufio buffer on append; only the fsync is batched.
+	syncEvery    int
+	syncInterval time.Duration
+	pending      int
+	lastSyncAt   time.Time
 }
 
 // NewWALWriter opens (or creates) a WAL file at path. Records are buffered and
@@ -61,7 +71,53 @@ func NewWALWriter(path string) (*WALWriter, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("scan wal: %w", err)
 	}
-	return &WALWriter{path: path, file: f, bw: bufio.NewWriter(f), seq: seq}, nil
+	every, interval := defaultWALSyncPolicy()
+	return &WALWriter{
+		path:         path,
+		file:         f,
+		bw:           bufio.NewWriter(f),
+		seq:          seq,
+		syncEvery:    every,
+		syncInterval: interval,
+		lastSyncAt:   time.Now(),
+	}, nil
+}
+
+// defaultWALSyncPolicy reads the fsync policy from environment variables:
+//
+//	WAL_SYNC_EVERY=N         fsync every N records (default 1 = every record)
+//	WAL_SYNC_INTERVAL_MS=N   cap the time between fsyncs to N milliseconds
+//
+// Invalid values fall back to the safe default (fsync every record).
+func defaultWALSyncPolicy() (int, time.Duration) {
+	every := 1
+	if v := os.Getenv("WAL_SYNC_EVERY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			every = n
+		}
+	}
+	var interval time.Duration
+	if v := os.Getenv("WAL_SYNC_INTERVAL_MS"); v != "" {
+		if ms, err := strconv.Atoi(v); err == nil && ms > 0 {
+			interval = time.Duration(ms) * time.Millisecond
+		}
+	}
+	return every, interval
+}
+
+// SetSyncPolicy configures fsync batching at runtime. every<=1 restores
+// per-record fsync; interval<=0 disables time-based fsync. The WAL record
+// format is unaffected: only durability timing changes.
+func (w *WALWriter) SetSyncPolicy(every int, interval time.Duration) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.syncEvery = every
+	w.syncInterval = interval
+	w.pending = 0
+	w.lastSyncAt = time.Now()
 }
 
 // countWALRecords returns the number of newline-delimited JSON records in the
@@ -147,7 +203,25 @@ func (w *WALWriter) append(rec WALRecord) error {
 	if _, err := w.bw.Write(b); err != nil {
 		return fmt.Errorf("write wal: %w", err)
 	}
-	return w.bw.Flush()
+	if err := w.bw.Flush(); err != nil {
+		return fmt.Errorf("flush wal: %w", err)
+	}
+	return w.maybeSyncLocked()
+}
+
+// maybeSyncLocked fsyncs the file according to the configured policy. Callers
+// must hold w.mu. Returns the fsync error (if one happened) so append callers
+// can surface durability failures.
+func (w *WALWriter) maybeSyncLocked() error {
+	w.pending++
+	if w.syncEvery > 1 && w.pending < w.syncEvery &&
+		(w.syncInterval <= 0 || time.Since(w.lastSyncAt) < w.syncInterval) {
+		return nil
+	}
+	err := w.file.Sync()
+	w.pending = 0
+	w.lastSyncAt = time.Now()
+	return err
 }
 
 // Sync flushes the WAL to stable storage. Call after each batch or before
@@ -161,7 +235,12 @@ func (w *WALWriter) Sync() error {
 	if err := w.bw.Flush(); err != nil {
 		return err
 	}
-	return w.file.Sync()
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
+	w.pending = 0
+	w.lastSyncAt = time.Now()
+	return nil
 }
 
 // Close closes the WAL file.
@@ -199,7 +278,7 @@ func (r *WALReader) Replay(fn func(WALRecord) error) error {
 		if len(line) > 0 {
 			var rec WALRecord
 			if jerr := json.Unmarshal(line, &rec); jerr != nil {
-				log.Printf("[wal] skipping corrupt record: %v", jerr)
+				slog.Warn("wal skipping corrupt record", "err", jerr)
 				continue
 			}
 			if fnErr := fn(rec); fnErr != nil {

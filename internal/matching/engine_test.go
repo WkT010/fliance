@@ -2,6 +2,7 @@ package matching
 
 import (
 	"math/big"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -273,7 +274,9 @@ func TestConcurrentEnqueue(t *testing.T) {
 		}()
 	}
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		for {
 			rb.Drain()
 			select {
@@ -281,11 +284,19 @@ func TestConcurrentEnqueue(t *testing.T) {
 				return
 			default:
 			}
+			// Honour the stop-and-retry protocol: while a slow producer has not
+			// published its reserved slot, pace retries instead of hot-spinning.
+			if rb.DrainStalled() {
+				time.Sleep(drainStallYield)
+			}
 		}
 	}()
 	wg.Wait()
 	close(done)
-	rb.Drain()
+	<-stopped // single-consumer contract: never drain concurrently
+	for rb.Len() > 0 {
+		rb.Drain()
+	}
 	if rb.Len() != 0 {
 		t.Errorf("expected empty buffer, got %d", rb.Len())
 	}
@@ -501,6 +512,64 @@ func TestEngineTickerAndCandles(t *testing.T) {
 	recent := e.RecentTrades(10)
 	if len(recent) != 1 {
 		t.Errorf("expected 1 recent trade, got %d", len(recent))
+	}
+}
+
+// TestWALAppendFailureRejectsOrder verifies the durability-gap policy: when
+// the WAL cannot be appended, the engine must reject the operation and report
+// the error back to the submitter (never match-and-lose), latch unhealthy,
+// and count the failure.
+func TestWALAppendFailureRejectsOrder(t *testing.T) {
+	e := NewMatchingEngine("BTC/USDT", 1024)
+	w, err := NewWALWriter(filepath.Join(t.TempDir(), "BTC-USDT.wal"))
+	if err != nil {
+		t.Fatalf("open wal: %v", err)
+	}
+	e.SetWAL(w)
+	e.Start()
+	defer e.Stop()
+
+	// Healthy path: order rests normally.
+	resting := submitSync(e, createLimitOrder(Sell, "50000", "1.0"))
+	if resting.Status != New {
+		t.Fatalf("expected resting order, got %s", resting.Status)
+	}
+	if !e.IsHealthy() {
+		t.Fatal("engine should be healthy before WAL failure")
+	}
+
+	// Break the WAL (simulate disk failure).
+	if err := w.file.Close(); err != nil {
+		t.Fatalf("close wal file: %v", err)
+	}
+
+	// The crossing buy must be rejected with the WAL error, not matched.
+	_, err = e.SubmitOrderSync(createLimitOrder(Buy, "50000", "1.0"))
+	if err == nil {
+		t.Fatal("expected error when WAL append fails")
+	}
+	if e.IsHealthy() {
+		t.Error("engine must report unhealthy after WAL failure")
+	}
+	if e.WALFailureCount() != 1 {
+		t.Errorf("expected 1 WAL failure, got %d", e.WALFailureCount())
+	}
+	if e.Stats.WALErrors.Load() != 1 {
+		t.Errorf("WALErrors counter mismatch: %d", e.Stats.WALErrors.Load())
+	}
+	// No trade may have been produced from the rejected order.
+	time.Sleep(20 * time.Millisecond)
+	if got := drainTradesCount(e.Trades); len(got) != 0 {
+		t.Errorf("rejected order must not match, got %d trades", len(got))
+	}
+
+	// Cancel must also be refused (it cannot be journaled), and the order
+	// must remain in the book.
+	if _, err := e.Cancel(resting.ID, "u1"); err == nil {
+		t.Fatal("expected cancel to fail when WAL is broken")
+	}
+	if e.OrderBook.Get(resting.ID) == nil {
+		t.Error("order must remain in book when cancel is not durable")
 	}
 }
 

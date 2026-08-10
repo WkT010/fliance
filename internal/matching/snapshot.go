@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -50,22 +51,33 @@ func (ob *OrderBook) Restore(s *OrderBookSnapshot) error {
 	defer ob.mu.Unlock()
 
 	ob.orders = make(map[string]*Order)
+	ob.userOrders = make(map[string]map[string]struct{})
 	ob.bids = &OrderHeap{side: Buy}
 	ob.asks = &OrderHeap{side: Sell}
 	ob.stops = nil
 	ob.seqNo.Store(s.SeqNo)
 
+	restored := make([]*Order, 0, len(s.Orders))
 	for _, o := range s.Orders {
 		if o == nil || o.ID == "" {
 			continue
 		}
+		restored = append(restored, o)
+	}
+	// Re-establish FIFO (time) priority: bookSeq is not serialised, so assign
+	// fresh sequence numbers in creation order. They are all smaller than any
+	// seqNo handed out after restore (seqNo resumes at s.SeqNo).
+	sort.SliceStable(restored, func(i, j int) bool { return restored[i].CreatedAt < restored[j].CreatedAt })
+	for i, o := range restored {
 		if o.RemainingQty == nil {
 			o.RemainingQty = newBigFloatCopy(o.Quantity)
 		}
 		if o.FilledQty == nil {
 			o.FilledQty = newBigFloat()
 		}
+		o.bookSeq = uint64(i + 1)
 		ob.orders[o.ID] = o
+		ob.indexAddLocked(o)
 		if o.Side == Buy {
 			heapPush(ob.bids, o)
 		} else {
@@ -83,13 +95,13 @@ func (ob *OrderBook) Restore(s *OrderBookSnapshot) error {
 
 // MatchingEngineSnapshot is the on-disk format for a per-pair snapshot.
 type MatchingEngineSnapshot struct {
-	Version     string             `json:"version"`
-	Pair        string             `json:"pair"`
-	SeqNo       uint64             `json:"seq_no"`
-	LastWALSeq  uint64             `json:"last_wal_seq"`
-	Timestamp   int64              `json:"timestamp"`
-	OrderBook   *OrderBookSnapshot `json:"orderbook"`
-	LastTradePrice string          `json:"last_trade_price,omitempty"`
+	Version        string             `json:"version"`
+	Pair           string             `json:"pair"`
+	SeqNo          uint64             `json:"seq_no"`
+	LastWALSeq     uint64             `json:"last_wal_seq"`
+	Timestamp      int64              `json:"timestamp"`
+	OrderBook      *OrderBookSnapshot `json:"orderbook"`
+	LastTradePrice string             `json:"last_trade_price,omitempty"`
 }
 
 // Snapshot returns a serialisable snapshot of the engine state including the

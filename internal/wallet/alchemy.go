@@ -57,10 +57,14 @@ func (a *AlchemyClient) call(method string, params []interface{}) (json.RawMessa
 	return r.Result, nil
 }
 
-func (a *AlchemyClient) GenerateAddress() (string, error) { return "", fmt.Errorf("alchemy: GenerateAddress requires HD wallet") }
+func (a *AlchemyClient) GenerateAddress() (string, error) {
+	return "", fmt.Errorf("alchemy: GenerateAddress requires HD wallet")
+}
 func (a *AlchemyClient) GetBalance(address string) (*big.Float, error) {
 	result, err := a.call("eth_getBalance", []interface{}{address, "latest"})
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	var hexBal string
 	json.Unmarshal(result, &hexBal)
 	wei := new(big.Int)
@@ -71,27 +75,40 @@ func (a *AlchemyClient) SendTransaction(to string, amount *big.Float) (string, e
 	weis := new(big.Int)
 	new(big.Float).Mul(amount, big.NewFloat(1e18)).Int(weis)
 	_, err := a.call("eth_estimateGas", []interface{}{map[string]interface{}{"to": to, "value": "0x" + hex.EncodeToString(weis.Bytes())}})
-	if err != nil { return "", fmt.Errorf("estimate: %w", err) }
+	if err != nil {
+		return "", fmt.Errorf("estimate: %w", err)
+	}
 	return "", fmt.Errorf("alchemy: requires local tx signing + eth_sendRawTransaction")
 }
 func (a *AlchemyClient) GetConfirmations(txHash string) (int, error) {
 	result, err := a.call("eth_getTransactionReceipt", []interface{}{txHash})
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	var r struct{ BlockNumber string }
 	json.Unmarshal(result, &r)
-	if r.BlockNumber == "" { return 0, nil }
+	if r.BlockNumber == "" {
+		return 0, nil
+	}
 	blockR, _ := a.call("eth_blockNumber", nil)
 	var cur string
 	json.Unmarshal(blockR, &cur)
-	tb := new(big.Int); tb.SetString(strings.TrimPrefix(r.BlockNumber, "0x"), 16)
-	cb := new(big.Int); cb.SetString(strings.TrimPrefix(cur, "0x"), 16)
+	tb := new(big.Int)
+	tb.SetString(strings.TrimPrefix(r.BlockNumber, "0x"), 16)
+	cb := new(big.Int)
+	cb.SetString(strings.TrimPrefix(cur, "0x"), 16)
 	return int(new(big.Int).Sub(cb, tb).Int64()), nil
 }
 func (a *AlchemyClient) IsValidAddress(addr string) bool {
-	if !strings.HasPrefix(addr, "0x") { return false }
+	if !strings.HasPrefix(addr, "0x") {
+		return false
+	}
 	addr = strings.TrimPrefix(addr, "0x")
-	if len(addr) != 40 { return false }
+	if len(addr) != 40 {
+		return false
+	}
 	_, err := hex.DecodeString(addr)
 	return err == nil
 }
+
 var _ BlockchainClient = (*AlchemyClient)(nil)

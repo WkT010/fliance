@@ -8,17 +8,23 @@ import (
 
 // Pool represents a constant-product AMM liquidity pool.
 type Pool struct {
-	ID        string
-	Pair      string // e.g. "ETH/USDT"
-	Token0    string
-	Token1    string
-	Reserve0  *big.Float
-	Reserve1  *big.Float
-	LPShares  *big.Float // total LP shares issued
-	FeeRate   *big.Float // swap fee, e.g. 0.003 for 30 bps
-	Status    string     // "active" or "paused"
-	CreatedAt int64
-	UpdatedAt int64
+	ID       string
+	Pair     string // e.g. "ETH/USDT"
+	Token0   string
+	Token1   string
+	Reserve0 *big.Float
+	Reserve1 *big.Float
+	LPShares *big.Float // total LP shares issued
+	FeeRate  *big.Float // swap fee, e.g. 0.003 for 30 bps
+	// ProtocolFees0/1 accumulate swap fees denominated in token0/token1.
+	// The wallet debits the full amountIn, but only amountIn*(1-feeRate)
+	// enters the reserves (x*y=k is preserved); the remainder accrues here,
+	// attributed to the protocol instead of vanishing from the ledger.
+	ProtocolFees0 *big.Float
+	ProtocolFees1 *big.Float
+	Status        string // "active" or "paused"
+	CreatedAt     int64
+	UpdatedAt     int64
 }
 
 // LPPosition tracks a user's liquidity in a pool.
@@ -51,17 +57,19 @@ func NewPool(id, pair, token0, token1 string, feeRate *big.Float) *Pool {
 	}
 	now := time.Now().UnixNano()
 	return &Pool{
-		ID:        id,
-		Pair:      pair,
-		Token0:    token0,
-		Token1:    token1,
-		Reserve0:  big.NewFloat(0),
-		Reserve1:  big.NewFloat(0),
-		LPShares:  big.NewFloat(0),
-		FeeRate:   feeRate,
-		Status:    "active",
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:            id,
+		Pair:          pair,
+		Token0:        token0,
+		Token1:        token1,
+		Reserve0:      big.NewFloat(0),
+		Reserve1:      big.NewFloat(0),
+		LPShares:      big.NewFloat(0),
+		FeeRate:       feeRate,
+		ProtocolFees0: big.NewFloat(0),
+		ProtocolFees1: big.NewFloat(0),
+		Status:        "active",
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 }
 

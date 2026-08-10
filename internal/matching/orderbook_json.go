@@ -39,10 +39,10 @@ func (p PriceLevel) MarshalJSON() ([]byte, error) {
 // TypeScript layer read as undefined).
 func (d OrderBookDepth) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Pair string      `json:"pair"`
+		Pair string       `json:"pair"`
 		Bids []PriceLevel `json:"bids"`
 		Asks []PriceLevel `json:"asks"`
-		Seq  uint64      `json:"seq"`
+		Seq  uint64       `json:"seq"`
 	}{
 		Pair: d.Pair,
 		Bids: d.Bids,

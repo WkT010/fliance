@@ -2,7 +2,7 @@ package market
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/segmentio/kafka-go"
 )
@@ -22,11 +22,22 @@ func (c *Consumer) Start() {
 		for {
 			m, err := c.reader.ReadMessage(context.Background())
 			if err != nil {
-				select { case <-c.done: return; default: log.Printf("consumer err: %v", err); continue }
+				select {
+				case <-c.done:
+					return
+				default:
+					slog.Warn("consumer read failed", "err", err)
+					continue
+				}
 			}
 			var et, pair string
 			for _, h := range m.Headers {
-				switch h.Key { case "event_type": et = string(h.Value); case "pair": pair = string(h.Value) }
+				switch h.Key {
+				case "event_type":
+					et = string(h.Value)
+				case "pair":
+					pair = string(h.Value)
+				}
 			}
 			c.handler(MarketEvent{Type: et, Pair: pair, Data: m.Value, Timestamp: m.Time.UnixNano()})
 		}

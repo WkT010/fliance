@@ -12,29 +12,29 @@ import (
 
 // Uniswap V3 contract addresses on Ethereum mainnet.
 const (
-	UniV3QuoterV1 = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
+	UniV3QuoterV1   = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
 	UniV3SwapRouter = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
 )
 
 // UniV3PoolMeta maps a display pair to on-chain metadata.
 // Token0/Token1 follow the pool's natural ordering (token0 < token1 by address).
 type UniV3PoolMeta struct {
-	Address string
-	Token0  string // base symbol, e.g. ETH
-	Token1  string // quote symbol, e.g. USDC
-	Fee     int    // fee tier in hundredths of a bip (500, 3000, 10000)
+	Address   string
+	Token0    string // base symbol, e.g. ETH
+	Token1    string // quote symbol, e.g. USDC
+	Fee       int    // fee tier in hundredths of a bip (500, 3000, 10000)
 	Decimals0 int
 	Decimals1 int
 }
 
 var UniV3Pools = map[string]*UniV3PoolMeta{
 	// Token0/Token1 MUST match the pool's natural ordering (lower address first).
-	"ETH/USDC": {Address: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640", Token0: "USDC", Token1: "ETH", Fee: 500, Decimals0: 6, Decimals1: 18},
-	"ETH/USDT": {Address: "0x11b815efB8f581194ae79006d24E0d814B7697F6", Token0: "ETH", Token1: "USDT", Fee: 3000, Decimals0: 18, Decimals1: 6},
+	"ETH/USDC":  {Address: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640", Token0: "USDC", Token1: "ETH", Fee: 500, Decimals0: 6, Decimals1: 18},
+	"ETH/USDT":  {Address: "0x11b815efB8f581194ae79006d24E0d814B7697F6", Token0: "ETH", Token1: "USDT", Fee: 3000, Decimals0: 18, Decimals1: 6},
 	"WBTC/USDC": {Address: "0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35", Token0: "USDC", Token1: "WBTC", Fee: 3000, Decimals0: 6, Decimals1: 8},
-	"LINK/ETH": {Address: "0xa6Cc3C2531FdaA6a1D6d0ae5C1bF8BedBED5ff66", Token0: "LINK", Token1: "ETH", Fee: 3000, Decimals0: 18, Decimals1: 18},
-	"UNI/ETH":  {Address: "0x1d42064Fc4Beb5F8aAF85F4617AE8b3b5B8Bd801", Token0: "UNI", Token1: "ETH", Fee: 3000, Decimals0: 18, Decimals1: 18},
-	"AAVE/ETH": {Address: "0x5aB53EE1d50eeF2C1DD1dC5725060B7d10d9B532", Token0: "AAVE", Token1: "ETH", Fee: 3000, Decimals0: 18, Decimals1: 18},
+	"LINK/ETH":  {Address: "0xa6Cc3C2531FdaA6a1D6d0ae5C1bF8BedBED5ff66", Token0: "LINK", Token1: "ETH", Fee: 3000, Decimals0: 18, Decimals1: 18},
+	"UNI/ETH":   {Address: "0x1d42064Fc4Beb5F8aAF85F4617AE8b3b5B8Bd801", Token0: "UNI", Token1: "ETH", Fee: 3000, Decimals0: 18, Decimals1: 18},
+	"AAVE/ETH":  {Address: "0x5aB53EE1d50eeF2C1DD1dC5725060B7d10d9B532", Token0: "AAVE", Token1: "ETH", Fee: 3000, Decimals0: 18, Decimals1: 18},
 }
 
 // tokenAddresses is reused from alchemy_dex.go but duplicated here to keep the
@@ -155,33 +155,33 @@ func sqrtPriceX96ToPrice(raw string, decimals0, decimals1 int) (*big.Float, erro
 
 // QuoteSwapRequest is the input for a Uniswap V3 exact-input single quote.
 type QuoteSwapRequest struct {
-	Pair       string
-	AmountIn   *big.Float
-	TokenIn    string
-	TokenOut   string
-	Fee        int
-	DecimalsIn int
+	Pair        string
+	AmountIn    *big.Float
+	TokenIn     string
+	TokenOut    string
+	Fee         int
+	DecimalsIn  int
 	DecimalsOut int
 }
 
 // QuoteSwapResult contains the expected output and execution price.
 type QuoteSwapResult struct {
-	AmountIn    *big.Float
-	AmountOut   *big.Float
+	AmountIn       *big.Float
+	AmountOut      *big.Float
 	ExecutionPrice *big.Float // tokenOut per tokenIn
-	Pool        string
-	FeeTier     int
+	Pool           string
+	FeeTier        int
 }
 
 // SwapTxRequest is the input for building an unsigned Uniswap V3 swap tx.
 type SwapTxRequest struct {
-	Pair            string
-	TokenIn         string
-	TokenOut        string
-	AmountIn        *big.Float
-	AmountOutMin    *big.Float // optional slippage protection; 0 = no protection
-	Recipient       string     // receiver of tokenOut
-	Deadline        int64      // unix seconds; 0 = 20 min from now
+	Pair         string
+	TokenIn      string
+	TokenOut     string
+	AmountIn     *big.Float
+	AmountOutMin *big.Float // optional slippage protection; 0 = no protection
+	Recipient    string     // receiver of tokenOut
+	Deadline     int64      // unix seconds; 0 = 20 min from now
 }
 
 // SwapTxResult contains the unsigned transaction payload ready for signing.

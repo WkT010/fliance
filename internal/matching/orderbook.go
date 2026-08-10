@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"errors"
 	"math/big"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -16,7 +17,8 @@ var (
 
 // OrderHeap is a price-time priority heap. For bids it is a max-heap (best/highest
 // price on top); for asks it is a min-heap (best/lowest price on top). Ties are
-// broken by creation time (FIFO).
+// broken by bookSeq, a monotonic sequence assigned when the order enters the
+// book, giving strict FIFO (time) priority independent of clock resolution.
 type OrderHeap struct {
 	orders []*Order
 	side   Side
@@ -34,7 +36,7 @@ func (h *OrderHeap) Less(i, j int) bool {
 			return c < 0
 		}
 	}
-	return a.CreatedAt < b.CreatedAt
+	return a.bookSeq < b.bookSeq
 }
 
 func (h *OrderHeap) Swap(i, j int) {
@@ -72,8 +74,13 @@ type OrderBook struct {
 	bids   *OrderHeap
 	asks   *OrderHeap
 	orders map[string]*Order
-	seqNo  atomic.Uint64
-	mu     sync.RWMutex
+	// userOrders indexes resting orders by user (userID -> set of order IDs).
+	// It is maintained in lockstep with the orders map on every add/remove
+	// path (addLocked, removeLocked, PopBest*, snapshot Restore, cancels) so
+	// GetOrdersByUser is O(user orders) instead of a full book scan.
+	userOrders map[string]map[string]struct{}
+	seqNo      atomic.Uint64
+	mu         sync.RWMutex
 
 	// lastTradePrice is maintained atomically for stop-order triggering and
 	// ticker computation without taking the write lock.
@@ -86,19 +93,54 @@ type OrderBook struct {
 
 func NewOrderBook(pair string) *OrderBook {
 	ob := &OrderBook{
-		Pair:   pair,
-		bids:   &OrderHeap{side: Buy},
-		asks:   &OrderHeap{side: Sell},
-		orders: make(map[string]*Order),
+		Pair:       pair,
+		bids:       &OrderHeap{side: Buy},
+		asks:       &OrderHeap{side: Sell},
+		orders:     make(map[string]*Order),
+		userOrders: make(map[string]map[string]struct{}),
 	}
 	ob.lastTradePrice.Store(big.NewFloat(0))
 	return ob
 }
 
-// addStopLocked parks a stop order. Caller must hold the write lock.
+// indexAddLocked registers an order in the per-user index. Caller must hold
+// the write lock.
+func (ob *OrderBook) indexAddLocked(o *Order) {
+	if o == nil {
+		return
+	}
+	ids := ob.userOrders[o.UserID]
+	if ids == nil {
+		ids = make(map[string]struct{})
+		ob.userOrders[o.UserID] = ids
+	}
+	ids[o.ID] = struct{}{}
+}
+
+// indexRemoveLocked unregisters an order from the per-user index. Caller must
+// hold the write lock.
+func (ob *OrderBook) indexRemoveLocked(o *Order) {
+	if o == nil {
+		return
+	}
+	if ids, ok := ob.userOrders[o.UserID]; ok {
+		delete(ids, o.ID)
+		if len(ids) == 0 {
+			delete(ob.userOrders, o.UserID)
+		}
+	}
+}
+
+// addStopLocked parks a stop order. Caller must hold the write lock. The order
+// gets its bookSeq here so that, if it later triggers and rests, it keeps its
+// original time priority.
 func (ob *OrderBook) addStopLocked(order *Order) {
 	ob.stops = append(ob.stops, order)
-	ob.seqNo.Add(1)
+	if order.bookSeq == 0 {
+		order.bookSeq = ob.seqNo.Add(1)
+	} else {
+		ob.seqNo.Add(1)
+	}
 }
 
 // RemoveStop removes a parked stop order by id. Caller must hold the write lock.
@@ -132,13 +174,20 @@ func (ob *OrderBook) Add(order *Order) {
 }
 
 func (ob *OrderBook) addLocked(order *Order) {
+	// bookSeq is pre-assigned for orders parked as stops first (preserves
+	// their original time priority); everyone else gets the next sequence.
+	if order.bookSeq == 0 {
+		order.bookSeq = ob.seqNo.Add(1)
+	} else {
+		ob.seqNo.Add(1)
+	}
 	ob.orders[order.ID] = order
+	ob.indexAddLocked(order)
 	if order.Side == Buy {
 		heap.Push(ob.bids, order)
 	} else {
 		heap.Push(ob.asks, order)
 	}
-	ob.seqNo.Add(1)
 }
 
 // Remove marks an order as cancelled. It only deletes the order from the lookup
@@ -156,6 +205,7 @@ func (ob *OrderBook) removeLocked(orderID string) *Order {
 		return nil
 	}
 	delete(ob.orders, orderID)
+	ob.indexRemoveLocked(o)
 	o.Status = Cancelled
 	o.UpdatedAt = nowNanos()
 	ob.seqNo.Add(1)
@@ -170,12 +220,15 @@ func (ob *OrderBook) Get(orderID string) *Order {
 }
 
 // GetOrdersByUser returns a snapshot of all live orders belonging to userID.
+// Backed by the per-user index, so it runs in O(user orders) instead of
+// scanning the whole book.
 func (ob *OrderBook) GetOrdersByUser(userID string) []*Order {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
-	out := make([]*Order, 0)
-	for _, o := range ob.orders {
-		if o.UserID == userID {
+	ids := ob.userOrders[userID]
+	out := make([]*Order, 0, len(ids))
+	for id := range ids {
+		if o, ok := ob.orders[id]; ok {
 			out = append(out, o)
 		}
 	}
@@ -237,6 +290,7 @@ func (ob *OrderBook) PopBestBid() *Order {
 		o := heap.Pop(ob.bids).(*Order)
 		if _, ok := ob.orders[o.ID]; ok && o.RemainingQty.Sign() > 0 {
 			delete(ob.orders, o.ID)
+			ob.indexRemoveLocked(o)
 			ob.seqNo.Add(1)
 			return o
 		}
@@ -251,6 +305,7 @@ func (ob *OrderBook) PopBestAsk() *Order {
 		o := heap.Pop(ob.asks).(*Order)
 		if _, ok := ob.orders[o.ID]; ok && o.RemainingQty.Sign() > 0 {
 			delete(ob.orders, o.ID)
+			ob.indexRemoveLocked(o)
 			ob.seqNo.Add(1)
 			return o
 		}
@@ -326,30 +381,31 @@ func aggregateLevelsFromMap(orders map[string]*Order, side Side, levels int) []P
 	return result
 }
 
+// sortPriceLevels orders price keys best-first: bids descending (highest
+// first), asks ascending (lowest first). Uses sort.Slice (O(n log n)); the
+// parsed values travel with their keys so comparisons stay consistent.
 func sortPriceLevels(keys []string, side Side) {
-	n := len(keys)
-	parsed := make([]*big.Float, n)
+	type parsedKey struct {
+		key    string
+		parsed *big.Float
+	}
+	items := make([]parsedKey, len(keys))
 	for i, k := range keys {
 		f, _, _ := big.ParseFloat(k, 10, 256, big.ToNearestEven)
 		if f == nil {
 			f = big.NewFloat(0)
 		}
-		parsed[i] = f
+		items[i] = parsedKey{key: k, parsed: f}
 	}
-	for i := 0; i < n; i++ {
-		swapped := false
-		for j := 0; j < n-i-1; j++ {
-			cmp := parsed[j].Cmp(parsed[j+1])
-			less := (side == Buy && cmp < 0) || (side == Sell && cmp > 0)
-			if less {
-				keys[j], keys[j+1] = keys[j+1], keys[j]
-				parsed[j], parsed[j+1] = parsed[j+1], parsed[j]
-				swapped = true
-			}
+	sort.Slice(items, func(i, j int) bool {
+		cmp := items[i].parsed.Cmp(items[j].parsed)
+		if side == Buy {
+			return cmp > 0
 		}
-		if !swapped {
-			break
-		}
+		return cmp < 0
+	})
+	for i := range items {
+		keys[i] = items[i].key
 	}
 }
 

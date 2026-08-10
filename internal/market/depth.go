@@ -17,9 +17,9 @@ type DepthLevel struct {
 
 // Depth is an external (reference) order book snapshot.
 type Depth struct {
-	Pair  string
-	Bids  []DepthLevel
-	Asks  []DepthLevel
+	Pair string
+	Bids []DepthLevel
+	Asks []DepthLevel
 }
 
 // FetchDepth pulls a limited L2 order book snapshot from Binance for the given
@@ -53,7 +53,7 @@ func (b *BinancePriceFeed) FetchDepth(pair string, limit int) (*Depth, error) {
 		return nil, fmt.Errorf("binance depth: status %d", resp.StatusCode)
 	}
 	var raw struct {
-		LastUpdateID int       `json:"lastUpdateId"`
+		LastUpdateID int        `json:"lastUpdateId"`
 		Bids         [][]string `json:"bids"`
 		Asks         [][]string `json:"asks"`
 	}

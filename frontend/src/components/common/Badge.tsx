@@ -1,16 +1,35 @@
 import { cls } from '@/utils/format';
 
-export function Badge({ children, color = 'neutral' }: { children: React.ReactNode; color?: 'neutral' | 'up' | 'down' | 'accent' | 'danger' | 'success' }) {
-  const map = {
-    neutral: 'bg-nexa-700 text-nexa-100',
-    up: 'bg-up/15 text-up',
-    down: 'bg-down/15 text-down',
-    accent: 'bg-accent/15 text-accent',
-    danger: 'bg-down/15 text-down',
-    success: 'bg-up/15 text-up',
-  };
+type BadgeColor = 'neutral' | 'up' | 'down' | 'accent' | 'danger' | 'success' | 'warning' | 'info';
+
+const map: Record<BadgeColor, string> = {
+  neutral: 'bg-nexa-700 text-nexa-100 border border-nexa-600/50',
+  up: 'bg-up/10 text-up border border-up/20',
+  down: 'bg-down/10 text-down border border-down/20',
+  accent: 'bg-accent/10 text-accent border border-accent/20',
+  danger: 'bg-down/10 text-down border border-down/20',
+  success: 'bg-up/10 text-up border border-up/20',
+  warning: 'bg-amber-400/10 text-amber-400 border border-amber-400/20',
+  info: 'bg-sky-400/10 text-sky-300 border border-sky-400/20',
+};
+
+interface BadgeProps {
+  children: React.ReactNode;
+  color?: BadgeColor;
+  className?: string;
+  size?: 'sm' | 'md';
+}
+
+export function Badge({ children, color = 'neutral', className, size = 'md' }: BadgeProps) {
   return (
-    <span className={cls('inline-flex items-center rounded px-2 py-0.5 text-xs font-medium', map[color])}>
+    <span
+      className={cls(
+        'inline-flex items-center gap-1 rounded-md font-medium',
+        size === 'sm' ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-0.5 text-xs',
+        map[color],
+        className
+      )}
+    >
       {children}
     </span>
   );

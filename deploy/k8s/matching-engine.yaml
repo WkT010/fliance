@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: matching-engine
-  namespace: nexa
+  namespace: fliance
 spec:
   serviceName: matching-engine
   replicas: 1
@@ -11,10 +11,22 @@ spec:
     metadata:
       labels: {app: matching-engine}
     spec:
+      # 镜像以 nonroot(UID 10001) 运行；fsGroup 保证 /data PVC 可写
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
       containers:
         - name: matching-engine
-          image: nexa/matching-engine:latest
-          envFrom: [{configMapRef: {name: nexa-config}}]
+          image: fliance/matching-engine:latest
+          envFrom: [{configMapRef: {name: fliance-config}}]
+          env:
+            # 敏感配置统一从 fliance-secrets 注入（禁止写入 ConfigMap/明文）
+            - name: REDIS_PASSWORD
+              valueFrom: {secretKeyRef: {name: fliance-secrets, key: REDIS_PASSWORD}}
+            # gRPC 共享令牌：ENVIRONMENT != development 时缺省会 log.Fatal 拒绝启动
+            - name: GRPC_SHARED_TOKEN
+              valueFrom: {secretKeyRef: {name: fliance-secrets, key: GRPC_SHARED_TOKEN}}
           resources: {limits: {cpu: "2", memory: 1Gi}, requests: {cpu: "1", memory: 512Mi}}
           ports:
             - containerPort: 50051
@@ -45,7 +57,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: matching-engine
-  namespace: nexa
+  namespace: fliance
 spec:
   selector: {app: matching-engine}
   ports:

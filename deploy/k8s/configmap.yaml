@@ -1,13 +1,14 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: nexa-config
-  namespace: nexa
+  name: fliance-config
+  namespace: fliance
 data:
-  JWT_ISSUER: "nexa-exchange"
+  # 仅存放非敏感配置。所有敏感项（JWT_SECRET、POSTGRES_DSN、REDIS_PASSWORD、
+  # ALCHEMY_API_KEY）已迁移至 fliance-secrets（见 secret.yaml），通过 secretKeyRef 引用。
+  JWT_ISSUER: "fliance-exchange"
   LISTEN_ADDR: ":8080"
   ENVIRONMENT: "production"
-  POSTGRES_DSN: "postgres://nexa:nexa_prod@postgres:5432/nexa?sslmode=disable"
   REDIS_ADDR: "redis:6379"
   KAFKA_BROKERS: "kafka:9092"
   TRADING_PAIRS: "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT"
@@ -16,14 +17,8 @@ data:
   SNAPSHOT_INTERVAL: "60s"
   LOG_LEVEL: "info"
   LOG_FORMAT: "json"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: nexa-secrets
-  namespace: nexa
-type: Opaque
-stringData:
-  JWT_SECRET: "change-me-in-production"
-  POSTGRES_PASSWORD: "nexa_prod"
-  ALCHEMY_API_KEY: ""
+  # ⚠ 必填替换：CORS 白名单必须为真实前端域名（含 scheme）。
+  # ENVIRONMENT != development 时配置为 "*" 或缺省会触发 api-gateway 启动 fatal。
+  # 部署前请替换为真实域名（多个用逗号分隔），或配合 kustomize edits/configMapGenerator 注入；
+  # 占位值非通配符，服务可启动但跨域请求会被拒绝，勿忘替换。
+  CORS_ALLOW_ORIGINS: "https://CHANGE-ME-to-your-real-domain.com"

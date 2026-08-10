@@ -5,11 +5,12 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
+	"github.com/WkT010/nexa-exchange/internal/audit"
 	"github.com/WkT010/nexa-exchange/internal/market"
 	"github.com/WkT010/nexa-exchange/internal/matching"
 	"github.com/WkT010/nexa-exchange/internal/risk"
 	"github.com/WkT010/nexa-exchange/internal/wallet"
+	"github.com/gin-gonic/gin"
 )
 
 // WithdrawalManager is the subset of wallet.WithdrawalService used by admin endpoints.
@@ -53,12 +54,20 @@ type AdminHandler struct {
 	ammSim       *market.Simulator
 	ammFeed      *market.AMMPriceFeed
 	ammBootstrap func() error // create+seed default pools then reload feed
+
+	// Audit trail for admin actions. Optional: nil disables auditing (the
+	// logger's methods are nil-safe).
+	audit *audit.Logger
 }
 
 // NewAdminHandler constructs an admin handler.
 func NewAdminHandler(w WithdrawalManager, r RiskManager, ex ExchangeManager) *AdminHandler {
 	return &AdminHandler{withdrawals: w, risk: r, exchange: ex}
 }
+
+// SetAuditLogger wires the asynchronous admin audit logger. Optional: without
+// it admin endpoints simply do not record audit entries.
+func (h *AdminHandler) SetAuditLogger(l *audit.Logger) { h.audit = l }
 
 // ListWithdrawals returns withdrawals pending review or broadcast.
 // GET /api/v2/admin/withdrawals?status=&limit=100&offset=0
@@ -125,7 +134,9 @@ func (h *AdminHandler) ApproveWithdrawal(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "withdrawal id required"})
 		return
 	}
-	if err := h.withdrawals.ApproveWithdrawal(id); err != nil {
+	err := h.withdrawals.ApproveWithdrawal(id)
+	h.audit.Log(c, "admin.withdrawal.approve", "withdrawal", id, nil, err)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -140,7 +151,9 @@ func (h *AdminHandler) RejectWithdrawal(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "withdrawal id required"})
 		return
 	}
-	if err := h.withdrawals.RejectWithdrawal(id); err != nil {
+	err := h.withdrawals.RejectWithdrawal(id)
+	h.audit.Log(c, "admin.withdrawal.reject", "withdrawal", id, nil, err)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -206,6 +219,9 @@ func (h *AdminHandler) AddAddress(c *gin.Context) {
 		Address: r.Address,
 		Label:   r.Label,
 	})
+	h.audit.Log(c, "admin.user.address.add", "user_address", userID, gin.H{
+		"asset": r.Asset, "address": r.Address, "label": r.Label,
+	}, nil)
 	c.JSON(http.StatusCreated, gin.H{"status": "added", "user_id": userID, "asset": r.Asset, "address": r.Address})
 }
 
@@ -236,6 +252,9 @@ func (h *AdminHandler) SetDailyLimit(c *gin.Context) {
 		DailyLimit:  limitF,
 		WindowHours: r.WindowHrs,
 	})
+	h.audit.Log(c, "admin.user.limit.set", "withdrawal_limit", userID, gin.H{
+		"asset": r.Asset, "daily_limit": r.DailyLimit, "window_hours": r.WindowHrs,
+	}, nil)
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "user_id": userID, "asset": r.Asset, "daily_limit": r.DailyLimit})
 }
 
@@ -303,6 +322,14 @@ func (h *AdminHandler) UpdatePairRisk(c *gin.Context) {
 		cfg.TradingEnabled = *r.TradingEnabled
 	}
 	h.risk.SetPairConfig(cfg)
+	h.audit.Log(c, "admin.risk.pair.update", "pair", pair, gin.H{
+		"min_notional": r.MinNotional, "max_notional": r.MaxNotional,
+		"min_qty": r.MinQty, "max_qty": r.MaxQty,
+		"tick_size": r.TickSize, "lot_size": r.LotSize,
+		"price_band_pct": r.PriceBandPct, "circuit_breaker_pct": r.CircuitBreakerPct,
+		"reference_price":       r.ReferencePrice,
+		"market_orders_enabled": r.MarketOrdersEnabled, "trading_enabled": r.TradingEnabled,
+	}, nil)
 	c.JSON(http.StatusOK, pairRiskToJSON(cfg))
 }
 
@@ -311,6 +338,7 @@ func (h *AdminHandler) UpdatePairRisk(c *gin.Context) {
 func (h *AdminHandler) PausePair(c *gin.Context) {
 	pair := c.Param("pair")
 	h.setTradingEnabled(pair, false)
+	h.audit.Log(c, "admin.pair.pause", "pair", pair, nil, nil)
 	c.JSON(http.StatusOK, gin.H{"pair": pair, "trading_enabled": false})
 }
 
@@ -319,6 +347,7 @@ func (h *AdminHandler) PausePair(c *gin.Context) {
 func (h *AdminHandler) ResumePair(c *gin.Context) {
 	pair := c.Param("pair")
 	h.setTradingEnabled(pair, true)
+	h.audit.Log(c, "admin.pair.resume", "pair", pair, nil, nil)
 	c.JSON(http.StatusOK, gin.H{"pair": pair, "trading_enabled": true})
 }
 
@@ -352,12 +381,12 @@ func (h *AdminHandler) UpdateUserRisk(c *gin.Context) {
 		ul = &risk.UserLimit{UserID: userID}
 	}
 	var r struct {
-		MaxOpenOrders     int                 `json:"max_open_orders"`
-		OrdersPerMinute   int                 `json:"orders_per_minute"`
-		OrdersPerHour     int                 `json:"orders_per_hour"`
-		OrdersPerDay      int                 `json:"orders_per_day"`
+		MaxOpenOrders      int               `json:"max_open_orders"`
+		OrdersPerMinute    int               `json:"orders_per_minute"`
+		OrdersPerHour      int               `json:"orders_per_hour"`
+		OrdersPerDay       int               `json:"orders_per_day"`
 		DailyOrderNotional map[string]string `json:"daily_order_notional"`
-		MaxPosition       map[string]string   `json:"max_position"`
+		MaxPosition        map[string]string `json:"max_position"`
 	}
 	if err := c.ShouldBindJSON(&r); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -386,6 +415,11 @@ func (h *AdminHandler) UpdateUserRisk(c *gin.Context) {
 		}
 	}
 	h.risk.SetUserLimit(ul)
+	h.audit.Log(c, "admin.risk.user.update", "user", userID, gin.H{
+		"max_open_orders": r.MaxOpenOrders, "orders_per_minute": r.OrdersPerMinute,
+		"orders_per_hour": r.OrdersPerHour, "orders_per_day": r.OrdersPerDay,
+		"daily_order_notional": r.DailyOrderNotional, "max_position": r.MaxPosition,
+	}, nil)
 	c.JSON(http.StatusOK, userLimitToJSON(ul))
 }
 
@@ -406,6 +440,11 @@ func (h *AdminHandler) TriggerSnapshot(c *gin.Context) {
 	} else {
 		err = h.exchange.Snapshot(r.Pair)
 	}
+	target := r.Pair
+	if target == "" {
+		target = "all"
+	}
+	h.audit.Log(c, "admin.snapshot.trigger", "snapshot", target, nil, err)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "snapshot failed", "detail": err.Error()})
 		return

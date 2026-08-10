@@ -4,11 +4,23 @@ import (
 	"errors"
 	"math/big"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 
-	"github.com/gin-gonic/gin"
+	"github.com/WkT010/nexa-exchange/internal/audit"
 	"github.com/WkT010/nexa-exchange/internal/wallet"
+	"github.com/gin-gonic/gin"
 )
+
+// supportedPairsForWallet is the list of trading pairs the platform offers,
+// used by ListSupportedAssets to include every base token in the supported
+// asset list so users can deposit/withdraw them even when no on-chain
+// blockchain client is configured.
+var supportedPairsForWallet = []string{
+	"BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT",
+	"BTC/USDC", "ETH/USDC",
+}
 
 // WalletService is the subset of wallet.Service used by the HTTP layer. It is
 // satisfied by *wallet.Service in production and by a fake in tests.
@@ -18,6 +30,21 @@ type WalletService interface {
 	Deposit(userID, asset string, amount *big.Float, txHash string) error
 	Withdraw(userID, asset, address string, amount *big.Float) error
 	ListTransactions(userID string, limit, offset int) ([]*wallet.Transaction, error)
+	// ReserveForOrder locks `amount` of `asset` without registering a
+	// per-order reservation. It must only be used for off-orderbook locks
+	// (futures margin, AMM trades); spot orders must use ReserveOrder so
+	// cancel/fill paths can release exactly what was locked.
+	ReserveForOrder(userID, asset string, amount *big.Float) (*wallet.Wallet, error)
+	// ReserveOrder locks the funds an order needs AND registers the
+	// reservation under orderID so ReleaseOrder/SettleFill can unwind it.
+	// Market buys are not pre-locked (price unknown) and settle on fill.
+	ReserveOrder(orderID, userID, pair string, side int, orderType int, price, qty *big.Float) error
+}
+
+// DepositUserLookup resolves users by ID so the admin deposit endpoint can
+// validate an explicit target user before crediting their wallet.
+type DepositUserLookup interface {
+	GetByID(id string) (*User, error)
 }
 
 // WalletHandler exposes the wallet HTTP API: balances, deposit address, withdraw
@@ -25,11 +52,25 @@ type WalletService interface {
 type WalletHandler struct {
 	svc     WalletService
 	clients map[string]wallet.BlockchainClient
+	lookup  DepositUserLookup
+
+	// Audit trail for the admin deposit endpoint. Optional: nil disables
+	// auditing (the logger's methods are nil-safe).
+	audit *audit.Logger
 }
 
 func NewWalletHandler(svc WalletService, clients map[string]wallet.BlockchainClient) *WalletHandler {
 	return &WalletHandler{svc: svc, clients: clients}
 }
+
+// SetUserLookup wires the user store used to validate an explicit target user
+// on the admin deposit endpoint. Optional: without it, deposits can only
+// target the caller.
+func (h *WalletHandler) SetUserLookup(l DepositUserLookup) { h.lookup = l }
+
+// SetAuditLogger wires the asynchronous admin audit logger used by the admin
+// deposit endpoint. Optional.
+func (h *WalletHandler) SetAuditLogger(l *audit.Logger) { h.audit = l }
 
 // GetBalances returns all wallet balances for the authenticated user.
 // GET /api/v2/wallet/balances
@@ -106,17 +147,22 @@ func (h *WalletHandler) GetDepositAddress(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"asset": r.Asset, "address": "", "user_id": userID, "note": "manual deposit only"})
 }
 
-// Deposit credits the user's wallet. This is an internal/admin endpoint in
-// production (deposits are normally detected by the wallet-service), but it is
-// exposed for testing and integration.
-// POST /api/v2/wallet/deposit  { "asset":"BTC","amount":"1.0","tx_hash":"..." }
+// Deposit credits a wallet. Admin-only endpoint (deposits are normally
+// detected by the wallet-service); kept for manual credits and integration.
+// POST /api/v2/admin/wallet/deposit
+//
+// { "asset":"BTC","amount":"1.0","tx_hash":"...","user_id":"usr_..." }
+//
+// user_id is optional: when omitted the caller's own wallet is credited;
+// when present the target user must exist.
 func (h *WalletHandler) Deposit(c *gin.Context) {
 	uid, _ := c.Get("user_id")
 	userID, _ := uid.(string)
 	var r struct {
-		Asset  string `json:"asset" binding:"required"`
-		Amount string `json:"amount" binding:"required"`
-		TxHash string `json:"tx_hash"`
+		Asset    string `json:"asset" binding:"required"`
+		Amount   string `json:"amount" binding:"required"`
+		TxHash   string `json:"tx_hash"`
+		TargetID string `json:"user_id"`
 	}
 	if err := c.ShouldBindJSON(&r); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "asset and amount required"})
@@ -127,11 +173,46 @@ func (h *WalletHandler) Deposit(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount"})
 		return
 	}
-	if err := h.svc.Deposit(userID, r.Asset, amt, r.TxHash); err != nil {
+	target := userID
+	if r.TargetID != "" {
+		if h.lookup == nil {
+			h.audit.Log(c, "admin.deposit", "wallet", r.TargetID, depositDetails(r.Asset, r.Amount, r.TxHash, r.TargetID), errors.New("user lookup unavailable"))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "user lookup unavailable, cannot target another user"})
+			return
+		}
+		u, err := h.lookup.GetByID(r.TargetID)
+		if err != nil || u == nil {
+			h.audit.Log(c, "admin.deposit", "wallet", r.TargetID, depositDetails(r.Asset, r.Amount, r.TxHash, r.TargetID), errors.New("target user not found"))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "target user not found"})
+			return
+		}
+		target = u.ID
+	}
+	if err := h.svc.Deposit(target, r.Asset, amt, r.TxHash); err != nil {
+		h.audit.Log(c, "admin.deposit", "wallet", target, depositDetails(r.Asset, r.Amount, r.TxHash, r.TargetID), err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": "ok", "asset": r.Asset, "amount": r.Amount})
+	h.audit.Log(c, "admin.deposit", "wallet", target, depositDetails(r.Asset, r.Amount, r.TxHash, r.TargetID), nil)
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "user_id": target, "asset": r.Asset, "amount": r.Amount})
+}
+
+// depositDetails builds the audit details payload for a deposit attempt.
+func depositDetails(asset, amount, txHash, targetID string) gin.H {
+	return gin.H{"asset": asset, "amount": amount, "tx_hash": txHash, "target_user_id": targetID}
+}
+
+// DepositGone answers the legacy user-facing deposit path with 410 Gone and a
+// migration note. Crediting balances is admin-only now
+// (POST /api/v2/admin/wallet/deposit); regular deposits are detected and
+// credited automatically by the wallet-service.
+func (h *WalletHandler) DepositGone(c *gin.Context) {
+	c.JSON(http.StatusGone, gin.H{
+		"error": "endpoint removed",
+		"message": "POST /api/v2/wallet/deposit is no longer available. " +
+			"On-chain deposits are credited automatically by the wallet-service; " +
+			"manual balance credits are admin-only via POST /api/v2/admin/wallet/deposit.",
+	})
 }
 
 // Withdraw locks the funds and queues a withdrawal for the wallet-service to
@@ -198,15 +279,34 @@ func (h *WalletHandler) ListTransactions(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"transactions": result, "limit": limit, "offset": offset})
 }
 
-// ListSupportedAssets returns the assets for which a blockchain client is
-// registered (i.e. on-chain deposit/withdrawal is supported).
-// GET /api/v2/wallet/assets
+// ListSupportedAssets returns every asset for which the platform supports
+// deposit and withdrawal. This includes both on-chain assets (those with a
+// registered blockchain client) and internally-issued assets (USDT, USDC and
+// every base token from the supported trading pairs), so users can deposit or
+// withdraw them via the simulated/manual flow even when no chain client is
+// configured. The frontend uses this list to populate the asset selector on
+// the wallet page, so excluding internally-issued assets would prevent users
+// from ever withdrawing their balance.
 func (h *WalletHandler) ListSupportedAssets(c *gin.Context) {
-	assets := make([]string, 0, len(h.clients))
+	assets := make(map[string]struct{})
 	for a := range h.clients {
-		assets = append(assets, a)
+		assets[a] = struct{}{}
 	}
-	c.JSON(http.StatusOK, gin.H{"assets": assets})
+	// Internally-issued: USDT, USDC and every base token traded on the platform.
+	assets["USDT"] = struct{}{}
+	assets["USDC"] = struct{}{}
+	for _, pair := range supportedPairsForWallet {
+		parts := strings.SplitN(pair, "/", 2)
+		if len(parts) == 2 {
+			assets[parts[0]] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(assets))
+	for a := range assets {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	c.JSON(http.StatusOK, gin.H{"assets": out})
 }
 
 func walletToJSON(w *wallet.Wallet) gin.H {

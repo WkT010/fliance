@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# NEXA Exchange sandbox keep-alive script.
+# Fliance（梵响） sandbox keep-alive script.
 # Periodically pings the frontend preview and backend health endpoints
 # to prevent the sandbox from going idle and to restart services if they stop.
 
@@ -8,7 +8,7 @@ set -uo pipefail
 FRONTEND_URL="${FRONTEND_URL:-http://localhost:3000}"
 BACKEND_URL="${BACKEND_URL:-http://localhost:8080/health}"
 INTERVAL="${KEEPALIVE_INTERVAL:-60}"
-LOG_FILE="${KEEPALIVE_LOG:-/tmp/nexa-keepalive.log}"
+LOG_FILE="${KEEPALIVE_LOG:-/tmp/fliance-keepalive.log}"
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -20,8 +20,8 @@ restart_backend() {
     log "[WARN] backend not healthy, restarting api-gateway..."
     pkill -f "${PROJECT_ROOT}/api-gateway" 2>/dev/null || true
     sleep 1
-    cd "$PROJECT_ROOT" && nohup sh -c 'POSTGRES_DSN="postgres://nexa:@localhost:5432/nexa?sslmode=disable" ./api-gateway' > /tmp/nexa-api.log 2>&1 &
-    echo $! > /tmp/nexa-api.pid
+    cd "$PROJECT_ROOT" && nohup sh -c 'POSTGRES_DSN="postgres://nexa:@localhost:5432/nexa?sslmode=disable" ./api-gateway' > /tmp/fliance-api.log 2>&1 &
+    echo $! > /tmp/fliance-api.pid
     sleep 3
 }
 

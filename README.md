@@ -1,6 +1,6 @@
-# **NEXA Exchange** (nexa-exchange) v2.0
+# **Fliance（梵响）** v2.0
 
-Production-grade cryptocurrency exchange engine in Go. Lock-free matching engine, WebSocket streaming, multi-asset wallet (Alchemy blockchain integration). Supports 50K-100K concurrent users.
+Fliance（梵响） is a production-grade cryptocurrency exchange engine in Go, operated by 凌嘉凡响网络科技有限公司 (Canival Institute Inc.). Lock-free matching engine, WebSocket streaming, multi-asset wallet (Alchemy blockchain integration). Supports 50K-100K concurrent users.
 
 ## Quick Start
 ```bash

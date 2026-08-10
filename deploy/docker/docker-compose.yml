@@ -1,16 +1,26 @@
+# 开发环境基础设施 compose。
+# 敏感值通过 ${VAR} 从项目根目录 .env 注入（模板见 .env.example，勿提交真实值）。
+#
+# 开发默认值（仅限 dev，禁止用于生产）：
+#   - 应用服务以 ENVIRONMENT=development 本地运行时，gRPC 认证不强制；
+#     如需启用可选的 GRPC_SHARED_TOKEN，dev 默认值可用：fliance-dev-grpc-token。
+#   - CORS 在 development 下允许 *，非 dev 环境必须显式白名单，否则启动失败。
 services:
   postgres:
     image: postgres:16-alpine
-    environment: { POSTGRES_USER: nexa, POSTGRES_PASSWORD: nexa_dev, POSTGRES_DB: nexa }
+    environment: { POSTGRES_USER: nexa, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-nexa_dev}", POSTGRES_DB: nexa }
     # Host port 5433 to avoid shadowing any native postgres on 5432.
     ports: ["5433:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U nexa"], interval: 5s, timeout: 3s, retries: 5 }
   redis:
     image: redis:7-alpine
+    # 开发环境可选密码；若 .env 设置了 REDIS_PASSWORD 则启用 requirepass
+    command: sh -c "if [ -n \"$$REDIS_PASSWORD\" ]; then exec redis-server --requirepass \"$$REDIS_PASSWORD\"; else exec redis-server; fi"
+    environment: { REDIS_PASSWORD: "${REDIS_PASSWORD:-}" }
     ports: ["6379:6379"]
     volumes: [redisdata:/data]
-    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 5 }
+    healthcheck: { test: ["CMD-SHELL", "redis-cli $${REDIS_PASSWORD:+-a \"$$REDIS_PASSWORD\"} ping"], interval: 5s, timeout: 3s, retries: 5 }
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5
     environment: { ZOOKEEPER_CLIENT_PORT: 2181, ZOOKEEPER_TICK_TIME: 2000 }

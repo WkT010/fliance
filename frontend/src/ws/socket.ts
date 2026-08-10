@@ -3,7 +3,7 @@ import { useAuthStore } from '@/store/authStore';
 import { useMarketStore } from '@/store/marketStore';
 import type { Orderbook, Trade, FillMessage } from '@/types';
 
-export class NexaSocket {
+export class FlianceSocket {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -26,20 +26,25 @@ export class NexaSocket {
   }
 
   private doConnect() {
-    const token = useAuthStore.getState().token;
-    const url = token ? `${WS_URL}?token=${token}` : WS_URL;
-    // Capture the instance so handlers can detect whether they belong to the
-    // currently-active connection. Without this, a late onclose from a previous
-    // (superseded) socket triggers spurious reconnects — especially under React
-    // StrictMode, which mounts/unmounts/remounts and shares this singleton.
-    const ws = new WebSocket(url);
+    // SECURITY: never put the JWT in the connection URL — query parameters
+    // leak into server/proxy access logs and browser history. The legacy
+    // ?token= / ?user_id= parameters were removed by the backend; identity
+    // is now established by an in-band auth message after the socket opens.
+    const ws = new WebSocket(WS_URL);
     this.ws = ws;
+    this.authed = false;
 
     ws.onopen = () => {
       if (this.ws !== ws) return;
       this.reconnectAttempts = 0;
+      // Public market-data channels need no authentication.
       this.subscribe(WS_CHANNELS.ORDERBOOK, [this.pair!]);
       this.subscribe(WS_CHANNELS.TRADES, [this.pair!]);
+      // Authenticated sessions: identify the connection with the first
+      // message ({"op":"auth","token":...}). Private channels (user fills /
+      // order updates) are only available after the server answers auth_ok.
+      const token = useAuthStore.getState().token;
+      if (token) this.send({ op: 'auth', token });
       this.startHeartbeat();
     };
 
@@ -51,6 +56,9 @@ export class NexaSocket {
           if (!line) continue;
           const msg = JSON.parse(line);
           this.resetHeartbeat();
+          // Connection-level ops (auth_ok / auth_error / error) carry no
+          // "type" field and never reach the market-data handler.
+          if (typeof msg.op === 'string') { this.handleOp(msg); continue; }
           if (msg.type === 'pong') continue;
           this.handleMessage(msg);
         }
@@ -71,6 +79,32 @@ export class NexaSocket {
     };
 
     ws.onerror = () => { if (this.ws === ws) ws.close(); };
+  }
+
+  // Whether the current connection completed the {"op":"auth"} handshake.
+  // Reset on every doConnect() so reconnects re-authenticate from scratch.
+  private authed = false;
+
+  private handleOp(msg: Record<string, unknown>) {
+    if (msg.op === 'auth_ok') {
+      this.authed = true;
+      this.subscribePrivateChannels();
+    } else if (msg.op === 'auth_error') {
+      // The stored JWT was rejected (expired / revoked / wrong type). Drop
+      // the session; the public market stream keeps running anonymously.
+      this.authed = false;
+      console.warn('[WS] authentication rejected by server — signing out');
+      useAuthStore.getState().logout();
+    }
+  }
+
+  // Private subscriptions must only run after auth_ok — the server refuses
+  // user:* channels on anonymous connections. Note the server auto-joins an
+  // authenticated connection to its user:<uid> room, so fills/order updates
+  // arrive without an explicit subscribe; explicit private subscriptions go
+  // here if the backend adds them.
+  private subscribePrivateChannels() {
+    if (!this.authed || !useAuthStore.getState().token) return;
   }
 
   private startHeartbeat() {
@@ -122,4 +156,4 @@ export class NexaSocket {
   }
 }
 
-export const socket = new NexaSocket();
+export const socket = new FlianceSocket();

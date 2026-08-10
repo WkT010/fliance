@@ -7,9 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"github.com/WkT010/nexa-exchange/internal/cache"
 	"github.com/WkT010/nexa-exchange/internal/config"
 	"github.com/WkT010/nexa-exchange/internal/observability"
+	"github.com/gin-gonic/gin"
 )
 
 type Router struct {
@@ -26,9 +27,11 @@ type Router struct {
 	ammH      *AmmHandler
 	authMW    gin.HandlerFunc
 	apiKeyMW  gin.HandlerFunc
+	rateMW    gin.HandlerFunc
 	health    *observability.HealthCollector
 	startedAt time.Time
 	staticDir string
+	cache     cache.Cache
 }
 
 func NewRouter(
@@ -68,12 +71,41 @@ func NewRouter(
 
 func (r *Router) SetStaticDir(dir string) { r.staticDir = dir }
 
+// SetRateLimiter wires the global per-IP HTTP rate limiter. Callers choose
+// between the in-memory RateLimiter and the distributed RedisRateLimiter
+// based on cfg.EnableRedisRateLimit; without it the gateway runs unlimited
+// apart from the WS-specific limiter.
+func (r *Router) SetRateLimiter(mw gin.HandlerFunc) { r.rateMW = mw }
+
+// SetCache wires the shared cache abstraction used by the WebSocket
+// connection rate limiter. Optional: without it the limiter degrades to
+// in-memory per-instance counting.
+func (r *Router) SetCache(cc cache.Cache) { r.cache = cc }
+
 func (r *Router) Setup() *gin.Engine {
-	// CORS: reflect configured origins. In production, set CORS_ALLOW_ORIGINS to
-	// the bound domain (e.g. https://trade.yourdomain.com) and
-	// CORS_ALLOW_CREDENTIALS=true. When serving the SPA from the same origin as
-	// the API (the common deployment here), CORS is a no-op but harmless.
+	// Panic recovery first so a bug in any handler/middleware turns into a
+	// 500 instead of killing the whole gateway process.
+	r.engine.Use(gin.Recovery())
+
+	// Global per-IP request rate limit (wired by main; Redis-backed or
+	// in-memory depending on cfg.EnableRedisRateLimit).
+	if r.rateMW != nil {
+		r.engine.Use(r.rateMW)
+	}
+
+	// CORS: strict allow-list matching. Outside development the wildcard is
+	// rejected at config load time; the same OriginChecker is shared with the
+	// WebSocket upgrader so HTTP and WS enforce one identical policy.
+	originChecker := NewOriginChecker(r.config.CORSAllowOrigins)
 	r.engine.Use(CORSMiddlewareConfig(r.config.CORSAllowOrigins, r.config.CORSAllowCreds))
+
+	// Global request-body cap (default 1 MB); WebSocket upgrades exempt.
+	r.engine.Use(RequestBodyLimit(int64(r.config.MaxRequestBodyBytes)))
+
+	// Wire the WS hardening knobs that live outside the constructors.
+	r.wh.SetOriginChecker(originChecker)
+	r.wh.SetTokenBlacklist(r.authH.TokenBlacklist())
+	r.wh.SetMaxConnections(r.config.WSMaxConnections)
 
 	r.engine.GET("/health", r.health.Handler())
 	r.engine.GET("/ready", r.health.ReadyHandler())
@@ -101,12 +133,19 @@ func (r *Router) Setup() *gin.Engine {
 	prot.GET("/wallet/balances", r.walletH.GetBalances)
 	prot.GET("/wallet/balances/:asset", r.walletH.GetBalance)
 	prot.POST("/wallet/deposit/address", r.walletH.GetDepositAddress)
-	prot.POST("/wallet/deposit", r.walletH.Deposit)
+	// NOTE: POST /wallet/deposit credits balances and is admin-only — it was
+	// moved out of the authenticated user group (privilege escalation). The
+	// legacy path stays registered with 410 Gone + a migration note so old
+	// clients get an actionable response instead of a 404.
+	api.POST("/wallet/deposit", r.walletH.DepositGone)
 	prot.POST("/wallet/withdraw", r.walletH.Withdraw)
 	prot.GET("/wallet/transactions", r.walletH.ListTransactions)
 	prot.GET("/wallet/assets", r.walletH.ListSupportedAssets)
 
 	prot.GET("/account", r.accountH.GetAccount)
+	prot.GET("/account/profile", r.accountH.GetProfile)
+	prot.GET("/account/pnl", r.accountH.GetPnL)
+	prot.GET("/account/pnl/history", r.accountH.GetPnLHistory)
 	prot.POST("/account/api-keys", r.accountH.CreateAPIKey)
 	prot.GET("/account/api-keys", r.accountH.ListAPIKeys)
 	prot.DELETE("/account/api-keys/:id", r.accountH.RevokeAPIKey)
@@ -157,6 +196,8 @@ func (r *Router) Setup() *gin.Engine {
 	admin := api.Group("/admin")
 	admin.Use(r.authMW, AdminOnly())
 	admin.GET("/users", r.accountH.AdminListUsers)
+	// Manual balance credits are restricted to admins (see note above).
+	admin.POST("/wallet/deposit", r.walletH.Deposit)
 	// AMM admin: create pools, re-seed, control the market simulator.
 	admin.POST("/amm/pools", r.ammH.CreatePool)
 	admin.POST("/amm/seed", r.adminH.SeedAMM)
@@ -179,10 +220,16 @@ func (r *Router) Setup() *gin.Engine {
 	admin.POST("/pairs/:pair/resume", r.adminH.ResumePair)
 	admin.POST("/snapshots", r.adminH.TriggerSnapshot)
 
-	r.engine.GET("/ws", r.wh.HandleWebSocket)
+	// WebSocket endpoint: per-IP connection-attempt rate limit (cache-backed,
+	// in-memory fallback) plus the hub's global connection cap.
+	r.engine.GET("/ws", WSConnectLimiter(r.cache, r.config.WSConnRatePerMin, time.Minute), r.wh.HandleWebSocket)
 
 	// Static frontend SPA
 	if r.staticDir != "" {
+		staticRoot, err := filepath.Abs(r.staticDir)
+		if err != nil {
+			staticRoot = r.staticDir
+		}
 		r.engine.NoRoute(func(c *gin.Context) {
 			path := c.Request.URL.Path
 			if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/ws") ||
@@ -190,12 +237,19 @@ func (r *Router) Setup() *gin.Engine {
 				c.AbortWithStatus(http.StatusNotFound)
 				return
 			}
-			fullPath := filepath.Join(r.staticDir, filepath.Clean(path))
+			// Path-traversal guard: normalize the request path relative to the
+			// site root and verify the result stays inside staticRoot.
+			clean := filepath.Clean("/" + path)
+			fullPath := filepath.Join(staticRoot, clean)
+			if fullPath != staticRoot && !strings.HasPrefix(fullPath, staticRoot+string(filepath.Separator)) {
+				c.AbortWithStatus(http.StatusNotFound)
+				return
+			}
 			if fi, err := os.Stat(fullPath); err == nil && !fi.IsDir() {
 				c.File(fullPath)
 				return
 			}
-			c.File(filepath.Join(r.staticDir, "index.html"))
+			c.File(filepath.Join(staticRoot, "index.html"))
 		})
 	}
 
@@ -203,5 +257,5 @@ func (r *Router) Setup() *gin.Engine {
 }
 
 func (r *Router) healthHandler(c *gin.Context) {
-	c.JSON(200, gin.H{"status": "ok", "service": "nexa"})
+	c.JSON(200, gin.H{"status": "ok", "service": "fliance"})
 }

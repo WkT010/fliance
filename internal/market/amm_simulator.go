@@ -1,7 +1,7 @@
 package market
 
 import (
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -64,7 +64,7 @@ func (s *Simulator) Stop() {
 }
 
 func (s *Simulator) loop() {
-	log.Printf("[simulator] started (interval=%s)", s.interval)
+	slog.Info("simulator started", "interval", s.interval)
 	// Prime the feed immediately so the first /tickers request has data
 	// without waiting a full interval.
 	s.tick()
@@ -73,7 +73,7 @@ func (s *Simulator) loop() {
 	for {
 		select {
 		case <-s.stop:
-			log.Printf("[simulator] stopped")
+			slog.Info("simulator stopped")
 			return
 		case <-t.C:
 			s.tick()
@@ -85,12 +85,12 @@ func (s *Simulator) loop() {
 // real-user swap/liquidity change is reflected, then each pool is perturbed.
 func (s *Simulator) tick() {
 	if err := s.feed.Reload(); err != nil {
-		log.Printf("[simulator] reload failed: %v", err)
+		slog.Warn("simulator reload failed", "err", err)
 		return
 	}
 	for _, pair := range s.feed.Pairs() {
 		if err := s.feed.ApplySimulatedSwap(pair, 0); err != nil {
-			log.Printf("[simulator] swap %s failed: %v", pair, err)
+			slog.Warn("simulator swap failed", "pair", pair, "err", err)
 		}
 	}
 }

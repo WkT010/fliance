@@ -1,14 +1,18 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: nexa
+namespace: fliance
 resources:
   - namespace.yaml
   - configmap.yaml
+  # ⚠ secret.yaml 仅作为占位模板保留在仓库，已从默认 resources 中移除：
+  # 请先用 kubectl create secret 在集群内创建真实的 fliance-secrets
+  # （含 JWT_SECRET/GRPC_SHARED_TOKEN/POSTGRES_DSN/REDIS_PASSWORD/ALCHEMY_API_KEY，
+  # 命令见 secret.yaml 头部注释），勿将占位模板 apply 到集群覆盖真实值。
+  # 如使用 SealedSecrets/ExternalSecrets，自行在此追加对应资源。
   - api-gateway.yaml
   - matching-engine.yaml
   - wallet-service.yaml
   - hpa.yaml
-secretGenerator:
-  - name: nexa-secrets
-    literals:
-      - jwt-secret=nexa-production-secret-change-me
+  - networkpolicy.yaml
+# 注意：禁止在 secretGenerator 中写明文密钥（已从版本库移除），
+# 敏感值一律通过 secret.yaml 模板 + 集群外注入 / SealedSecrets 管理。

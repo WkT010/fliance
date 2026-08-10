@@ -6,7 +6,9 @@ import en from './en.json';
 // Persist + restore the user's language preference. Defaults to Chinese (zh)
 // because the primary user is Chinese; English speakers can switch from the
 // header and their choice is remembered across sessions.
-const savedLang = (typeof localStorage !== 'undefined' && localStorage.getItem('nexa-lang')) || 'zh';
+// NOTE (Fliance rebrand): key renamed from 'nexa-lang' to 'fliance-lang';
+// returning visitors fall back to the zh default once.
+const savedLang = (typeof localStorage !== 'undefined' && localStorage.getItem('fliance-lang')) || 'zh';
 
 void i18n.use(initReactI18next).init({
   resources: {
@@ -26,7 +28,7 @@ export const LANGS = [
 
 export function setLanguage(code: 'zh' | 'en') {
   void i18n.changeLanguage(code);
-  if (typeof localStorage !== 'undefined') localStorage.setItem('nexa-lang', code);
+  if (typeof localStorage !== 'undefined') localStorage.setItem('fliance-lang', code);
 }
 
 export default i18n;

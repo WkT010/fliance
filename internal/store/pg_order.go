@@ -36,31 +36,51 @@ func (s *PGOrderStore) Get(id string) (*matching.Order, error) {
 		&o.TimeInForce, &o.Status, &o.CreatedAt, &o.UpdatedAt); err != nil {
 		return nil, fmt.Errorf("get order: %w", err)
 	}
-	scanFloat(price, o.Price); scanFloat(stop, o.StopPrice); scanFloat(qty, o.Quantity)
-	scanFloat(filled, o.FilledQty); scanFloat(rem, o.RemainingQty)
-	scanFloat(iceberg, o.IcebergQty); scanFloat(visible, o.VisibleQty)
+	scanFloat(price, o.Price)
+	scanFloat(stop, o.StopPrice)
+	scanFloat(qty, o.Quantity)
+	scanFloat(filled, o.FilledQty)
+	scanFloat(rem, o.RemainingQty)
+	scanFloat(iceberg, o.IcebergQty)
+	scanFloat(visible, o.VisibleQty)
 	return o, nil
 }
 
 func (s *PGOrderStore) ListByUser(userID, pair string, status matching.OrderStatus, limit, offset int) ([]*matching.Order, error) {
 	q := `SELECT id,COALESCE(client_order_id,''),user_id,pair,side,type,price,quantity,filled_qty,remaining_qty,time_in_force,status,created_at FROM orders WHERE user_id=$1`
-	args := []interface{}{userID}; n := 2
-	if pair != "" { q += fmt.Sprintf(" AND pair=$%d", n); args = append(args, pair); n++ }
-	if status >= 0 { q += fmt.Sprintf(" AND status=$%d", n); args = append(args, status); n++ }
+	args := []interface{}{userID}
+	n := 2
+	if pair != "" {
+		q += fmt.Sprintf(" AND pair=$%d", n)
+		args = append(args, pair)
+		n++
+	}
+	if status >= 0 {
+		q += fmt.Sprintf(" AND status=$%d", n)
+		args = append(args, status)
+		n++
+	}
 	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", n, n+1)
 	args = append(args, limit, offset)
 	rows, err := s.db.Query(q, args...)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var orders []*matching.Order
 	for rows.Next() {
 		o := &matching.Order{Price: new(big.Float), Quantity: new(big.Float), FilledQty: new(big.Float), RemainingQty: new(big.Float)}
 		var p, q, f, r sql.NullString
 		rows.Scan(&o.ID, &o.ClientOrderID, &o.UserID, &o.Pair, &o.Side, &o.Type, &p, &q, &f, &r, &o.TimeInForce, &o.Status, &o.CreatedAt)
-		scanFloat(p, o.Price); scanFloat(q, o.Quantity); scanFloat(f, o.FilledQty); scanFloat(r, o.RemainingQty)
+		scanFloat(p, o.Price)
+		scanFloat(q, o.Quantity)
+		scanFloat(f, o.FilledQty)
+		scanFloat(r, o.RemainingQty)
 		orders = append(orders, o)
 	}
-	if err := rows.Err(); err != nil { return nil, err }
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return orders, nil
 }
 
@@ -77,24 +97,31 @@ func (s *PGOrderStore) SaveTrade(t *matching.Trade) error {
 
 func (s *PGOrderStore) GetTrades(pair string, limit int) ([]*matching.Trade, error) {
 	rows, err := s.db.Query(`SELECT id,buy_order_id,sell_order_id,pair,price,quantity,created_at FROM trades WHERE pair=$1 ORDER BY created_at DESC LIMIT $2`, pair, limit)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var trades []*matching.Trade
 	for rows.Next() {
 		t := &matching.Trade{Price: new(big.Float), Quantity: new(big.Float)}
 		var p, q string
 		rows.Scan(&t.ID, &t.BuyOrderID, &t.SellOrderID, &t.Pair, &p, &q, &t.CreatedAt)
-		t.Price.Parse(p, 10); t.Quantity.Parse(q, 10)
+		t.Price.Parse(p, 10)
+		t.Quantity.Parse(q, 10)
 		trades = append(trades, t)
 	}
 	return trades, nil
 }
 
 func floatPtr(f *big.Float) interface{} {
-	if f == nil || f.Sign() == 0 { return nil }
+	if f == nil || f.Sign() == 0 {
+		return nil
+	}
 	return f.Text('f', 18)
 }
 
 func scanFloat(ns sql.NullString, f *big.Float) {
-	if ns.Valid { f.Parse(ns.String, 10) }
+	if ns.Valid {
+		f.Parse(ns.String, 10)
+	}
 }

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"os"
@@ -22,9 +22,9 @@ import (
 const version = "3.0.0"
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	cfg := config.Load()
-	log.Printf("[NEXA] wallet-service starting (env=%s, version=%s)", cfg.Environment, version)
+	observability.Setup(cfg)
+	slog.Info("wallet-service starting", "env", cfg.Environment, "version", version)
 
 	clients := map[string]wallet.BlockchainClient{
 		"BTC": wallet.NewMockBlockchainClient("BTC"),
@@ -52,9 +52,9 @@ func main() {
 			walletSvc = wallet.NewService(walletStore, clients, defaultFeeSchedule())
 			withdrawalSvc = wallet.NewWithdrawalService(walletSvc)
 			withdrawalSvc.SetReviewThreshold(big.NewFloat(10000))
-			log.Println("[NEXA] wallet-service postgres connected")
+			slog.Info("wallet-service postgres connected")
 		} else {
-			log.Printf("[NEXA] wallet-service postgres failed: %v", err)
+			slog.Warn("wallet-service postgres failed", "err", err)
 			walletSvc = wallet.NewService(nil, clients, defaultFeeSchedule())
 			withdrawalSvc = wallet.NewWithdrawalService(walletSvc)
 		}
@@ -78,7 +78,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok","service":"nexa-wallet","version":"` + version + `"}`))
+		w.Write([]byte(`{"status":"ok","service":"fliance-wallet","version":"` + version + `"}`))
 	})
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		status := health.Check(r.Context())
@@ -105,9 +105,10 @@ func main() {
 	go runOnChainWorker(workerCtx, withdrawalSvc, 30*time.Second)
 
 	go func() {
-		log.Printf("[NEXA] wallet health endpoint on %s", cfg.ListenAddr)
+		slog.Info("wallet health endpoint starting", "addr", cfg.ListenAddr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("[NEXA] %v", err)
+			slog.Error("wallet-service http server failed", "err", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -116,12 +117,12 @@ func main() {
 	defer cancel()
 	srv.Shutdown(ctx)
 	workerCancel()
-	log.Println("[NEXA] wallet-service stopped")
+	slog.Info("wallet-service stopped")
 }
 
 func runOnChainWorker(ctx context.Context, svc *wallet.WithdrawalService, interval time.Duration) {
 	if svc == nil {
-		log.Println("[wallet-worker] no withdrawal service, worker exiting")
+		slog.Info("no withdrawal service, worker exiting", "component", "wallet-worker")
 		return
 	}
 	ticker := time.NewTicker(interval)
@@ -133,11 +134,11 @@ func runOnChainWorker(ctx context.Context, svc *wallet.WithdrawalService, interv
 		case <-ticker.C:
 			// Broadcast any approved withdrawals to the network.
 			if err := svc.ProcessApprovedWithdrawals(100); err != nil {
-				log.Printf("[wallet-worker] broadcast batch failed: %v", err)
+				slog.Warn("broadcast batch failed", "component", "wallet-worker", "err", err)
 			}
 			// Confirm broadcast withdrawals once they reach the required depth.
 			if err := svc.ProcessBroadcastWithdrawals(100); err != nil {
-				log.Printf("[wallet-worker] confirm batch failed: %v", err)
+				slog.Warn("confirm batch failed", "component", "wallet-worker", "err", err)
 			}
 		}
 	}

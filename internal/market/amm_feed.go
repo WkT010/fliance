@@ -91,7 +91,7 @@ func (f *AMMPriceFeed) Reload() error {
 				seedPrice: new(big.Float).Copy(mid),
 				open24h:   new(big.Float).Copy(mid),
 				high24h:   new(big.Float).Copy(mid),
-				low24h:     new(big.Float).Copy(mid),
+				low24h:    new(big.Float).Copy(mid),
 				volume24h: big.NewFloat(0),
 			}
 			continue
@@ -190,19 +190,19 @@ func (f *AMMPriceFeed) tickerFromState(st *poolState) *Ticker {
 		pct.Quo(change, st.open24h)
 	}
 	return &Ticker{
-		Pair:          st.pool.Pair,
-		Last:          mid,
-		Bid:           bid,
-		Ask:           ask,
-		Spread:        spread,
-		Volume24h:     new(big.Float).Copy(st.volume24h),
+		Pair:           st.pool.Pair,
+		Last:           mid,
+		Bid:            bid,
+		Ask:            ask,
+		Spread:         spread,
+		Volume24h:      new(big.Float).Copy(st.volume24h),
 		QuoteVolume24h: new(big.Float).Mul(st.volume24h, mid),
-		High24h:       new(big.Float).Copy(st.high24h),
-		Low24h:        new(big.Float).Copy(st.low24h),
-		Open24h:       new(big.Float).Copy(st.open24h),
-		Change24h:     change,
-		ChangePct24h:  pct,
-		Timestamp:     time.Now().UnixMilli(),
+		High24h:        new(big.Float).Copy(st.high24h),
+		Low24h:         new(big.Float).Copy(st.low24h),
+		Open24h:        new(big.Float).Copy(st.open24h),
+		Change24h:      change,
+		ChangePct24h:   pct,
+		Timestamp:      time.Now().UnixMilli(),
 	}
 }
 

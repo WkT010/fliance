@@ -69,7 +69,7 @@ const (
 type SelfTradePreventionMode int8
 
 const (
-	STPDisabled   SelfTradePreventionMode = 0 // no STP (legacy behaviour)
+	STPDisabled    SelfTradePreventionMode = 0 // no STP (legacy behaviour)
 	STPCancelTaker SelfTradePreventionMode = 1 // cancel the incoming taker
 	STPCancelMaker SelfTradePreventionMode = 2 // cancel the resting maker
 	STPCancelBoth  SelfTradePreventionMode = 3 // cancel both legs
@@ -129,10 +129,19 @@ type Order struct {
 	STP SelfTradePreventionMode
 	// PostOnly flag derived from Type==PostOnly for fast checks during matching.
 	PostOnly bool
+	// bookSeq is the order-book sequence number assigned when the order enters
+	// the book (addLocked / snapshot restore). It breaks price ties with strict
+	// FIFO (time) priority independent of wall-clock resolution. Unexported so
+	// it never leaks into JSON/WAL formats.
+	bookSeq uint64
 	// done, if non-nil, is closed by the engine after the order has been
 	// processed. It provides a happens-before edge so callers can safely read
 	// Status/FilledQty once it is closed. Used by SubmitOrderSync.
 	done chan struct{}
+	// Err carries a processing error (e.g. WAL append failure) back to the
+	// submitter. It is written by the engine before done is closed, so it is
+	// safe to read once done has fired. nil means no processing error.
+	Err error
 }
 
 // NewOrder creates a new order with sensible defaults. All monetary big.Float

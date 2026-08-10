@@ -21,8 +21,8 @@ var (
 	ErrSelfTrade           = errors.New("self-trade prevented")
 	ErrMarketOrderDisabled = errors.New("market orders disabled for this pair")
 	ErrTradingSuspended    = errors.New("trading suspended for this pair")
+	ErrCircuitBreakerOpen  = errors.New("circuit breaker open: price deviation exceeded threshold")
 )
-
 
 // PairConfig is the per-pair trading rule set. These values are typically
 // loaded from an admin configuration table at startup and refreshed periodically.
@@ -92,6 +92,11 @@ type Engine struct {
 	// count lives in the order book).
 	openOrders map[string]int
 	openMu     sync.Mutex
+
+	// tripped tracks pairs whose circuit breaker has fired. While tripped,
+	// every order for the pair is rejected until ResetCircuitBreaker is called.
+	tripped map[string]bool
+	cbMu    sync.Mutex
 }
 
 // NewEngine creates an empty risk engine.
@@ -101,6 +106,7 @@ func NewEngine() *Engine {
 		limits:      make(map[string]*UserLimit),
 		orderCounts: make(map[string][]time.Time),
 		openOrders:  make(map[string]int),
+		tripped:     make(map[string]bool),
 	}
 }
 
@@ -163,6 +169,12 @@ func (e *Engine) Check(req matching.OrderRequest) error {
 
 	if req.Type == matching.Market && !pairCfg.MarketOrdersEnabled {
 		return ErrMarketOrderDisabled
+	}
+
+	// Circuit breaker runs first among the market checks: once a pair has
+	// tripped, every order (limit or market) is rejected until manual reset.
+	if err := e.checkCircuitBreaker(req, pairCfg); err != nil {
+		return err
 	}
 
 	if err := e.checkQuantityPrecision(req, pairCfg); err != nil {
@@ -253,6 +265,51 @@ func (e *Engine) checkPriceBand(req matching.OrderRequest, cfg *PairConfig) erro
 		return ErrPriceBandBreached
 	}
 	return nil
+}
+
+// checkCircuitBreaker rejects orders once the order price deviates from the
+// pair's reference price by more than CircuitBreakerPct. Once tripped, the
+// breaker latches open: every subsequent order for the pair (including market
+// orders, which carry no price) is rejected until ResetCircuitBreaker is
+// called. A nil/zero CircuitBreakerPct disables the breaker.
+func (e *Engine) checkCircuitBreaker(req matching.OrderRequest, cfg *PairConfig) error {
+	if cfg.CircuitBreakerPct == nil || cfg.CircuitBreakerPct.Sign() <= 0 {
+		return nil
+	}
+	e.cbMu.Lock()
+	defer e.cbMu.Unlock()
+	if e.tripped[req.Pair] {
+		return ErrCircuitBreakerOpen
+	}
+	if cfg.ReferencePrice == nil || cfg.ReferencePrice.Sign() <= 0 {
+		return nil
+	}
+	if req.Price == nil || req.Price.Sign() <= 0 {
+		return nil // market orders cannot trip the breaker by price
+	}
+	deviation := new(big.Float).Sub(req.Price, cfg.ReferencePrice)
+	deviation.Abs(deviation)
+	maxDeviation := new(big.Float).Mul(cfg.ReferencePrice, cfg.CircuitBreakerPct)
+	if deviation.Cmp(maxDeviation) > 0 {
+		e.tripped[req.Pair] = true
+		return ErrCircuitBreakerOpen
+	}
+	return nil
+}
+
+// IsCircuitOpen reports whether the circuit breaker for a pair is tripped.
+func (e *Engine) IsCircuitOpen(pair string) bool {
+	e.cbMu.Lock()
+	defer e.cbMu.Unlock()
+	return e.tripped[pair]
+}
+
+// ResetCircuitBreaker closes a tripped breaker and resumes order acceptance
+// for the pair. Intended for admin/operator intervention.
+func (e *Engine) ResetCircuitBreaker(pair string) {
+	e.cbMu.Lock()
+	defer e.cbMu.Unlock()
+	delete(e.tripped, pair)
 }
 
 func (e *Engine) checkUserRateLimits(req matching.OrderRequest) error {

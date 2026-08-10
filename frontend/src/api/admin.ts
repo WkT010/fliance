@@ -57,6 +57,14 @@ export async function setUserDailyLimit(userId: string, asset: string, dailyLimi
   await api.post(`/admin/users/${userId}/limits`, { asset, daily_limit: dailyLimit });
 }
 
+// Manual balance credit. Formerly POST /wallet/deposit in the user group
+// (self-service credit = privilege escalation); the backend moved it to the
+// admin group, so only admins can call POST /admin/wallet/deposit now.
+export async function adminDeposit(asset: string, amount: string, txHash?: string): Promise<{ status: string; asset: string; amount: string }> {
+  const res = await api.post('/admin/wallet/deposit', { asset, amount, tx_hash: txHash });
+  return res.data;
+}
+
 // ── AMM admin ──
 
 export interface AmmSimulatorStatus {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# NEXA Exchange — Let's Encrypt SSL Certificate Initializer
+# Fliance（梵响） — Let's Encrypt SSL Certificate Initializer
 # ============================================================================
 # Prerequisites:
 #   - Domain pointing to this server's public IP
@@ -8,8 +8,8 @@
 #   - Docker and docker-compose installed
 #
 # Usage:
-#   export DOMAIN=exchange.nexa.com
-#   export EMAIL=admin@nexa.com
+#   export DOMAIN=trade.fliance.com
+#   export EMAIL=admin@fliance.com
 #   ./deploy/ssl/init-letsencrypt.sh
 # ============================================================================
 
@@ -21,11 +21,11 @@ log_ok()    { echo -e "${GREEN}[OK]${NC}    $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 DOMAIN="${DOMAIN:-}"
-EMAIL="${EMAIL:-admin@nexa.com}"
+EMAIL="${EMAIL:-admin@fliance.com}"
 DATA_DIR="./deploy/ssl/certbot"
 
 if [ -z "$DOMAIN" ]; then
-    log_error "DOMAIN is not set. Usage: export DOMAIN=exchange.nexa.com && $0"
+    log_error "DOMAIN is not set. Usage: export DOMAIN=trade.fliance.com && $0"
     exit 1
 fi
 
@@ -39,7 +39,7 @@ mkdir -p "$DATA_DIR/www"
 # Start a temporary nginx just for certbot challenge
 log_info "Starting temporary nginx for SSL challenge..."
 docker run --rm -d \
-    --name nexa-ssl-init \
+    --name fliance-ssl-init \
     -p 80:80 \
     -v "$(pwd)/$DATA_DIR/www:/var/www/certbot" \
     nginx:1.27-alpine \
@@ -61,7 +61,7 @@ docker run --rm \
     --force-renewal
 
 # Stop temp nginx
-docker stop nexa-ssl-init 2>/dev/null || true
+docker stop fliance-ssl-init 2>/dev/null || true
 
 # Copy certificates to the deployment location
 log_info "Copying certificates to deploy/ssl/certs/..."
@@ -77,4 +77,4 @@ log_info "Next steps:"
 log_info "  1. Set DOMAIN=$DOMAIN in .env"
 log_info "  2. Run: ./deploy.sh prod"
 log_info "  3. Set up auto-renewal (crontab):"
-log_info "     0 0 * * * cd $(pwd) && docker compose -f deploy/docker/docker-compose.prod.yml run --rm certbot renew && docker exec nexa-nginx nginx -s reload"
+log_info "     0 0 * * * cd $(pwd) && docker compose -f deploy/docker/docker-compose.prod.yml run --rm certbot renew && docker exec fliance-nginx nginx -s reload"

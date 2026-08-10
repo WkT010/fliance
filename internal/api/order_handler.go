@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/WkT010/nexa-exchange/internal/market"
 	"github.com/WkT010/nexa-exchange/internal/matching"
 	"github.com/WkT010/nexa-exchange/internal/risk"
+	"github.com/gin-gonic/gin"
 )
 
 // OrderStore is the persistence interface required by the order handler and
@@ -245,31 +245,264 @@ func (h *OrderHandler) GetTicker(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"pair": pair, "bid": safeFloatStr(bestBid.Price), "ask": safeFloatStr(bestAsk.Price)})
 }
 
-// PlaceOrder is a stub that accepts spot orders. Full matching is handled by
-// the exchange gRPC service in this build.
+// PlaceOrder accepts a spot order, validates inputs, pre-reserves collateral
+// from the user's wallet, then submits to the matching engine. The full
+// end-to-end flow: HTTP -> reserve -> persist -> exchange.SubmitOrder
+// (risk + WAL + engine) -> HTTP 200 with the canonical order JSON.
 func (h *OrderHandler) PlaceOrder(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "spot order placement not implemented in REST gateway"})
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	var r placeOrderReq
+	if err := c.ShouldBindJSON(&r); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	pair := normalizePair(r.Pair)
+	engine := h.getEngine(pair)
+	if engine == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pair: " + r.Pair})
+		return
+	}
+	var side matching.Side
+	switch strings.ToLower(r.Side) {
+	case "buy":
+		side = matching.Buy
+	case "sell":
+		side = matching.Sell
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "side must be buy or sell"})
+		return
+	}
+	var oType matching.OrderType
+	switch strings.ToLower(r.Type) {
+	case "limit":
+		oType = matching.Limit
+	case "market":
+		oType = matching.Market
+	case "ioc":
+		oType = matching.ImmediateOrCancel
+	case "fok":
+		oType = matching.FillOrKill
+	case "post_only":
+		oType = matching.PostOnly
+	case "stop_loss":
+		oType = matching.StopLoss
+	case "stop_limit":
+		oType = matching.StopLimit
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported order type"})
+		return
+	}
+	qty, ok := parseBigFloat(r.Quantity)
+	if !ok || qty.Sign() <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity must be positive"})
+		return
+	}
+	needsPrice := oType == matching.Limit || oType == matching.StopLimit || oType == matching.PostOnly || oType == matching.Iceberg
+	var price *big.Float
+	if needsPrice || r.Price != "" {
+		price, ok = parseBigFloat(r.Price)
+		if !ok || price.Sign() <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "price must be positive"})
+			return
+		}
+	}
+	var stopPx *big.Float
+	if r.StopPx != "" {
+		stopPx, ok = parseBigFloat(r.StopPx)
+		if !ok || stopPx.Sign() <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "stop_price must be positive"})
+			return
+		}
+	}
+	var tif matching.TimeInForce
+	switch strings.ToLower(r.TIF) {
+	case "", "gtc":
+		tif = matching.GTC
+	case "ioc":
+		tif = matching.IOC
+	case "fok":
+		tif = matching.FOK
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported time_in_force"})
+		return
+	}
+
+	o := matching.NewOrder(userID, pair, side, oType, price, qty)
+	o.StopPrice = stopPx
+	o.TimeInForce = tif
+
+	// Reserve collateral from the wallet and register the reservation under
+	// the order ID so cancel/fill paths (ReleaseOrder / SettleFill) can
+	// unwind exactly what was locked:
+	//   - limit buy:  price*qty*(1+takerFee) of quote (worst case)
+	//   - sells:      qty of base
+	//   - market buy: NOT pre-locked (price unknown); the wallet service
+	//     settles it on fill, so no nil-price multiplication happens here.
+	// On rejection below we roll the reservation back via ReleaseOrder.
+	if h.wallet != nil {
+		if err := h.wallet.ReserveOrder(o.ID, userID, pair, int(side), int(oType), price, qty); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "insufficient balance: " + err.Error()})
+			return
+		}
+	}
+
+	if h.store != nil {
+		_ = h.store.Save(o)
+	}
+	if h.exchange != nil {
+		if err := h.exchange.SubmitOrder(o); err != nil {
+			// Roll back the wallet reservation on rejection (risk check etc.).
+			if h.wallet != nil && h.releaser != nil {
+				_ = h.releaser.ReleaseOrder(o.ID, userID)
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	} else if !engine.SubmitOrder(o) {
+		if h.wallet != nil && h.releaser != nil {
+			_ = h.releaser.ReleaseOrder(o.ID, userID)
+		}
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "matching engine busy, please retry"})
+		return
+	}
+	c.JSON(http.StatusOK, orderToJSON(o))
 }
 
-// CancelOrder is a stub for spot order cancellation.
+// CancelOrder cancels a single spot order owned by the current user.
 func (h *OrderHandler) CancelOrder(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "spot order cancellation not implemented in REST gateway"})
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	id := c.Param("id")
+	pair := c.Query("pair")
+	if pair == "" {
+		pair = h.findOrderPair(userID, id)
+	}
+	if pair == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		return
+	}
+	pair = normalizePair(pair)
+	if h.exchange != nil {
+		if _, err := h.exchange.CancelOrder(id, userID, pair); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	} else if engine := h.getEngine(pair); engine != nil {
+		if _, err := engine.Cancel(id, userID); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pair: " + pair})
+		return
+	}
+	if h.releaser != nil {
+		_ = h.releaser.ReleaseOrder(id, userID)
+	}
+	o, _ := h.store.Get(id)
+	if o == nil {
+		c.JSON(http.StatusOK, gin.H{"status": "cancelled", "id": id})
+		return
+	}
+	c.JSON(http.StatusOK, orderToJSON(o))
 }
 
-// CancelAllOrders is a stub for cancelling all spot orders.
+// CancelAllOrders cancels every open order owned by the current user across
+// every supported pair.
 func (h *OrderHandler) CancelAllOrders(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{"error": "spot order cancellation not implemented in REST gateway"})
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	cancelled := 0
+	for _, engine := range h.allEngines() {
+		orders := engine.OrderBook.GetOrdersByUser(userID)
+		for _, o := range orders {
+			if _, err := engine.Cancel(o.ID, userID); err == nil {
+				cancelled++
+				if h.releaser != nil {
+					_ = h.releaser.ReleaseOrder(o.ID, userID)
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "cancelled": cancelled})
 }
 
-// GetOrder returns a single spot order.
+// findOrderPair scans every engine's order book for an order owned by userID
+// with the given id. Returns the pair name on success, "" if not found.
+func (h *OrderHandler) findOrderPair(userID, id string) string {
+	for _, engine := range h.allEngines() {
+		orders := engine.OrderBook.GetOrdersByUser(userID)
+		for _, o := range orders {
+			if o.ID == id {
+				return o.Pair
+			}
+		}
+	}
+	return ""
+}
+
+// allEngines returns every registered matching engine, using the exchange
+// facade if present, otherwise the local map.
+func (h *OrderHandler) allEngines() map[string]*matching.MatchingEngine {
+	if h.exchange != nil {
+		return h.exchange.Engines()
+	}
+	return h.engines
+}
+
+type placeOrderReq struct {
+	Pair     string `json:"pair" binding:"required"`
+	Side     string `json:"side" binding:"required"`
+	Type     string `json:"type" binding:"required"`
+	Price    string `json:"price"`
+	StopPx   string `json:"stop_price"`
+	Quantity string `json:"quantity" binding:"required"`
+	TPPrice  string `json:"tp_price"`
+	SLPrice  string `json:"sl_price"`
+	TIF      string `json:"time_in_force"`
+}
+
+// normalizePair upper-cases the pair and trims whitespace so callers can be
+// forgiving with formatting.
+func normalizePair(p string) string {
+	return strings.ToUpper(strings.TrimSpace(p))
+}
+
+// GetOrder returns a single spot order. The order must belong to the
+// authenticated user; foreign or unknown ids both yield 404 so order
+// existence is never leaked to non-owners.
 func (h *OrderHandler) GetOrder(c *gin.Context) {
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
 	id := c.Param("id")
 	if h.store == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "order store unavailable"})
 		return
 	}
 	o, err := h.store.Get(id)
-	if err != nil {
+	if err != nil || o == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+		return
+	}
+	if o.UserID != userID {
+		// 404 (not 403) to avoid revealing that the order exists.
 		c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		return
 	}
@@ -346,19 +579,19 @@ func tradeToJSON(t *matching.Trade) gin.H {
 
 func tickerToJSON(t *matching.Ticker) gin.H {
 	return gin.H{
-		"pair":              t.Pair,
-		"last":              safeFloatStr(t.LastPrice),
-		"bid":               safeFloatStr(t.Bid),
-		"ask":               safeFloatStr(t.Ask),
-		"spread":            safeFloatStr(t.Spread),
-		"volume_24h":        safeFloatStr(t.Volume24H),
-		"quote_volume_24h":  safeFloatStr(t.QuoteVolume24H),
-		"high_24h":          safeFloatStr(t.High24H),
-		"low_24h":           safeFloatStr(t.Low24H),
-		"open_24h":          safeFloatStr(t.Open24H),
-		"change_24h":        safeFloatStr(t.Change24H),
-		"change_pct_24h":    safeFloatStr(t.ChangePct24H),
-		"timestamp":         t.Timestamp,
+		"pair":             t.Pair,
+		"last":             safeFloatStr(t.LastPrice),
+		"bid":              safeFloatStr(t.Bid),
+		"ask":              safeFloatStr(t.Ask),
+		"spread":           safeFloatStr(t.Spread),
+		"volume_24h":       safeFloatStr(t.Volume24H),
+		"quote_volume_24h": safeFloatStr(t.QuoteVolume24H),
+		"high_24h":         safeFloatStr(t.High24H),
+		"low_24h":          safeFloatStr(t.Low24H),
+		"open_24h":         safeFloatStr(t.Open24H),
+		"change_24h":       safeFloatStr(t.Change24H),
+		"change_pct_24h":   safeFloatStr(t.ChangePct24H),
+		"timestamp":        t.Timestamp,
 	}
 }
 

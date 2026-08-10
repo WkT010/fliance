@@ -3,14 +3,14 @@ package market
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"strings"
 )
 
 const (
-	UniV3QuoterETH     = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
-	UniV3QuoterPolygon = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
+	UniV3QuoterETH      = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
+	UniV3QuoterPolygon  = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
 	UniV3QuoterArbitrum = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
 	UniV3QuoterOptimism = "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"
 )
@@ -34,7 +34,9 @@ func NewDEXPriceProvider(chain *AlchemyMultiChain) *DEXPriceProvider {
 
 func (d *DEXPriceProvider) QuoteTokenInETH(symbol string) (*big.Float, error) {
 	addr, ok := tokenAddresses[symbol]
-	if !ok { return nil, fmt.Errorf("unknown: %s", symbol) }
+	if !ok {
+		return nil, fmt.Errorf("unknown: %s", symbol)
+	}
 	data := "f7729d0a" + // quoteExactInputSingle
 		"0000000000000000000000000000000000000000000000000000000000000020" +
 		padAddress(tokenAddresses["ETH"]) +
@@ -43,9 +45,13 @@ func (d *DEXPriceProvider) QuoteTokenInETH(symbol string) (*big.Float, error) {
 		"0000000000000000000000000000000000000000000000000de0b6b3a7640000" +
 		"0000000000000000000000000000000000000000000000000000000000000000"
 	result, err := d.chain.Call("ETH", "eth_call", []interface{}{map[string]interface{}{"to": UniV3QuoterETH, "data": "0x" + data}, "latest"})
-	if err != nil { return nil, fmt.Errorf("quote: %w", err) }
-	var h string; json.Unmarshal(result, &h)
-	n := new(big.Int); n.SetString(strings.TrimPrefix(h, "0x"), 16)
+	if err != nil {
+		return nil, fmt.Errorf("quote: %w", err)
+	}
+	var h string
+	json.Unmarshal(result, &h)
+	n := new(big.Int)
+	n.SetString(strings.TrimPrefix(h, "0x"), 16)
 	p := new(big.Float).Quo(new(big.Float).SetInt(n), new(big.Float).SetFloat64(1e18))
 	return p, nil
 }
@@ -63,30 +69,46 @@ var uniswapPools = map[string]string{
 
 func (d *DEXPriceProvider) SubscribeToSwapLogs(chainSymbol string, cb func(*DEXSwapEvent)) error {
 	wsc, err := d.chain.ConnectWS(chainSymbol)
-	if err != nil { return fmt.Errorf("connect: %w", err) }
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
 	for name, addr := range uniswapPools {
 		wsc.Subscribe("logs", []interface{}{map[string]interface{}{"address": addr}})
-		log.Printf("[dex-ws] %s subscribed to %s", chainSymbol, name)
+		slog.Info("dex ws subscribed to pool logs", "chain", chainSymbol, "pool", name)
 	}
 	go func() {
 		for msg := range wsc.msgCh {
-			var m wsMsg; json.Unmarshal(msg, &m)
-			if m.Method != "eth_subscription" { continue }
+			var m wsMsg
+			json.Unmarshal(msg, &m)
+			if m.Method != "eth_subscription" {
+				continue
+			}
 			var p struct {
 				Subscription string `json:"subscription"`
-				Result struct {
+				Result       struct {
 					Address, BlockNumber, Data, Topic0 string
 				} `json:"result"`
 			}
 			json.Unmarshal(m.Params, &p)
-			if p.Result.Topic0 != "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67" { continue }
+			if p.Result.Topic0 != "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67" {
+				continue
+			}
 			d := strings.TrimPrefix(p.Result.Data, "0x")
-			a0 := new(big.Int); a1 := new(big.Int)
-			if len(d) >= 64 { a0.SetString(d[:64], 16) }
-			if len(d) >= 128 { a1.SetString(d[64:128], 16) }
-			price := new(big.Float).SetInt(a1); price.Quo(price, new(big.Float).SetInt(a0))
-			var bn uint64; fmt.Sscanf(strings.TrimPrefix(p.Result.BlockNumber, "0x"), "%x", &bn)
-			if cb != nil { cb(&DEXSwapEvent{Chain: chainSymbol, Pool: p.Result.Address, Price: price, BlockNumber: bn}) }
+			a0 := new(big.Int)
+			a1 := new(big.Int)
+			if len(d) >= 64 {
+				a0.SetString(d[:64], 16)
+			}
+			if len(d) >= 128 {
+				a1.SetString(d[64:128], 16)
+			}
+			price := new(big.Float).SetInt(a1)
+			price.Quo(price, new(big.Float).SetInt(a0))
+			var bn uint64
+			fmt.Sscanf(strings.TrimPrefix(p.Result.BlockNumber, "0x"), "%x", &bn)
+			if cb != nil {
+				cb(&DEXSwapEvent{Chain: chainSymbol, Pool: p.Result.Address, Price: price, BlockNumber: bn})
+			}
 		}
 	}()
 	return nil

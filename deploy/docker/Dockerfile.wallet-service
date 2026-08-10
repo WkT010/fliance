@@ -1,12 +1,15 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags='-s -w' -o /app/wallet-service ./cmd/wallet-service/
 FROM alpine:3.19
-RUN apk --no-cache add ca-certificates tzdata curl
+RUN apk --no-cache add ca-certificates tzdata curl \
+    && adduser -D -H -u 10001 nonroot
 COPY --from=builder /app/wallet-service /wallet-service
+# 非root运行：容器以 nonroot 用户执行
+USER nonroot
 EXPOSE 8082
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD curl -f http://localhost:8082/health || exit 1
 ENTRYPOINT ["/wallet-service"]

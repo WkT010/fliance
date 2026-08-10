@@ -74,7 +74,11 @@ func (s *PGCandleStore) GetCandles(pair, interval string, start, end int64, limi
 		if err := rows.Scan(&c.Pair, &c.Interval, &c.Timestamp, &o, &h, &l, &cl, &v, &c.CloseTime); err != nil {
 			return nil, err
 		}
-		c.Open.Parse(o, 10); c.High.Parse(h, 10); c.Low.Parse(l, 10); c.Close.Parse(cl, 10); c.Volume.Parse(v, 10)
+		c.Open.Parse(o, 10)
+		c.High.Parse(h, 10)
+		c.Low.Parse(l, 10)
+		c.Close.Parse(cl, 10)
+		c.Volume.Parse(v, 10)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {

@@ -75,7 +75,7 @@ func (h *HealthCollector) Check(ctx context.Context) HealthStatus {
 // Handler returns a Gin handler that reports liveness.
 func (h *HealthCollector) Handler() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "nexa"})
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "fliance"})
 	}
 }
 

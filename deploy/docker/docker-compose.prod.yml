@@ -1,7 +1,10 @@
 version: "3.9"
 
+# 生产 compose：所有敏感值必须从 .env 注入（模板见项目根 .env.example）。
+# 关键密钥使用 ${VAR:?} 语法强制要求提供，缺失时拒绝启动，禁止回退到弱默认值。
+
 networks:
-  nexa-net:
+  fliance-net:
     driver: bridge
 
 volumes:
@@ -17,12 +20,12 @@ services:
       context: ../..
       dockerfile: deploy/nginx/Dockerfile
     restart: unless-stopped
-    networks: [nexa-net]
+    networks: [fliance-net]
     ports:
       - "80:80"
       - "443:443"
     volumes:
-      - ../../deploy/nginx/nginx.conf:/etc/nginx/conf.d/nexa.conf:ro
+      - ../../deploy/nginx/nginx.conf:/etc/nginx/conf.d/fliance.conf:ro
       - certbot-conf:/etc/letsencrypt
       - certbot-www:/var/www/certbot
     depends_on:
@@ -39,7 +42,7 @@ services:
   certbot:
     image: certbot/certbot:v2
     restart: unless-stopped
-    networks: [nexa-net]
+    networks: [fliance-net]
     volumes:
       - certbot-conf:/etc/letsencrypt
       - certbot-www:/var/www/certbot
@@ -50,10 +53,10 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    networks: [nexa-net]
+    networks: [fliance-net]
     environment:
       POSTGRES_USER: nexa
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexa_prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env (strong password, 16+ chars)}
       POSTGRES_DB: nexa
     ports: ["127.0.0.1:5432:5432"]
     volumes: [pgdata:/var/lib/postgresql/data]
@@ -67,12 +70,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    networks: [nexa-net]
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    networks: [fliance-net]
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env (required in production)}
     ports: ["127.0.0.1:6379:6379"]
     volumes: [redisdata:/data]
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -81,14 +84,14 @@ services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5
     restart: unless-stopped
-    networks: [nexa-net]
+    networks: [fliance-net]
     environment: {ZOOKEEPER_CLIENT_PORT: 2181, ZOOKEEPER_TICK_TIME: 2000}
     ports: ["127.0.0.1:2181:2181"]
 
   kafka:
     image: confluentinc/cp-kafka:7.5
     restart: unless-stopped
-    networks: [nexa-net]
+    networks: [fliance-net]
     depends_on: [zookeeper]
     environment:
       KAFKA_BROKER_ID: 1
@@ -105,18 +108,18 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.api-gateway
     restart: unless-stopped
-    networks: [nexa-net]
+    networks: [fliance-net]
     expose: ["8080"]
     environment:
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_ISSUER: nexa-exchange
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env (min 32-byte random value)}
+      JWT_ISSUER: fliance-exchange
       LISTEN_ADDR: ":8080"
       ENVIRONMENT: production
-      POSTGRES_DSN: postgres://nexa:${POSTGRES_PASSWORD:-nexa_prod}@postgres:5432/nexa?sslmode=disable
+      POSTGRES_DSN: postgres://nexa:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/nexa?sslmode=disable
       REDIS_ADDR: redis:6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
       KAFKA_BROKERS: kafka:9092
-      KAFKA_TOPIC: nexa-exchange
+      KAFKA_TOPIC: fliance-exchange
       TRADING_PAIRS: ${TRADING_PAIRS:-BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT}
       ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -124,7 +127,9 @@ services:
       ENABLE_REDIS_RATE_LIMIT: "true"
       RATE_LIMIT_PER_SEC: "200"
       RATE_LIMIT_BURST: "400"
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://${DOMAIN:-localhost}}
+      # 非 development 环境禁止通配符 CORS：显式白名单优先，否则回退到 https://${DOMAIN}；
+      # DOMAIN 未设置时直接报错拒绝启动，避免默认 localhost 静默拦截真实流量
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-https://${DOMAIN:?DOMAIN must be set in .env (used for the CORS allow-list, e.g. trade.fliance.com)}}
       CORS_ALLOW_CREDENTIALS: "true"
       TLS_AUTO_CERT: "false"
     depends_on:
@@ -146,12 +151,15 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.matching-engine
     restart: unless-stopped
-    networks: [nexa-net]
+    networks: [fliance-net]
     environment:
       ENVIRONMENT: production
       KAFKA_BROKERS: kafka:9092
       REDIS_ADDR: redis:6379
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}
+      # gRPC 共享令牌：ENVIRONMENT != development 时缺省会 log.Fatal 拒绝启动；
+      # 必须与 api-gateway 使用同一值（openssl rand -base64 32 生成）
+      GRPC_SHARED_TOKEN: ${GRPC_SHARED_TOKEN:?GRPC_SHARED_TOKEN must be set in .env (openssl rand -base64 32)}
       TRADING_PAIRS: ${TRADING_PAIRS:-BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on: [kafka, redis]
@@ -164,11 +172,11 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.wallet-service
     restart: unless-stopped
-    networks: [nexa-net]
+    networks: [fliance-net]
     environment:
       ENVIRONMENT: production
       ALCHEMY_API_KEY: ${ALCHEMY_API_KEY:-}
-      POSTGRES_DSN: postgres://nexa:${POSTGRES_PASSWORD:-nexa_prod}@postgres:5432/nexa?sslmode=disable
+      POSTGRES_DSN: postgres://nexa:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/nexa?sslmode=disable
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on: [postgres]
     healthcheck:

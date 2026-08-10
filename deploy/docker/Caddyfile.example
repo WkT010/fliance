@@ -1,4 +1,4 @@
-# Caddyfile — reverse proxy + automatic TLS for the Nexa Exchange gateway.
+# Caddyfile — reverse proxy + automatic TLS for the Fliance（梵响） gateway.
 #
 # Caddy is the recommended front-end for domain binding because it obtains and
 # renews Let's Encrypt certificates automatically (zero config). Install Caddy

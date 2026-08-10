@@ -38,7 +38,11 @@ var supportedPairs = map[string]string{
 }
 
 func symbolToPair(symbol string) string {
-	for p, s := range supportedPairs { if s == symbol { return p } }
+	for p, s := range supportedPairs {
+		if s == symbol {
+			return p
+		}
+	}
 	return ""
 }
 
@@ -70,11 +74,17 @@ func (b *BinancePriceFeed) get(path string) (*http.Response, error) {
 
 func (b *BinancePriceFeed) FetchTicker(pair string) (*Ticker, error) {
 	s, ok := supportedPairs[pair]
-	if !ok { return nil, fmt.Errorf("unsupported: %s", pair) }
+	if !ok {
+		return nil, fmt.Errorf("unsupported: %s", pair)
+	}
 	resp, err := b.get(fmt.Sprintf("/api/v3/ticker/24hr?symbol=%s", s))
-	if err != nil { return nil, fmt.Errorf("binance: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("binance: %w", err)
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 { return nil, fmt.Errorf("status %d", resp.StatusCode) }
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
 	var bt BinanceTicker
 	json.NewDecoder(resp.Body).Decode(&bt)
 	return toTicker(&bt, pair), nil
@@ -128,7 +138,9 @@ func toTicker(bt *BinanceTicker, pair string) *Ticker {
 	chg, _ := new(big.Float).SetString(bt.PriceChange)
 	spread := new(big.Float).Sub(ask, bid)
 	pct := new(big.Float)
-	if open.Sign() > 0 { pct.Quo(chg, open) }
+	if open.Sign() > 0 {
+		pct.Quo(chg, open)
+	}
 	return &Ticker{
 		Pair: pair, Last: last, Bid: bid, Ask: ask, Spread: spread,
 		Volume24h: vol, QuoteVolume24h: qvol, High24h: high, Low24h: low,

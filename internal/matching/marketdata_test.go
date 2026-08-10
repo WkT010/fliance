@@ -311,9 +311,9 @@ func TestIntervalSeconds(t *testing.T) {
 		{"1m", 60},
 		{"1h", 3600},
 		{"1d", 86400},
-		{"2d", 0},   // unknown
-		{"", 0},     // unknown
-		{"abc", 0},  // unknown
+		{"2d", 0},  // unknown
+		{"", 0},    // unknown
+		{"abc", 0}, // unknown
 	}
 	for _, c := range cases {
 		got := IntervalSeconds(c.interval)

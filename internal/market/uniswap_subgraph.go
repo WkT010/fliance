@@ -19,8 +19,8 @@ var UniswapPoolMeta = map[string]struct {
 	Token1  string // quote token symbol (e.g. USDC)
 	Fee     int
 }{
-	"ETH/USDC": {Address: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640", Token0: "ETH", Token1: "USDC", Fee: 500},
-	"ETH/USDT": {Address: "0x11b815efB8f581194ae79006d24E0d814B7697F6", Token0: "ETH", Token1: "USDT", Fee: 3000},
+	"ETH/USDC":  {Address: "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640", Token0: "ETH", Token1: "USDC", Fee: 500},
+	"ETH/USDT":  {Address: "0x11b815efB8f581194ae79006d24E0d814B7697F6", Token0: "ETH", Token1: "USDT", Fee: 3000},
 	"WBTC/USDC": {Address: "0x99ac8cA7087fA4A2A1FB6357269965A2014ABc35", Token0: "WBTC", Token1: "USDC", Fee: 3000},
 	"LINK/ETH":  {Address: "0xa6Cc3C2531FdaA6a1D6d0ae5C1bF8BedBED5ff66", Token0: "LINK", Token1: "ETH", Fee: 3000},
 	"UNI/ETH":   {Address: "0x1d42064Fc4Beb5F8aAF85F4617AE8b3b5B8Bd801", Token0: "UNI", Token1: "ETH", Fee: 3000},

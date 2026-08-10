@@ -1,2 +1,2 @@
-# NEXA Exchange — One-click stop script
-Write-Host 'Stopping NEXA Exchange services...'
+# Fliance（梵响） — One-click stop script
+Write-Host 'Stopping Fliance（梵响） services...'

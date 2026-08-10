@@ -7,21 +7,21 @@ import (
 )
 
 var (
-	goGoroutines  = MustGauge("go_goroutines", "Number of goroutines.")
-	goThreads     = MustGauge("go_threads", "Number of logical CPUs.")
-	goMemAlloc    = MustGauge("go_mem_alloc_bytes", "Bytes allocated and still in use.")
-	goMemSys      = MustGauge("go_mem_sys_bytes", "Total bytes obtained from the OS.")
-	goMemHeap     = MustGauge("go_mem_heap_inuse_bytes", "Heap in-use bytes.")
-	goGCFrac      = MustGauge("go_gc_cpu_fraction", "Fraction of CPU used by GC since program start.")
-	goNumGC       = MustGauge("go_gc_total", "Total number of completed GC cycles.")
-	goNextGC      = MustGauge("go_gc_next_heap_goal_bytes", "Target heap size for next GC cycle.")
-	processUptime = MustGauge("process_uptime_seconds", "Process uptime in seconds.")
+	goGoroutines    = MustGauge("go_goroutines", "Number of goroutines.")
+	goThreads       = MustGauge("go_threads", "Number of logical CPUs.")
+	goMemAlloc      = MustGauge("go_mem_alloc_bytes", "Bytes allocated and still in use.")
+	goMemSys        = MustGauge("go_mem_sys_bytes", "Total bytes obtained from the OS.")
+	goMemHeap       = MustGauge("go_mem_heap_inuse_bytes", "Heap in-use bytes.")
+	goGCFrac        = MustGauge("go_gc_cpu_fraction", "Fraction of CPU used by GC since program start.")
+	goNumGC         = MustGauge("go_gc_total", "Total number of completed GC cycles.")
+	goNextGC        = MustGauge("go_gc_next_heap_goal_bytes", "Target heap size for next GC cycle.")
+	processUptime   = MustGauge("process_uptime_seconds", "Process uptime in seconds.")
 	processRSSBytes = MustGauge("process_rss_bytes", "Resident set size in bytes (approximated by MemStats.Sys).")
 )
 
 var (
-	processStartTime     = time.Now().Unix()
-	lastCollectUnixNano  atomic.Int64
+	processStartTime    = time.Now().Unix()
+	lastCollectUnixNano atomic.Int64
 )
 
 // CollectGoRuntime reads runtime.MemStats and updates the go_* gauges. It is

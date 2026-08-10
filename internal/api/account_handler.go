@@ -6,20 +6,20 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
 	"github.com/WkT010/nexa-exchange/internal/auth"
 	"github.com/WkT010/nexa-exchange/internal/pnl"
 	"github.com/WkT010/nexa-exchange/internal/wallet"
+	"github.com/gin-gonic/gin"
 )
 
 // AccountHandler exposes user-account endpoints: profile, API key management
 // and consolidated balances. It is the Binance-style /api/v3/account surface.
 type AccountHandler struct {
-	users    UserStore
-	wallet   WalletService
-	apiKeys  auth.APIKeyStore
-	pnlSvc   *pnl.Service
-	priceH   *PriceHandler
+	users   UserStore
+	wallet  WalletService
+	apiKeys auth.APIKeyStore
+	pnlSvc  *pnl.Service
+	priceH  *PriceHandler
 }
 
 func NewAccountHandler(users UserStore, walletSvc WalletService, apiKeys auth.APIKeyStore, priceH *PriceHandler) *AccountHandler {

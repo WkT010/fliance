@@ -1,0 +1,160 @@
+# =============================================================================
+# Fliance（梵响） - NetworkPolicy
+# 默认拒绝所有 ingress，仅放行必要路径；egress 仅放行 DNS、后端依赖与必要出网。
+# 放行的路径：
+#   1. 外部(ingress/LB) -> api-gateway :8080 (HTTP/WS)
+#   2. api-gateway -> matching-engine :50051 (gRPC)
+#   3. api-gateway -> wallet-service :8082 (HTTP)
+#   4. 各应用服务 -> postgres :5432 / redis :6379 / kafka :9092 (egress)
+#   5. 各应用服务 -> 外部 HTTPS :443 (egress，Alchemy/行情源)
+#   6. Prometheus(monitoring 命名空间) -> 各服务 metrics 端口 (ingress)
+#      metrics 端口：api-gateway :8080(/metrics)、matching-engine :8081、wallet-service :8082
+# =============================================================================
+# 1) 命名空间默认拒绝所有入站流量
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: fliance
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# 2) 外部 -> api-gateway：HTTP/WS 端口（来自 ingress 控制器、LB 或任意来源）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-gateway-http
+  namespace: fliance
+spec:
+  podSelector:
+    matchLabels: {app: api-gateway}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {protocol: TCP, port: 8080}
+---
+# 3) api-gateway -> matching-engine：仅放行 gRPC 端口（metrics 端口不对外）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-matching-engine-grpc
+  namespace: fliance
+spec:
+  podSelector:
+    matchLabels: {app: matching-engine}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: api-gateway}
+      ports:
+        - {protocol: TCP, port: 50051}
+---
+# 4) api-gateway -> wallet-service：仅放行内部 HTTP 端口
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-wallet-service-http
+  namespace: fliance
+spec:
+  podSelector:
+    matchLabels: {app: wallet-service}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: api-gateway}
+      ports:
+        - {protocol: TCP, port: 8082}
+---
+# 5) 各应用服务 -> postgres/redis/kafka（egress）
+#    后端依赖若部署在集群外，请收紧 ipBlock 为实际网段；
+#    若在集群内其他命名空间，请改用 namespaceSelector + podSelector。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-egress
+  namespace: fliance
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [api-gateway, matching-engine, wallet-service]
+  policyTypes: [Egress]
+  egress:
+    # DNS 解析（kube-dns/CoreDNS）
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    # postgres / redis / kafka
+    - ports:
+        - {protocol: TCP, port: 5432}
+        - {protocol: TCP, port: 6379}
+        - {protocol: TCP, port: 9092}
+---
+# 6) 各应用服务 -> 外部 HTTPS（egress）
+#    wallet-service 依赖 Alchemy HTTPS API，api-gateway 依赖外部行情/价格源，
+#    均需 443/TCP 出网。此处放行公网并排除内网段，避免借此横向访问内网；
+#    若 CNI 支持 FQDN 策略（如 Cilium/Cilium toFQDNs、Calico DNS Policy），
+#    建议进一步收紧为具体域名（如 *.alchemy.com、行情源域名）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-https-egress
+  namespace: fliance
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [api-gateway, matching-engine, wallet-service]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              # 排除内网段，仅放行公网出网
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - {protocol: TCP, port: 443}
+---
+# 7) Prometheus -> 各应用服务：metrics 抓取（ingress）
+#    放行带 label app.kubernetes.io/name=prometheus 的 Pod（跨命名空间，
+#    通常位于 monitoring 命名空间）抓取三个服务的 metrics 端口：
+#      api-gateway :8080 /metrics、matching-engine :8081、wallet-service :8082 /metrics
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-metrics
+  namespace: fliance
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [api-gateway, matching-engine, wallet-service]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus}
+        # 兼容未打命名空间 label 的集群：仅凭 Pod label 放行（可按需收紧）
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: prometheus}
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8081}
+        - {protocol: TCP, port: 8082}

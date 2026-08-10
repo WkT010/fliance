@@ -3,6 +3,9 @@ import type { LoginReq, RegisterReq } from '@/types';
 
 export interface TokenResponse {
   access_token: string;
+  // Rotating refresh token issued by POST /auth/login and /auth/register;
+  // used by the 401 interceptor to mint a fresh access token transparently.
+  refresh_token?: string;
   token_type: string;
   expires_in: number;
 }

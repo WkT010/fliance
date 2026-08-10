@@ -69,6 +69,12 @@ export interface SwapReq {
   pool_id: string;
   token_in: string;
   amount_in: string;
+  /**
+   * Slippage protection: minimum acceptable output as a big-number string.
+   * Empty string or a value <= 0 disables the check; the backend rejects the
+   * swap with a slippage error if the quoted output falls below it.
+   */
+  min_amount_out?: string;
 }
 
 export async function getAmmPools(): Promise<AmmPool[]> {

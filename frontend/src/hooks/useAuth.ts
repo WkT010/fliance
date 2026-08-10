@@ -12,7 +12,7 @@ export function useAuthInit() {
       return;
     }
     getAccount()
-      .then((res) => setAuth(token, { id: res.user_id, email: res.email, role: res.role, created_at: res.created_at }))
+      .then((res) => setAuth(token, useAuthStore.getState().refreshToken, { id: res.user_id, email: res.email, role: res.role, created_at: res.created_at }))
       .catch(() => logout())
       .finally(() => setLoading(false));
   }, [token, setAuth, logout]);

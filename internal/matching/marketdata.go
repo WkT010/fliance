@@ -39,22 +39,22 @@ type Candle struct {
 
 // intervalSeconds maps a candle interval string to its duration in seconds.
 var intervalSeconds = map[string]int64{
-	"1s":   1,
-	"1m":   60,
-	"3m":   180,
-	"5m":   300,
-	"15m":  900,
-	"30m":  1800,
-	"1h":   3600,
-	"2h":   7200,
-	"4h":   14400,
-	"6h":   21600,
-	"8h":   28800,
-	"12h":  43200,
-	"1d":   86400,
-	"3d":   259200,
-	"1w":   604800,
-	"1M":   2592000,
+	"1s":  1,
+	"1m":  60,
+	"3m":  180,
+	"5m":  300,
+	"15m": 900,
+	"30m": 1800,
+	"1h":  3600,
+	"2h":  7200,
+	"4h":  14400,
+	"6h":  21600,
+	"8h":  28800,
+	"12h": 43200,
+	"1d":  86400,
+	"3d":  259200,
+	"1w":  604800,
+	"1M":  2592000,
 }
 
 // IntervalSeconds returns the duration of an interval string in seconds, or 0
@@ -82,49 +82,61 @@ type MarketDataRecorder struct {
 
 	// 24h rolling window of trades (oldest first).
 	trades []*Trade
+	// seen holds the IDs of trades currently in the window for O(1) dedup.
+	// It is evicted in lockstep with the trades slice (time cutoff and
+	// maxTrades truncation), so len(seen) <= len(trades) <= maxTrades.
+	seen map[string]struct{}
 
 	// Candles aggregated by interval, newest last. We keep a bounded history per
 	// interval.
 	candles map[string][]*Candle
 
-	maxTrades   int
-	maxCandles  int
+	maxTrades  int
+	maxCandles int
 }
 
 // NewMarketDataRecorder constructs a recorder for a pair.
 func NewMarketDataRecorder(pair string) *MarketDataRecorder {
 	return &MarketDataRecorder{
-		pair:     pair,
-		candles:  make(map[string][]*Candle),
-		maxTrades: 100_000,
+		pair:       pair,
+		candles:    make(map[string][]*Candle),
+		seen:       make(map[string]struct{}),
+		maxTrades:  100_000,
 		maxCandles: 1500,
 	}
 }
 
 // RecordTrade ingests a trade and updates rolling stats / candles. It is
-// idempotent on trade ID (re-recording the same trade is a no-op).
+// idempotent on trade ID (re-recording the same trade is a no-op). Dedup is
+// O(1) via the seen map instead of a linear scan of the window.
 func (r *MarketDataRecorder) RecordTrade(t *Trade) {
 	if t == nil || t.Price == nil || t.Quantity == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, existing := range r.trades {
-		if existing.ID == t.ID {
-			return // already recorded
-		}
+	if _, dup := r.seen[t.ID]; dup {
+		return // already recorded
 	}
 	r.trades = append(r.trades, t)
+	r.seen[t.ID] = struct{}{}
 	cutoff := timeNowUnixNano() - 24*int64(time.Hour/time.Nanosecond)
 	idx := 0
 	for idx < len(r.trades) && r.trades[idx].CreatedAt < cutoff {
 		idx++
 	}
 	if idx > 0 {
+		for _, ev := range r.trades[:idx] {
+			delete(r.seen, ev.ID)
+		}
 		r.trades = r.trades[idx:]
 	}
 	if len(r.trades) > r.maxTrades {
-		r.trades = r.trades[len(r.trades)-r.maxTrades:]
+		excess := len(r.trades) - r.maxTrades
+		for _, ev := range r.trades[:excess] {
+			delete(r.seen, ev.ID)
+		}
+		r.trades = r.trades[excess:]
 	}
 	r.updateCandlesLocked(t)
 }

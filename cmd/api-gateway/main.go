@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"os"
@@ -14,7 +14,9 @@ import (
 
 	"github.com/WkT010/nexa-exchange/internal/amm"
 	"github.com/WkT010/nexa-exchange/internal/api"
+	"github.com/WkT010/nexa-exchange/internal/audit"
 	"github.com/WkT010/nexa-exchange/internal/auth"
+	"github.com/WkT010/nexa-exchange/internal/cache"
 	"github.com/WkT010/nexa-exchange/internal/config"
 	"github.com/WkT010/nexa-exchange/internal/market"
 	"github.com/WkT010/nexa-exchange/internal/matching"
@@ -30,9 +32,9 @@ import (
 const version = "4.0.402"
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	cfg := config.Load()
-	log.Printf("[NEXA] api-gateway starting (env=%s, version=%s)", cfg.Environment, version)
+	observability.Setup(cfg)
+	slog.Info("api-gateway starting", "env", cfg.Environment, "version", version)
 
 	// ── Persistence ──
 	var db *sql.DB
@@ -44,7 +46,7 @@ func main() {
 		var err error
 		db, err = store.NewPG(cfg.PostgresDSN)
 		if err != nil {
-			log.Printf("[NEXA] postgres connection failed: %v; running in best-effort mode", err)
+			slog.Warn("postgres connection failed; running in best-effort mode", "err", err)
 		} else {
 			defer db.Close()
 			pgOrder := store.NewPGOrderStore(db)
@@ -55,9 +57,20 @@ func main() {
 			userStore = pgUser
 			walletStore = pgWallet
 			apiKeyStore = pgAPIKey
-			log.Println("[NEXA] postgres connected")
+			slog.Info("postgres connected")
 		}
 	}
+
+	// ── Admin audit trail ──
+	// Asynchronous: entries buffer and flush in the background so auditing
+	// never blocks admin requests. Without Postgres the logger degrades to
+	// the local process log instead of dropping entries.
+	var auditStore audit.AuditStore
+	if db != nil {
+		auditStore = store.NewPGAuditStore(db)
+	}
+	auditLog := audit.NewLogger(auditStore)
+	defer auditLog.Close()
 
 	// ── Blockchain clients (mock for BTC; Alchemy for EVM chains) ──
 	clients := map[string]wallet.BlockchainClient{
@@ -94,9 +107,10 @@ func main() {
 	exchange := matching.NewExchangeEngine(riskEng, walDir, snapshotDir)
 	for _, pair := range cfg.TradingPairs {
 		if _, err := exchange.RegisterPair(pair, 1<<20); err != nil {
-			log.Fatalf("[NEXA] failed to register %s: %v", pair, err)
+			slog.Error("failed to register trading pair", "pair", pair, "err", err)
+			os.Exit(1)
 		}
-		log.Printf("[NEXA] registered pair: %s", pair)
+		slog.Info("registered pair", "pair", pair)
 	}
 
 	// Periodic snapshots keep recovery time bounded as WAL grows.
@@ -117,7 +131,7 @@ func main() {
 				return
 			case <-t.C:
 				if err := exchange.SnapshotAll(); err != nil {
-					log.Printf("[NEXA] snapshot failed: %v", err)
+					slog.Error("snapshot failed", "err", err)
 				}
 			}
 		}
@@ -151,9 +165,9 @@ func main() {
 	// and a starting price. Idempotent: only creates/seeds when the store is empty.
 	seeded, err := bootstrapAMMPools(ammSvc)
 	if err != nil {
-		log.Printf("[NEXA] AMM bootstrap failed: %v (price feed will be empty until pools exist)", err)
+		slog.Warn("AMM bootstrap failed (price feed will be empty until pools exist)", "err", err)
 	} else if seeded {
-		log.Printf("[NEXA] AMM pools seeded with initial liquidity")
+		slog.Info("AMM pools seeded with initial liquidity")
 	}
 
 	// AMM price feed: a fully self-contained price source derived from pool
@@ -162,9 +176,9 @@ func main() {
 	ammFeed := market.NewAMMPriceFeed(ammSvc)
 	ammFeed.SetTradeRecorder(candleSvc) // simulator trades -> K-lines
 	if err := ammFeed.Reload(); err != nil {
-		log.Printf("[NEXA] AMM feed reload failed: %v", err)
+		slog.Warn("AMM feed reload failed", "err", err)
 	} else {
-		log.Printf("[NEXA] AMM feed loaded %d pools", len(ammFeed.Pairs()))
+		slog.Info("AMM feed loaded", "pools", len(ammFeed.Pairs()))
 	}
 
 	ammH := api.NewAmmHandler(ammSvc)
@@ -175,6 +189,10 @@ func main() {
 	orderH.SetCandleStore(candleSvc)
 
 	walletH := api.NewWalletHandler(withdrawalSvc, clients)
+	// Admin deposits may target another user; the lookup validates the
+	// target exists before any balance is credited.
+	walletH.SetUserLookup(userStore)
+	walletH.SetAuditLogger(auditLog)
 
 	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey)
 	// AMM feed is the primary price source. External sources (Binance/Uniswap/
@@ -184,7 +202,7 @@ func main() {
 	priceH.SetAMMFeed(ammFeed)
 	if os.Getenv("ENABLE_EXTERNAL_PRICE_FALLBACK") == "true" {
 		priceH.SetExternalFallback(true)
-		log.Printf("[NEXA] external price fallback: enabled (opt-in)")
+		slog.Info("external price fallback enabled (opt-in)")
 	}
 	// Order book / recent-trades fallback for the matching engine (which is
 	// empty on a fresh deployment with no resting orders) comes from the same
@@ -223,18 +241,51 @@ func main() {
 	}()
 
 	if cfg.AlchemyAPIKey != "" {
-		log.Println("[NEXA] Alchemy price feed: active")
+		slog.Info("Alchemy price feed active")
 	} else {
-		log.Println("[NEXA] Alchemy price feed: disabled (no API key)")
+		slog.Info("Alchemy price feed disabled (no API key)")
 	}
 
 	accountH := api.NewAccountHandler(userStore, withdrawalSvc, apiKeyStore, priceH)
 	accountH.SetPnLService(pnlSvc)
 
 	adminH := api.NewAdminHandler(withdrawalSvc, riskEng, exchange)
+	adminH.SetAuditLogger(auditLog)
+
+	// ── Shared cache (Redis with in-memory fallback) ──
+	// Backs the login lockout counters, the JWT token blacklist and the WS
+	// connection rate limiter. When Redis is unreachable the gateway degrades
+	// to an in-memory cache instead of failing startup.
+	var sharedCache cache.Cache
+	redisOK := false
+	redisCfg := cache.DefaultConfig()
+	redisCfg.Addr = cfg.RedisAddr
+	redisCfg.Pass = cfg.RedisPass
+	redisCfg.DB = cfg.RedisDB
+	rc := cache.New(redisCfg)
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := rc.Ping(pingCtx); err == nil {
+		sharedCache = rc
+		redisOK = true
+		slog.Info("cache: redis connected")
+	} else {
+		_ = rc.Close()
+		sharedCache = cache.NewMemoryCache(0)
+		slog.Warn("cache: redis unavailable; falling back to in-memory cache", "err", err)
+	}
+	pingCancel()
+	defer sharedCache.Close()
 
 	mgr := auth.NewJWTManager(cfg.JWTSecret, cfg.JWTIssuer)
 	authH := api.NewAuthHandler(mgr, userStore)
+	// Wire the shared cache so login lockout and the token blacklist operate
+	// distributedly; must happen before router.Setup() publishes the blacklist
+	// to the WebSocket handler.
+	authH.SetCache(sharedCache)
+	// Apply the configured account-lockout policy (env knobs
+	// ACCOUNT_LOCKOUT_THRESHOLD / ACCOUNT_LOCKOUT_DURATION_MIN); the handler
+	// ignores non-positive values and keeps its defaults.
+	authH.SetLockoutPolicy(cfg.AccountLockoutThreshold, time.Duration(cfg.AccountLockoutDurationMin)*time.Minute)
 
 	hub := websocket.NewHub()
 	go hub.Run()
@@ -265,13 +316,26 @@ func main() {
 	// ── HTTP router ──
 	router := api.NewRouter(orderH, authH, wsH, priceH, walletH, accountH, adminH, futuresH, ammH,
 		authH.AuthMiddleware(), api.APIKeyMiddleware(apiKeyStore), cfg, health)
+	router.SetCache(sharedCache)
+	// Global per-IP HTTP rate limit. ENABLE_REDIS_RATE_LIMIT=true uses the
+	// distributed Redis limiter (only when Redis actually connected; a closed
+	// client would refuse every request); otherwise the in-memory limiter.
+	if cfg.EnableRedisRateLimit && redisOK {
+		router.SetRateLimiter(api.RedisRateLimiter(rc, cfg.RateLimitPerSec, time.Second))
+		slog.Info("rate limiter: redis-backed", "req_per_sec", cfg.RateLimitPerSec)
+	} else {
+		if cfg.EnableRedisRateLimit && !redisOK {
+			slog.Warn("rate limiter: ENABLE_REDIS_RATE_LIMIT=true but redis is down; using in-memory limiter")
+		}
+		router.SetRateLimiter(api.RateLimiter(cfg.RateLimitPerSec, time.Second))
+	}
 	staticDir := os.Getenv("STATIC_DIR")
 	if staticDir == "" {
 		staticDir = "./frontend/dist"
 	}
 	if fi, err := os.Stat(staticDir); err == nil && fi.IsDir() {
 		router.SetStaticDir(staticDir)
-		log.Printf("[NEXA] serving static files from %s", staticDir)
+		slog.Info("serving static files", "dir", staticDir)
 	}
 	srv := &http.Server{
 		Addr:         cfg.ListenAddr,
@@ -309,7 +373,7 @@ func main() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		s := <-sig
-		log.Printf("[NEXA] received %v, shutting down...", s)
+		slog.Info("shutdown signal received", "signal", s.String())
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		simulator.Stop()
@@ -318,11 +382,12 @@ func main() {
 		_ = srv.Shutdown(ctx)
 	}()
 
-	log.Printf("[NEXA] listening on %s", cfg.ListenAddr)
+	slog.Info("listening", "addr", cfg.ListenAddr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("[NEXA] server failed: %v", err)
+		slog.Error("server failed", "err", err)
+		os.Exit(1)
 	}
-	log.Println("[NEXA] api-gateway stopped")
+	slog.Info("api-gateway stopped")
 }
 
 // exchangeEnginesMap exposes the per-pair engines so the WebSocket bridge can
@@ -375,9 +440,9 @@ func defaultPairRisk(pair string) *risk.PairConfig {
 // reserve1/reserve0). Reserves are chosen so each pool has meaningful depth
 // relative to typical trade sizes.
 type ammSeedSpec struct {
-	Pair                          string
-	Token0, Token1                string
-	Reserve0, Reserve1            float64
+	Pair               string
+	Token0, Token1     string
+	Reserve0, Reserve1 float64
 }
 
 // defaultAMMSeeds is the set of markets bootstrapped on a fresh store. Adding a

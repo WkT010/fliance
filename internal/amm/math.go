@@ -101,12 +101,20 @@ func QuoteSwap(pool *Pool, tokenIn string, amountIn *big.Float) (*big.Float, *bi
 }
 
 // ApplySwap updates pool reserves after a successful swap.
+//
+// Standard constant-product accounting: only the fee-deducted input
+// (amountIn * (1 - feeRate), identical to QuoteSwap's amountInWithFee)
+// enters the pool reserves. The fee itself accrues to the protocol and is
+// NOT injected into the reserves — adding the full amountIn would inflate
+// K on every swap and silently dilute LP holders.
 func ApplySwap(pool *Pool, tokenIn string, amountIn, amountOut *big.Float) {
+	oneMinusFee := new(big.Float).Sub(big.NewFloat(1), pool.FeeRate)
+	amountInWithFee := new(big.Float).Mul(amountIn, oneMinusFee)
 	if tokenIn == pool.Token0 {
-		pool.Reserve0.Add(pool.Reserve0, amountIn)
+		pool.Reserve0.Add(pool.Reserve0, amountInWithFee)
 		pool.Reserve1.Sub(pool.Reserve1, amountOut)
 	} else {
-		pool.Reserve1.Add(pool.Reserve1, amountIn)
+		pool.Reserve1.Add(pool.Reserve1, amountInWithFee)
 		pool.Reserve0.Sub(pool.Reserve0, amountOut)
 	}
 	pool.UpdatedAt = time.Now().UnixNano()
@@ -114,23 +122,37 @@ func ApplySwap(pool *Pool, tokenIn string, amountIn, amountOut *big.Float) {
 
 // sqrtBigFloat returns the square root of x using Newton's method.
 func sqrtBigFloat(x *big.Float) *big.Float {
-	if x.Sign() <= 0 {
+	if x == nil || x.Sign() <= 0 {
 		return big.NewFloat(0)
 	}
-	z := new(big.Float).Copy(x)
-	z.Quo(z, big.NewFloat(2))
+	// Initial guess z ≈ 2^(exp/2), derived from x's binary exponent, so
+	// Newton's method converges quickly even for very large or tiny values
+	// (a fixed guess like x/2 needs ~30+ iterations for x ≈ 1e20).
+	z := new(big.Float).SetMantExp(big.NewFloat(1), x.MantExp(nil)/2)
 	if z.Sign() == 0 {
 		z = big.NewFloat(1)
 	}
-	for i := 0; i < 20; i++ {
+	half := big.NewFloat(0.5)
+	prev := new(big.Float)
+	for i := 0; i < 100; i++ {
 		// z = (z + x/z) / 2
 		t := new(big.Float).Quo(x, z)
 		t.Add(t, z)
-		t.Quo(t, big.NewFloat(2))
+		t.Mul(t, half)
+		// Converged when the update is within one ulp of z.
 		if t.Cmp(z) == 0 {
 			break
 		}
-		z = t
+		// Detect rounding oscillation around the root (t flips between two
+		// adjacent representable values): keep the smaller one, which bounds
+		// the root from below.
+		if prev.Sign() > 0 && t.Cmp(prev) == 0 {
+			if z.Cmp(t) < 0 {
+				return z
+			}
+			return t
+		}
+		prev, z = z, t
 	}
 	return z
 }

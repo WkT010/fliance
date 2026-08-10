@@ -2,9 +2,8 @@ package wsbridge
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"math/big"
-	"strconv"
 	"sync"
 	"time"
 
@@ -44,15 +43,15 @@ type PnLRecorder interface {
 }
 
 type Bridge struct {
-	hub             *websocket.Hub
-	engines         map[string]*matching.MatchingEngine
-	orderStore      api.OrderStore
-	settler         FillSettler
-	candleRecorder  CandleRecorder
+	hub              *websocket.Hub
+	engines          map[string]*matching.MatchingEngine
+	orderStore       api.OrderStore
+	settler          FillSettler
+	candleRecorder   CandleRecorder
 	riskPriceUpdater RiskPriceUpdater
-	pnlRecorder     PnLRecorder
-	done            chan struct{}
-	wg              sync.WaitGroup
+	pnlRecorder      PnLRecorder
+	done             chan struct{}
+	wg               sync.WaitGroup
 }
 
 func NewBridge(hub *websocket.Hub, engines map[string]*matching.MatchingEngine, store api.OrderStore) *Bridge {
@@ -78,10 +77,33 @@ func (b *Bridge) Start() {
 		go b.consumeTrades(pair, e)
 		go b.consumeFills(pair, e)
 	}
-	log.Printf("[wsbridge] started (%d engines)", len(b.engines))
+	slog.Info("wsbridge started", "engines", len(b.engines))
 }
 
-func (b *Bridge) Stop() { close(b.done); b.wg.Wait(); log.Println("[wsbridge] stopped") }
+func (b *Bridge) Stop() { close(b.done); b.wg.Wait(); slog.Info("wsbridge stopped") }
+
+// fillIDOf derives the deterministic settlement ID of a fill. The same fill
+// always maps to the same ID (no wall-clock or random input), so wallet-side
+// dedupe turns replays into no-ops. Format:
+//
+//	<pair>:<takerOrderID>:<makerOrderID>:<price fixed 18>:<qty fixed 18>
+//
+// Price/quantity are rendered with big.Float.Text('f', 18), i.e. exact
+// fixed-point with 18 decimal places. The (taker, maker) pair identifies one
+// execution leg; a maker leaves the book when exhausted and its remaining
+// quantity shrinks between partial fills, so equal keys across distinct
+// executions cannot occur in practice.
+func fillIDOf(fill *matching.FillNotification) string {
+	return fill.Pair + ":" + fill.TakerOrderID + ":" + fill.MakerOrderID + ":" +
+		fixed18(fill.Price) + ":" + fixed18(fill.Quantity)
+}
+
+func fixed18(f *big.Float) string {
+	if f == nil {
+		return ""
+	}
+	return f.Text('f', 18)
+}
 
 func (b *Bridge) consumeTrades(pair string, e *matching.MatchingEngine) {
 	defer b.wg.Done()
@@ -95,14 +117,14 @@ func (b *Bridge) consumeTrades(pair string, e *matching.MatchingEngine) {
 			}
 			if b.candleRecorder != nil {
 				if err := b.candleRecorder.RecordTrade(t); err != nil {
-					log.Printf("[wsbridge] candle record failed (pair=%s): %v", pair, err)
+					slog.Warn("candle record failed", "pair", pair, "err", err)
 				}
 			}
 			if b.riskPriceUpdater != nil && t.Price != nil && t.Price.Sign() > 0 {
 				b.riskPriceUpdater.UpdateReferencePrice(pair, t.Price)
 			}
 			data, _ := json.Marshal(map[string]interface{}{"type": "trade", "pair": pair, "price": t.Price.String(), "qty": t.Quantity.String(), "side": t.TakerSide.String(), "time": t.CreatedAt})
-		b.hub.BroadcastToRoom(websocket.ChannelTrades+":"+pair, data)
+			b.hub.BroadcastToRoom(websocket.ChannelTrades+":"+pair, data)
 		}
 	}
 }
@@ -117,18 +139,20 @@ func (b *Bridge) consumeFills(pair string, e *matching.MatchingEngine) {
 			// Settle the fill into wallet balances first so balances reflect the
 			// trade before any UI snapshot is pushed.
 			if b.settler != nil {
-				// fillID combines the two order IDs, the fill quantity and a
-				// coarse time bucket. It must be deterministic enough to dedupe
-				// a replayed fill (e.g. after a restart that re-reads the channel) is a no-op.
-				// Adding a uuid-style counter would be cleaner, but this avoids importing
-				// another package.
-				fillID := fill.TakerOrderID + ":" + fill.MakerOrderID + ":" + fill.Quantity.Text('f', 18) + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
+				// fillID must be DETERMINISTIC: wallet.Service dedupes replays via
+				// its processedFills LRU keyed on this ID, so any time/random
+				// component would make every replay a "new" fill and settle it
+				// twice (double settlement = loss of funds). FillNotification has
+				// no engine-assigned unique ID, so we derive one from the fill's
+				// immutable identity: pair, both order IDs and the exact
+				// fixed-point (18 decimals) price and quantity.
+				fillID := fillIDOf(fill)
 				if err := b.settler.SettleFill(
 					fillID, fill.Pair, int(fill.Side),
 					fill.TakerOrderID, fill.MakerOrderID, fill.TakerUserID, fill.MakerUserID,
 					fill.Price, fill.Quantity,
 				); err != nil {
-					log.Printf("[wsbridge] settle fill failed (pair=%s taker=%s maker=%s): %v", pair, fill.TakerOrderID, fill.MakerOrderID, err)
+					slog.Error("settle fill failed", "pair", pair, "taker_order_id", fill.TakerOrderID, "maker_order_id", fill.MakerOrderID, "err", err)
 				}
 			}
 
@@ -146,17 +170,17 @@ func (b *Bridge) consumeFills(pair string, e *matching.MatchingEngine) {
 			// Notify both counterparties about their personal fills so the
 			// wallet/UI layer can react in real time.
 			fillData, _ := json.Marshal(map[string]interface{}{
-				"type":          "fill",
-				"pair":          fill.Pair,
+				"type":           "fill",
+				"pair":           fill.Pair,
 				"taker_order_id": fill.TakerOrderID,
 				"maker_order_id": fill.MakerOrderID,
-				"side":          fill.Side.String(),
-				"price":         fill.Price.String(),
-				"qty":           fill.Quantity.String(),
-				"remaining":     fill.RemainingQty.String(),
-				"taker_filled":  fill.TakerFilled,
-				"maker_filled":  fill.MakerFilled,
-				"time":          time.Now().UnixNano(),
+				"side":           fill.Side.String(),
+				"price":          fill.Price.String(),
+				"qty":            fill.Quantity.String(),
+				"remaining":      fill.RemainingQty.String(),
+				"taker_filled":   fill.TakerFilled,
+				"maker_filled":   fill.MakerFilled,
+				"time":           time.Now().UnixNano(),
 			})
 			b.hub.BroadcastToRoom(websocket.ChannelUser+":"+fill.TakerUserID, fillData)
 			b.hub.BroadcastToRoom(websocket.ChannelUser+":"+fill.MakerUserID, fillData)
@@ -166,14 +190,14 @@ func (b *Bridge) consumeFills(pair string, e *matching.MatchingEngine) {
 			if fill.TakerFilled {
 				if rs, ok := b.settler.(OrderReleaser); ok {
 					if err := rs.ReleaseOrder(fill.TakerOrderID, fill.TakerUserID); err != nil {
-						log.Printf("[wsbridge] release taker order %s failed: %v", fill.TakerOrderID, err)
+						slog.Warn("release taker order failed", "order_id", fill.TakerOrderID, "err", err)
 					}
 				}
 			}
 			if fill.MakerFilled {
 				if rs, ok := b.settler.(OrderReleaser); ok {
 					if err := rs.ReleaseOrder(fill.MakerOrderID, fill.MakerUserID); err != nil {
-						log.Printf("[wsbridge] release maker order %s failed: %v", fill.MakerOrderID, err)
+						slog.Warn("release maker order failed", "order_id", fill.MakerOrderID, "err", err)
 					}
 				}
 			}

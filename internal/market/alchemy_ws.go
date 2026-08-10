@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/gorilla/websocket"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"sync"
 	"time"
-	"github.com/gorilla/websocket"
 )
 
 type ChainConfig struct {
@@ -50,7 +50,9 @@ func NewAlchemyMultiChain(apiKey string) *AlchemyMultiChain {
 		{"Polygon", "POLYGON", polygonRPC, polygonWS, true, 18},
 		{"Arbitrum", "ARB", arbRPC, arbWS, true, 18},
 		{"Optimism", "OP", opRPC, opWS, true, 18},
-	} { amc.Chains[c.Symbol] = c }
+	} {
+		amc.Chains[c.Symbol] = c
+	}
 	return amc
 }
 
@@ -105,20 +107,35 @@ func (amc *AlchemyMultiChain) Call(symbol, method string, params []interface{}) 
 
 func (amc *AlchemyMultiChain) ConnectWS(symbol string) (*AlchemyWSConn, error) {
 	c, ok := amc.Chains[symbol]
-	if !ok { return nil, fmt.Errorf("unknown: %s", symbol) }
+	if !ok {
+		return nil, fmt.Errorf("unknown: %s", symbol)
+	}
 	conn, _, err := websocket.DefaultDialer.Dial(c.WSURL, nil)
-	if err != nil { return nil, fmt.Errorf("dial %s: %w", symbol, err) }
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", symbol, err)
+	}
 	wsc := &AlchemyWSConn{conn: conn, url: c.WSURL, done: make(chan struct{}), subs: make(map[int]string), msgCh: make(chan []byte, 1000)}
 	amc.mu.Lock()
 	amc.conns[symbol] = wsc
 	amc.mu.Unlock()
-	log.Printf("[alchemy-ws] %s connected", symbol)
+	slog.Info("alchemy ws connected", "chain", symbol)
 	go func() {
 		defer conn.Close()
 		for {
 			_, msg, err := conn.ReadMessage()
-			if err != nil { select { case <-wsc.done: return; default: log.Printf("[alchemy-ws] %s disconnect: %v", symbol, err); return } }
-			select { case wsc.msgCh <- msg: default: }
+			if err != nil {
+				select {
+				case <-wsc.done:
+					return
+				default:
+					slog.Warn("alchemy ws disconnected", "chain", symbol, "err", err)
+					return
+				}
+			}
+			select {
+			case wsc.msgCh <- msg:
+			default:
+			}
 		}
 	}()
 	return wsc, nil
@@ -126,7 +143,7 @@ func (amc *AlchemyMultiChain) ConnectWS(symbol string) (*AlchemyWSConn, error) {
 
 func (wsc *AlchemyWSConn) Subscribe(method string, params []interface{}) error {
 	id := int(time.Now().UnixNano() & 0x7FFFFFFF)
-	d, _ := json.Marshal(map[string]interface{}{"jsonrpc":"2.0","method":"eth_subscribe","params":append([]interface{}{method},params...),"id":id})
+	d, _ := json.Marshal(map[string]interface{}{"jsonrpc": "2.0", "method": "eth_subscribe", "params": append([]interface{}{method}, params...), "id": id})
 	return wsc.conn.WriteMessage(websocket.TextMessage, d)
 }
 
@@ -134,21 +151,33 @@ func (wsc *AlchemyWSConn) SubscribeNewHeads() error { return wsc.Subscribe("newH
 
 func (amc *AlchemyMultiChain) StartWSBlockMonitor() {
 	for sym, c := range amc.Chains {
-		if !c.Enabled { continue }
+		if !c.Enabled {
+			continue
+		}
 		go func(s string) {
 			wsc, err := amc.ConnectWS(s)
-			if err != nil { log.Printf("[alchemy] %s ws failed: %v", s, err); return }
+			if err != nil {
+				slog.Warn("alchemy ws connect failed", "chain", s, "err", err)
+				return
+			}
 			wsc.SubscribeNewHeads()
-			log.Printf("[alchemy] %s subscribed to newHeads (WS)", s)
+			slog.Info("subscribed to newHeads (WS)", "chain", s)
 			for msg := range wsc.msgCh {
 				var m wsMsg
 				json.Unmarshal(msg, &m)
 				if m.Method == "eth_subscription" {
-					var p struct{ Subscription string; Result json.RawMessage }
+					var p struct {
+						Subscription string
+						Result       json.RawMessage
+					}
 					json.Unmarshal(m.Params, &p)
 					var h struct{ Number string }
 					json.Unmarshal(p.Result, &h)
-					if h.Number != "" { var n uint64; fmt.Sscanf(h.Number, "0x%x", &n); log.Printf("[alchemy] %s block %d", s, n) }
+					if h.Number != "" {
+						var n uint64
+						fmt.Sscanf(h.Number, "0x%x", &n)
+						slog.Debug("new block observed", "chain", s, "block", n)
+					}
 				}
 			}
 		}(sym)
@@ -167,30 +196,47 @@ func NewWSPriceFeed(apiKey string) *WSPriceFeed {
 			"BTC,ETH,SOL,BNB,ADA,DOGE,XRP,UNI,LINK,MATIC,ARB,OP,AAVE,CRV"), nil)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil { log.Printf("[ws-prices] seed failed: %v", err); return pf }
+	if err != nil {
+		slog.Warn("ws-prices seed failed", "err", err)
+		return pf
+	}
 	defer resp.Body.Close()
-	var r struct{ Data []struct{ Symbol string; Prices []struct{ Value string } } }
+	var r struct {
+		Data []struct {
+			Symbol string
+			Prices []struct{ Value string }
+		}
+	}
 	json.NewDecoder(resp.Body).Decode(&r)
-	m := map[string]string{"BTC":"BTC/USDT","ETH":"ETH/USDT","SOL":"SOL/USDT","BNB":"BNB/USDT","ADA":"ADA/USDT","DOGE":"DOGE/USDT","XRP":"XRP/USDT","UNI":"UNI/USDT","LINK":"LINK/USDT","MATIC":"MATIC/USDT","ARB":"ARB/USDT","OP":"OP/USDT","AAVE":"AAVE/USDT","CRV":"CRV/USDT"}
+	m := map[string]string{"BTC": "BTC/USDT", "ETH": "ETH/USDT", "SOL": "SOL/USDT", "BNB": "BNB/USDT", "ADA": "ADA/USDT", "DOGE": "DOGE/USDT", "XRP": "XRP/USDT", "UNI": "UNI/USDT", "LINK": "LINK/USDT", "MATIC": "MATIC/USDT", "ARB": "ARB/USDT", "OP": "OP/USDT", "AAVE": "AAVE/USDT", "CRV": "CRV/USDT"}
 	for _, item := range r.Data {
 		pair, ok := m[item.Symbol]
-		if !ok || len(item.Prices) == 0 { continue }
+		if !ok || len(item.Prices) == 0 {
+			continue
+		}
 		v, _ := new(big.Float).SetString(item.Prices[0].Value)
 		pf.prices[pair] = &Ticker{Pair: pair, Last: v, Volume24h: new(big.Float), Timestamp: time.Now().UnixMilli()}
 	}
-	log.Printf("[ws-prices] seeded %d pairs (1 HTTP at startup, then WS only)", len(pf.prices))
+	slog.Info("ws-prices seeded (1 HTTP at startup, then WS only)", "pairs", len(pf.prices))
 	return pf
 }
 
 func (pf *WSPriceFeed) Get(pair string) *Ticker {
-	pf.mu.RLock(); defer pf.mu.RUnlock()
-	if pf.prices[pair] == nil { return nil }
-	cp := *pf.prices[pair]; return &cp
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
+	if pf.prices[pair] == nil {
+		return nil
+	}
+	cp := *pf.prices[pair]
+	return &cp
 }
 
 func (pf *WSPriceFeed) GetAll() map[string]*Ticker {
-	pf.mu.RLock(); defer pf.mu.RUnlock()
+	pf.mu.RLock()
+	defer pf.mu.RUnlock()
 	cp := make(map[string]*Ticker, len(pf.prices))
-	for k, v := range pf.prices { cp[k] = v }
+	for k, v := range pf.prices {
+		cp[k] = v
+	}
 	return cp
 }

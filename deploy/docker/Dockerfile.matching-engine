@@ -1,10 +1,16 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags='-s -w' -o /app/matching-engine ./cmd/matching-engine/
 FROM alpine:3.19
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata \
+    && adduser -D -H -u 10001 nonroot \
+    && mkdir -p /data/wal /data/snapshots \
+    && chown -R nonroot:nonroot /data
 COPY --from=builder /app/matching-engine /matching-engine
+# 非root运行：/data（WAL/快照）目录已预创建并授权给 nonroot；
+# 挂载卷时请确保卷属主为 UID 10001（docker 命名卷首次初始化会继承镜像内属主）
+USER nonroot
 ENTRYPOINT ["/matching-engine"]

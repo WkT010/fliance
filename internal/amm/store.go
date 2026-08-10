@@ -7,6 +7,10 @@ type Store interface {
 	GetPoolByPair(pair string) (*Pool, error)
 	ListPools() ([]*Pool, error)
 	UpdatePoolReserves(id string, reserve0, reserve1, lpShares string) error
+	// UpdatePoolProtocolFees persists the accumulated protocol fee totals.
+	// Implementations may no-op on legacy databases where migration 008 has
+	// not been applied yet (zero-downtime rollout).
+	UpdatePoolProtocolFees(id string, fee0, fee1 string) error
 
 	SavePosition(*LPPosition) error
 	GetPosition(id, userID string) (*LPPosition, error)

@@ -51,8 +51,12 @@ func (s *PGWalletStore) GetWallets(userID string) ([]*wallet.Wallet, error) {
 }
 
 func (s *PGWalletStore) SaveWallet(w *wallet.Wallet) error {
-	if w.Balance == nil { w.Balance = big.NewFloat(0) }
-	if w.Locked == nil { w.Locked = big.NewFloat(0) }
+	if w.Balance == nil {
+		w.Balance = big.NewFloat(0)
+	}
+	if w.Locked == nil {
+		w.Locked = big.NewFloat(0)
+	}
 	_, err := s.db.Exec(
 		`INSERT INTO wallets (id,user_id,asset,balance,locked,address,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
 		 ON CONFLICT (user_id, asset) DO NOTHING`,
@@ -132,6 +136,21 @@ func (s *PGWalletStore) Settle(ops []wallet.SettleOp, txns []*wallet.Transaction
 	}
 	defer tx.Rollback()
 	now := time.Now().UnixNano()
+	// Pre-upsert every wallet touched by this settle so a debit on a wallet
+	// the user has never deposited into (e.g. AMM swapping a token they do not
+	// yet hold) deterministically fails the (balance - locked >= -delta) guard
+	// below instead of silently zeroing-out the operation. Without this upsert
+	// the UPDATE would match 0 rows and the credit side of the settle would
+	// still commit, allowing the AMM engine to "mint" tokens for free.
+	for _, op := range ops {
+		wid := "wal_" + nowText() + randSuffix()
+		if _, err := tx.Exec(
+			`INSERT INTO wallets (id,user_id,asset,balance,locked,created_at,updated_at)
+			 VALUES($1,$2,$3,0,0,$4,$4)
+			 ON CONFLICT (user_id, asset) DO NOTHING`, wid, op.UserID, op.Asset, now); err != nil {
+			return fmt.Errorf("upsert wallet %s/%s: %w", op.UserID, op.Asset, err)
+		}
+	}
 	for _, op := range ops {
 		if op.Unlock != nil && op.Unlock.Sign() != 0 {
 			if _, err := tx.Exec(
@@ -142,18 +161,47 @@ func (s *PGWalletStore) Settle(ops []wallet.SettleOp, txns []*wallet.Transaction
 			}
 		}
 		if op.Delta != nil && op.Delta.Sign() != 0 {
-			if _, err := tx.Exec(
-				`UPDATE wallets SET balance = balance + $1, updated_at = $2
-				 WHERE user_id=$3 AND asset=$4`,
-				op.Delta.Text('f', 18), now, op.UserID, op.Asset); err != nil {
-				return fmt.Errorf("delta %s/%s: %w", op.UserID, op.Asset, err)
+			// Refuse any negative delta that would drive the wallet below
+			// zero. A user cannot spend tokens they do not own. For a
+			// positive delta there is no upper bound, so we accept it as long
+			// as the wallet row exists (guaranteed by the upsert above).
+			if op.Delta.Sign() < 0 {
+				res, err := tx.Exec(
+					`UPDATE wallets SET balance = balance + $1, updated_at = $2
+					 WHERE user_id=$3 AND asset=$4 AND (balance - locked) >= $5`,
+					op.Delta.Text('f', 18), now, op.UserID, op.Asset, new(big.Float).Neg(op.Delta).Text('f', 18))
+				if err != nil {
+					return fmt.Errorf("delta %s/%s: %w", op.UserID, op.Asset, err)
+				}
+				if n, _ := res.RowsAffected(); n == 0 {
+					return fmt.Errorf("insufficient balance for %s %s: %w", op.UserID, op.Asset, wallet.ErrInsufficientBalance)
+				}
+			} else {
+				if _, err := tx.Exec(
+					`UPDATE wallets SET balance = balance + $1, updated_at = $2
+					 WHERE user_id=$3 AND asset=$4`,
+					op.Delta.Text('f', 18), now, op.UserID, op.Asset); err != nil {
+					return fmt.Errorf("delta %s/%s: %w", op.UserID, op.Asset, err)
+				}
 			}
 		}
 	}
 	for _, t := range txns {
+		// Resolve the wallet ID when the caller did not supply one (e.g.
+		// futures PnL / liquidation and spot fill ledgers created by the
+		// wallet/futures services). wallet_id is NOT NULL with an FK to
+		// wallets.id, so an empty value would violate the constraint.
+		wid := t.WalletID
+		if wid == "" {
+			if err := tx.QueryRow(
+				`SELECT id FROM wallets WHERE user_id=$1 AND asset=$2`,
+				t.UserID, t.Asset).Scan(&wid); err != nil {
+				return fmt.Errorf("resolve wallet for tx %s: %w", t.ID, err)
+			}
+		}
 		if _, err := tx.Exec(
 			`INSERT INTO transactions (id,user_id,wallet_id,type,asset,amount,fee,status,tx_hash,confirmations,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`,
-			t.ID, t.UserID, t.WalletID, t.Type, t.Asset,
+			t.ID, t.UserID, wid, t.Type, t.Asset,
 			t.Amount.Text('f', 18), t.Fee.Text('f', 18),
 			t.Status, t.TxHash, t.Confirmations, t.CreatedAt); err != nil {
 			return fmt.Errorf("save tx: %w", err)

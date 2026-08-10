@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/WkT010/nexa-exchange/internal/market"
+	"github.com/gin-gonic/gin"
 )
 
 type PriceHandler struct {
@@ -164,19 +164,19 @@ func (h *PriceHandler) allTickers() []gin.H {
 	out := make([]gin.H, 0, len(merged))
 	for _, t := range merged {
 		out = append(out, gin.H{
-			"pair":           t.Pair,
-			"last":            safeFloatStr(t.Last),
-			"bid":             safeFloatStr(t.Bid),
-			"ask":             safeFloatStr(t.Ask),
-			"source":          "amm",
-			"volume_24h":      safeFloatStr(t.Volume24h),
+			"pair":             t.Pair,
+			"last":             safeFloatStr(t.Last),
+			"bid":              safeFloatStr(t.Bid),
+			"ask":              safeFloatStr(t.Ask),
+			"source":           "amm",
+			"volume_24h":       safeFloatStr(t.Volume24h),
 			"quote_volume_24h": safeFloatStr(t.QuoteVolume24h),
-			"high_24h":        safeFloatStr(t.High24h),
-			"low_24h":         safeFloatStr(t.Low24h),
-			"open_24h":        safeFloatStr(t.Open24h),
-			"change_24h":      safeFloatStr(t.Change24h),
-			"change_pct_24h":  safeFloatStr(t.ChangePct24h),
-			"timestamp":       t.Timestamp,
+			"high_24h":         safeFloatStr(t.High24h),
+			"low_24h":          safeFloatStr(t.Low24h),
+			"open_24h":         safeFloatStr(t.Open24h),
+			"change_24h":       safeFloatStr(t.Change24h),
+			"change_pct_24h":   safeFloatStr(t.ChangePct24h),
+			"timestamp":        t.Timestamp,
 		})
 	}
 	return out
@@ -196,24 +196,37 @@ func (h *PriceHandler) GetUniswapTicker(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
+// GetPriceComparison returns the internal (AMM) price for `pair` alongside
+// the Uniswap V3 reference price. The internal column uses the AMM feed (the
+// platform's primary, self-contained price source) — not the legacy Alchemy
+// WebSocket feed — so the comparison always reflects the same data the
+// trading UI is using. The Uniswap column returns N/A when the RPC provider
+// is unavailable (the common case on a self-contained deployment).
 func (h *PriceHandler) GetPriceComparison(c *gin.Context) {
 	pair := strings.TrimPrefix(c.Param("pair"), "/")
 	if pair == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"})
 		return
 	}
-	internal := h.feed.Get(pair)
-	uni, uniErr := h.uniswap.FetchTicker(pair)
 	out := gin.H{"pair": pair}
-	if internal != nil {
-		out["internal"] = gin.H{"available": true, "last": internal.Last.String()}
+	if h.ammFeed != nil {
+		if t, err := h.ammFeed.FetchTicker(pair); err == nil && t != nil && t.Last != nil && t.Last.Sign() > 0 {
+			out["internal"] = gin.H{"available": true, "last": t.Last.String(), "source": "amm"}
+		} else {
+			out["internal"] = gin.H{"available": false, "error": "no AMM pool for this pair"}
+		}
 	} else {
-		out["internal"] = gin.H{"available": false}
+		out["internal"] = gin.H{"available": false, "error": "AMM feed not configured"}
 	}
-	if uni != nil {
-		out["uniswap"] = gin.H{"available": true, "last": uni.Last.String()}
+	uni, uniErr := h.uniswap.FetchTicker(pair)
+	if uni != nil && uni.Last != nil && uni.Last.Sign() > 0 {
+		out["uniswap"] = gin.H{"available": true, "last": uni.Last.String(), "source": "uniswap-v3-rpc"}
 	} else {
-		out["uniswap"] = gin.H{"available": false, "error": uniErr}
+		msg := "external price source not available"
+		if uniErr != nil {
+			msg = uniErr.Error()
+		}
+		out["uniswap"] = gin.H{"available": false, "error": msg}
 	}
 	c.JSON(http.StatusOK, out)
 }
@@ -264,18 +277,18 @@ func (h *PriceHandler) BuildSwap(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"pair":       r.Pair,
-		"token_in":   r.TokenIn,
-		"token_out":  r.TokenOut,
-		"amount_in":  amt.String(),
-		"to":         q.To,
-		"data":       q.Data,
-		"value":      q.Value,
-		"gas_limit":  q.GasLimit,
-		"router":     q.Router,
-		"pool":       meta.Address,
-		"fee_tier":   meta.Fee,
-		"source":     "uniswap-v3-rpc",
+		"pair":      r.Pair,
+		"token_in":  r.TokenIn,
+		"token_out": r.TokenOut,
+		"amount_in": amt.String(),
+		"to":        q.To,
+		"data":      q.Data,
+		"value":     q.Value,
+		"gas_limit": q.GasLimit,
+		"router":    q.Router,
+		"pool":      meta.Address,
+		"fee_tier":  meta.Fee,
+		"source":    "uniswap-v3-rpc",
 	})
 }
 

@@ -23,14 +23,18 @@ export function OrderbookPanel({ pair, compact }: { pair: string; compact?: bool
   };
 
   const content = (
-    <>
+    <div className="flex h-full min-h-[360px] flex-col">
+      <div className="flex items-center justify-between border-b border-nexa-700/70 bg-nexa-900/40 px-4 py-2.5">
+        <div className="text-sm font-semibold text-nexa-100">{t('trading.orderBook')}</div>
+        <span className="text-xs text-nexa-500">{pair}</span>
+      </div>
       <div className="flex justify-between px-3 pt-2 text-xs text-nexa-400"><span>{t('trading.price')}</span><span>{t('trading.qty')}</span></div>
       <div className="flex-1 overflow-auto px-3 py-2">
         <div className="mb-1">{asks.map((a, i) => <Row key={`ask-${i}`} level={a} side="ask" max={maxQty} />)}</div>
         <div className="border-y border-nexa-700 py-1 text-center text-sm font-medium text-nexa-100">{formatPrice(bids[0]?.price || asks[0]?.price, 2)}</div>
         <div className="mt-1">{bids.map((b, i) => <Row key={`bid-${i}`} level={b} side="bid" max={maxQty} />)}</div>
       </div>
-    </>
+    </div>
   );
 
   if (compact) return content;

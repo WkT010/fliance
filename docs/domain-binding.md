@@ -1,6 +1,6 @@
 # 固定公网 IP 并绑定域名
 
-本指南把跑在本机的 Nexa Exchange（api-gateway 监听 `127.0.0.1:8080` 或 `:8080`）暴露到一个固定域名上，并用 Caddy 自动签发 HTTPS 证书。完成后前端走 `https://你的域名`，WebSocket 走 `wss://你的域名/ws`。
+本指南把跑在本机的 Fliance（梵响）（api-gateway 监听 `127.0.0.1:8080` 或 `:8080`）暴露到一个固定域名上，并用 Caddy 自动签发 HTTPS 证书。完成后前端走 `https://你的域名`，WebSocket 走 `wss://你的域名/ws`。
 
 ## 0. 前置条件
 

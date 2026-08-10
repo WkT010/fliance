@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -19,16 +19,15 @@ import (
 	"github.com/WkT010/nexa-exchange/internal/risk"
 	pb "github.com/WkT010/nexa-exchange/proto/exchange/v1"
 
-	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 )
 
 const version = "3.0.0"
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	cfg := config.Load()
-	log.Printf("[NEXA] matching-engine starting (env=%s, version=%s)", cfg.Environment, version)
+	observability.Setup(cfg)
+	slog.Info("matching-engine starting", "env", cfg.Environment, "version", version)
 
 	pairs := cfg.TradingPairs
 	if len(pairs) == 0 {
@@ -58,12 +57,13 @@ func main() {
 	for _, pair := range pairs {
 		e, err := exchange.RegisterPair(pair, 1<<20)
 		if err != nil {
-			log.Fatalf("[NEXA] failed to register %s: %v", pair, err)
+			slog.Error("failed to register trading pair", "pair", pair, "err", err)
+			os.Exit(1)
 		}
 		engines[pair] = e
-		log.Printf("[NEXA] engine started: %s", pair)
+		slog.Info("engine started", "pair", pair)
 	}
-	log.Printf("[NEXA] all %d engines running", len(engines))
+	slog.Info("all engines running", "count", len(engines))
 
 	// Periodic snapshots every 60s for fast recovery after a crash.
 	snapshotInterval := 60 * time.Second
@@ -83,7 +83,7 @@ func main() {
 				return
 			case <-t.C:
 				if err := exchange.SnapshotAll(); err != nil {
-					log.Printf("[NEXA] snapshot failed: %v", err)
+					slog.Error("snapshot failed", "err", err)
 				}
 			}
 		}
@@ -95,7 +95,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok","service":"nexa-matching","version":"` + version + `"}`))
+		w.Write([]byte(`{"status":"ok","service":"fliance-matching","version":"` + version + `"}`))
 	})
 	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
 		status := health.Check(r.Context())
@@ -114,9 +114,9 @@ func main() {
 	})
 	monitor := &http.Server{Addr: ":8081", Handler: mux}
 	go func() {
-		log.Printf("[NEXA] matching-engine monitor on %s", monitor.Addr)
+		slog.Info("matching-engine monitor starting", "addr", monitor.Addr)
 		if err := monitor.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[NEXA] monitor failed: %v", err)
+			slog.Error("monitor failed", "err", err)
 		}
 	}()
 
@@ -127,15 +127,22 @@ func main() {
 	}
 	lis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
-		log.Fatalf("[NEXA] failed to listen grpc %s: %v", grpcAddr, err)
+		slog.Error("failed to listen grpc", "addr", grpcAddr, "err", err)
+		os.Exit(1)
 	}
-	grpcServer := googlegrpc.NewServer()
+	// Secured gRPC server: shared-token auth (GRPC_SHARED_TOKEN) and optional
+	// TLS (GRPC_TLS_CERT/GRPC_TLS_KEY) are enforced by the internal/grpc
+	// package; outside development a missing token aborts startup. Reflection
+	// is only exposed in development.
+	grpcServer := grpc.NewSecuredServer()
 	pb.RegisterExchangeServiceServer(grpcServer, grpc.NewMatchingServer(engines))
-	reflection.Register(grpcServer)
+	if cfg.DevMode {
+		reflection.Register(grpcServer)
+	}
 	go func() {
-		log.Printf("[NEXA] grpc server on %s", grpcAddr)
+		slog.Info("grpc server starting", "addr", grpcAddr)
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Printf("[NEXA] grpc server stopped: %v", err)
+			slog.Error("grpc server stopped", "err", err)
 		}
 	}()
 
@@ -143,7 +150,7 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	s := <-sig
-	log.Printf("[NEXA] received %v, stopping %d engines", s, len(engines))
+	slog.Info("shutdown signal received", "signal", s.String(), "engines", len(engines))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -152,7 +159,7 @@ func main() {
 	grpcServer.GracefulStop()
 	_ = monitor.Shutdown(ctx)
 
-	log.Println("[NEXA] matching-engine stopped gracefully")
+	slog.Info("matching-engine stopped gracefully")
 }
 
 func defaultPairRisk(pair string) *risk.PairConfig {

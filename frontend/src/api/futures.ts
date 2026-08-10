@@ -32,6 +32,11 @@ export async function closeFuturesPosition(id: string): Promise<FuturesPosition>
   return res.data.position;
 }
 
+export async function closeFuturesPositionPartial(id: string, quantity: string): Promise<FuturesPosition> {
+  const res = await api.post(`/futures/positions/${id}/close-partial`, { quantity });
+  return res.data.position;
+}
+
 export async function cancelFuturesOrder(id: string): Promise<FuturesOrder> {
   const res = await api.delete(`/futures/orders/${id}`);
   return res.data.order;

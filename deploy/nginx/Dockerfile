@@ -6,10 +6,10 @@ RUN apk --no-cache add curl certbot
 RUN rm -f /etc/nginx/conf.d/default.conf
 
 # Copy our production config
-COPY deploy/nginx/nginx.conf /etc/nginx/conf.d/nexa.conf
+COPY deploy/nginx/nginx.conf /etc/nginx/conf.d/fliance.conf
 
 # Create SSL directory
-RUN mkdir -p /etc/letsencrypt/live/nexa
+RUN mkdir -p /etc/letsencrypt/live/fliance
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \

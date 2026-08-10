@@ -1,7 +1,8 @@
 name: CI
 on: [push, pull_request]
 env:
-  GO_VERSION: "1.22"
+  # 与 go.mod 的 go 指令保持一致（x/crypto v0.54 等依赖要求 go >= 1.25）
+  GO_VERSION: "1.25"
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -44,6 +45,22 @@ jobs:
       - run: CGO_ENABLED=0 GOOS=linux go build -ldflags='-s -w' -o build/ ./scripts/migrate/
       - uses: actions/upload-artifact@v4
         with: {name: binaries, path: build/}
+  gosec:
+    # 安全扫描：聚焦高危问题，报告形式输出，不阻塞流水线（-no-fail）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}"}
+      - name: Run Gosec Security Scanner
+        uses: securego/gosec@master
+        with:
+          # -exclude-generated: 跳过 protobuf 等生成代码；-severity=high: 先聚焦高危
+          # -no-fail + 报告产物：以报告形式输出，避免阻塞合入
+          args: -exclude-generated -severity=high -no-fail -fmt=json -out=gosec-report.json ./...
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: {name: gosec-report, path: gosec-report.json}
   docker:
     needs: [lint, test, build]
     if: github.ref == 'refs/heads/main'
@@ -52,6 +69,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build Docker images
         run: |
-          docker build -t nexa/api-gateway:latest -f deploy/docker/Dockerfile.api-gateway .
-          docker build -t nexa/matching-engine:latest -f deploy/docker/Dockerfile.matching-engine .
-          docker build -t nexa/wallet-service:latest -f deploy/docker/Dockerfile.wallet-service .
+          docker build -t fliance/api-gateway:latest -f deploy/docker/Dockerfile.api-gateway .
+          docker build -t fliance/matching-engine:latest -f deploy/docker/Dockerfile.matching-engine .
+          docker build -t fliance/wallet-service:latest -f deploy/docker/Dockerfile.wallet-service .

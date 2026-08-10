@@ -3,9 +3,10 @@ package wsbridge
 import (
 	"context"
 	"encoding/json"
-	"log"
-	"github.com/redis/go-redis/v9"
+	"log/slog"
+
 	"github.com/WkT010/nexa-exchange/pkg/websocket"
+	"github.com/redis/go-redis/v9"
 )
 
 type RedisHub struct {
@@ -18,7 +19,7 @@ type RedisHub struct {
 
 type RedisMessage struct {
 	Type, Channel, UserID string
-	Data json.RawMessage `json:"data"`
+	Data                  json.RawMessage `json:"data"`
 }
 
 func NewRedisHub(local *websocket.Hub, addr, pass string) *RedisHub {
@@ -31,7 +32,7 @@ func NewRedisHub(local *websocket.Hub, addr, pass string) *RedisHub {
 func (rh *RedisHub) Start() {
 	rh.pubsub = rh.client.Subscribe(context.Background(), rh.channel)
 	rh.pubsub.Receive(context.Background())
-	log.Printf("[redis-hub] listening on %s", rh.channel)
+	slog.Info("redis-hub listening", "channel", rh.channel)
 	go func() {
 		for msg := range rh.pubsub.Channel() {
 			var rm RedisMessage
@@ -43,7 +44,9 @@ func (rh *RedisHub) Start() {
 
 func (rh *RedisHub) Stop() {
 	close(rh.done)
-	if rh.pubsub != nil { rh.pubsub.Close() }
+	if rh.pubsub != nil {
+		rh.pubsub.Close()
+	}
 	rh.client.Close()
 }
 

@@ -5,16 +5,16 @@ import "math/big"
 type TxType int8
 
 const (
-	Deposit           TxType = 1
-	Withdrawal        TxType = 2
-	Transfer          TxType = 3
-	TradeBuy          TxType = 4
-	TradeSell         TxType = 5
-	Fee               TxType = 6
-	FuturesMargin     TxType = 7
-	FuturesPnl        TxType = 8
+	Deposit            TxType = 1
+	Withdrawal         TxType = 2
+	Transfer           TxType = 3
+	TradeBuy           TxType = 4
+	TradeSell          TxType = 5
+	Fee                TxType = 6
+	FuturesMargin      TxType = 7
+	FuturesPnl         TxType = 8
 	FuturesLiquidation TxType = 9
-	FuturesFunding    TxType = 10
+	FuturesFunding     TxType = 10
 )
 
 func (t TxType) String() string {
@@ -47,14 +47,20 @@ func (t TxType) String() string {
 type TxStatus int8
 
 const (
-	Pending     TxStatus = 1
-	Confirming  TxStatus = 2
-	Completed   TxStatus = 3
-	Failed      TxStatus = 4
-	Reviewing   TxStatus = 5
-	Approved    TxStatus = 6
-	Broadcast   TxStatus = 7
-	Rejected    TxStatus = 8
+	Pending    TxStatus = 1
+	Confirming TxStatus = 2
+	Completed  TxStatus = 3
+	Failed     TxStatus = 4
+	Reviewing  TxStatus = 5
+	Approved   TxStatus = 6
+	Broadcast  TxStatus = 7
+	Rejected   TxStatus = 8
+	// ColdSigning marks a large withdrawal whose unsigned tx description was
+	// queued to the cold (offline/HSM) signer and awaits the signed payload.
+	ColdSigning TxStatus = 9
+	// ColdSigned marks a withdrawal whose cold-signed payload was picked up
+	// and is ready for on-chain broadcast.
+	ColdSigned TxStatus = 10
 )
 
 func (s TxStatus) String() string {
@@ -75,6 +81,10 @@ func (s TxStatus) String() string {
 		return "broadcast"
 	case Rejected:
 		return "rejected"
+	case ColdSigning:
+		return "cold_signing"
+	case ColdSigned:
+		return "cold_signed"
 	default:
 		return "unknown"
 	}
@@ -88,10 +98,14 @@ type Wallet struct {
 
 type Transaction struct {
 	ID, UserID, WalletID, Asset, TxHash string
-	Type                                 TxType
-	Status                               TxStatus
-	Amount, Fee                          *big.Float
-	Confirmations                        int
-	CreatedAt                            int64
-	ToAddress                            string // withdrawal destination
+	Type                                TxType
+	Status                              TxStatus
+	Amount, Fee                         *big.Float
+	Confirmations                       int
+	CreatedAt                           int64
+	ToAddress                           string // withdrawal destination
+	// ColdRef is the cold-signer reference ID for withdrawals routed through
+	// the cold wallet flow (status cold_signing / cold_signed). In-memory
+	// only; persistence is a store-layer concern (see internal/store).
+	ColdRef string
 }

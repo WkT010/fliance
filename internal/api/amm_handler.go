@@ -4,9 +4,10 @@ import (
 	"math/big"
 	"net/http"
 	"strconv"
+	"strings"
 
-	"github.com/gin-gonic/gin"
 	"github.com/WkT010/nexa-exchange/internal/amm"
+	"github.com/gin-gonic/gin"
 )
 
 // AmmService is the subset of amm.Service used by the HTTP layer.
@@ -15,6 +16,9 @@ type AmmService interface {
 	AddLiquidity(userID, poolID string, amount0, amount1 *big.Float) (*amm.Pool, *amm.LPPosition, *big.Float, *big.Float, error)
 	RemoveLiquidity(userID, poolID string, shares *big.Float) (*amm.Pool, *big.Float, *big.Float, error)
 	ExecuteSwap(userID, poolID, tokenIn string, amountIn *big.Float) (*amm.Swap, error)
+	// ExecuteSwapWithMinOut applies slippage protection: minAmountOut nil or
+	// <= 0 disables the check (identical to ExecuteSwap).
+	ExecuteSwapWithMinOut(userID, poolID, tokenIn string, amountIn, minAmountOut *big.Float) (*amm.Swap, error)
 	Quote(poolID, tokenIn string, amountIn *big.Float) (*big.Float, *big.Float, *big.Float, error)
 	GetPool(id string) (*amm.Pool, error)
 	ListPools() ([]*amm.Pool, error)
@@ -38,7 +42,9 @@ func (h *AmmHandler) ListPools(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pools"})
 		return
 	}
-	if pools == nil { pools = []*amm.Pool{} }
+	if pools == nil {
+		pools = []*amm.Pool{}
+	}
 	out := make([]gin.H, len(pools))
 	for i, p := range pools {
 		out[i] = poolToJSON(p)
@@ -147,10 +153,10 @@ func (h *AmmHandler) RemoveLiquidity(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"pool":     poolToJSON(pool),
-		"amount0":  safeFloatStr(amount0),
-		"amount1":  safeFloatStr(amount1),
-		"shares":   safeFloatStr(shares),
+		"pool":    poolToJSON(pool),
+		"amount0": safeFloatStr(amount0),
+		"amount1": safeFloatStr(amount1),
+		"shares":  safeFloatStr(shares),
 	})
 }
 
@@ -187,6 +193,10 @@ func (h *AmmHandler) QuoteSwap(c *gin.Context) {
 
 // ExecuteSwap executes an internal AMM swap.
 // POST /api/v2/amm/swap
+//
+// Optional "min_amount_out" enables slippage protection: the swap is rejected
+// when the quoted output falls below it. Empty or non-positive values keep
+// the legacy unprotected behaviour.
 func (h *AmmHandler) ExecuteSwap(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -194,9 +204,10 @@ func (h *AmmHandler) ExecuteSwap(c *gin.Context) {
 		return
 	}
 	var r struct {
-		PoolID   string `json:"pool_id" binding:"required"`
-		TokenIn  string `json:"token_in" binding:"required"`
-		AmountIn string `json:"amount_in" binding:"required"`
+		PoolID       string `json:"pool_id" binding:"required"`
+		TokenIn      string `json:"token_in" binding:"required"`
+		AmountIn     string `json:"amount_in" binding:"required"`
+		MinAmountOut string `json:"min_amount_out"`
 	}
 	if err := c.ShouldBindJSON(&r); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "pool_id, token_in and amount_in required"})
@@ -207,7 +218,19 @@ func (h *AmmHandler) ExecuteSwap(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount_in"})
 		return
 	}
-	sw, err := h.svc.ExecuteSwap(userID, r.PoolID, r.TokenIn, amt)
+	// Slippage guard: empty or <= 0 disables the check (backward compatible).
+	var minOut *big.Float
+	if strings.TrimSpace(r.MinAmountOut) != "" {
+		m, okM := new(big.Float).SetString(r.MinAmountOut)
+		if !okM {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid min_amount_out"})
+			return
+		}
+		if m.Sign() > 0 {
+			minOut = m
+		}
+	}
+	sw, err := h.svc.ExecuteSwapWithMinOut(userID, r.PoolID, r.TokenIn, amt, minOut)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -245,7 +268,9 @@ func (h *AmmHandler) ListPositions(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load positions"})
 		return
 	}
-	if positions == nil { positions = []*amm.LPPosition{} }
+	if positions == nil {
+		positions = []*amm.LPPosition{}
+	}
 	out := make([]gin.H, len(positions))
 	for i, pos := range positions {
 		out[i] = lpPositionToJSON(pos)
@@ -258,15 +283,21 @@ func (h *AmmHandler) ListPositions(c *gin.Context) {
 func (h *AmmHandler) ListSwaps(c *gin.Context) {
 	poolID := c.Param("id")
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	if limit <= 0 || limit > 500 { limit = 50 }
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	if offset < 0 { offset = 0 }
+	if offset < 0 {
+		offset = 0
+	}
 	swaps, err := h.svc.ListSwaps(poolID, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load swaps"})
 		return
 	}
-	if swaps == nil { swaps = []*amm.Swap{} }
+	if swaps == nil {
+		swaps = []*amm.Swap{}
+	}
 	out := make([]gin.H, len(swaps))
 	for i, sw := range swaps {
 		out[i] = swapToJSON(sw)

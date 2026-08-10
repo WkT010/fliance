@@ -1,5 +1,5 @@
 export interface User { id: string; email: string; role: 'user' | 'admin'; created_at?: number; }
-export interface AuthState { token: string | null; user: User | null; isAdmin: boolean; }
+export interface AuthState { token: string | null; refreshToken: string | null; user: User | null; isAdmin: boolean; }
 export interface LoginReq { email: string; password: string; }
 export interface RegisterReq { email: string; password: string; }
 export interface Ticker {
@@ -57,7 +57,9 @@ export interface FuturesPosition {
   pnl: string;
   pnl_pct: string;
   liq_price: string;
-  status: 'open' | 'closed';
+  tp_price?: string;
+  sl_price?: string;
+  status: 'open' | 'closed' | 'liquidated';
   created_at: number;
   updated_at: number;
 }

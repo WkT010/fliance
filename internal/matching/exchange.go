@@ -2,7 +2,7 @@ package matching
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -55,7 +55,7 @@ func (ex *ExchangeEngine) RegisterPair(pair string, ringCap uint64) (*MatchingEn
 		e.SetWAL(w)
 	}
 	if err := ex.recoverPair(e); err != nil {
-		log.Printf("[exchange-%s] recovery failed: %v", pair, err)
+		slog.Error("exchange recovery failed", "pair", pair, "err", err)
 	}
 	e.Start()
 	ex.engines[pair] = e
@@ -185,10 +185,10 @@ func (ex *ExchangeEngine) recoverPair(e *MatchingEngine) error {
 		path := filepath.Join(ex.snapshotDir, snapshotFileName(pair))
 		if s, err := LoadSnapshot(path); err == nil {
 			if err := e.Restore(s); err != nil {
-				log.Printf("[exchange-%s] restore snapshot failed: %v", pair, err)
+				slog.Error("exchange restore snapshot failed", "pair", pair, "err", err)
 			} else {
-				log.Printf("[exchange-%s] restored snapshot (seq=%d orders=%d stops=%d)",
-					pair, s.OrderBook.SeqNo, len(s.OrderBook.Orders), len(s.OrderBook.Stops))
+				slog.Info("exchange restored snapshot",
+					"pair", pair, "seq", s.OrderBook.SeqNo, "orders", len(s.OrderBook.Orders), "stops", len(s.OrderBook.Stops))
 			}
 		}
 	}
@@ -234,7 +234,7 @@ func (ex *ExchangeEngine) replayWAL(e *MatchingEngine, walPath string, lastSeq u
 		return err
 	}
 	if replayed > 0 || skipped > 0 {
-		log.Printf("[exchange-%s] replayed wal: skipped=%d replayed=%d", e.Pair, skipped, replayed)
+		slog.Info("exchange replayed wal", "pair", e.Pair, "skipped", skipped, "replayed", replayed)
 	}
 	return nil
 }
