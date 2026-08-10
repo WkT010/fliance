@@ -7,12 +7,12 @@ html, body, #root {
 }
 
 body {
-  @apply bg-nexa-950 text-nexa-100 antialiased;
+  @apply bg-bg2 text-pri antialiased;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #2a313c #111418;
+  scrollbar-color: #29313D #181A20;
 }
 
 ::-webkit-scrollbar {
@@ -21,16 +21,16 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #111418;
+  background: #181A20;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2a313c;
+  background: #29313D;
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a4654;
+  background: #333B47;
 }
 
 /* ---------- Animations ---------- */

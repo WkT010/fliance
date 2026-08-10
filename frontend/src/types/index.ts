@@ -5,6 +5,8 @@ export interface RegisterReq { email: string; password: string; }
 export interface Ticker {
   pair: string; last: string; bid?: string; ask?: string; source?: string; timestamp?: number;
   change_24h?: string; change_pct_24h?: string; volume_24h?: string; high_24h?: string; low_24h?: string; open_24h?: string;
+  /** 24h turnover quoted in USDT — used for the landing-page volume stats. */
+  quote_volume_24h?: string;
 }
 export interface OrderbookLevel { price: string; quantity: string; count: number; }
 export interface Orderbook { pair: string; bids: OrderbookLevel[]; asks: OrderbookLevel[]; seq: number; }

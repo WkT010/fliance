@@ -105,12 +105,16 @@ export function ChartPanel({ pair }: { pair: string }) {
     if (!chartContainerRef.current) return;
 
     const chart = createChart(chartContainerRef.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#d4dbe3' },
-      grid: { vertLines: { color: '#1e242c' }, horzLines: { color: '#1e242c' } },
+      // autoSize installs an internal ResizeObserver so the canvas tracks the
+      // container even when the window itself never resizes (flex re-layout,
+      // background-tab layout deferral, etc.).
+      autoSize: true,
+      layout: { background: { color: 'transparent' }, textColor: '#EAECEF' },
+      grid: { vertLines: { color: '#2B3139' }, horzLines: { color: '#2B3139' } },
       crosshair: { mode: CrosshairMode.Magnet },
-      rightPriceScale: { borderColor: '#2a313c', scaleMargins: { top: 0.1, bottom: 0.2 } },
-      timeScale: { borderColor: '#2a313c', timeVisible: true, secondsVisible: false },
-      watermark: { visible: true, text: `Fliance ${pair}`, fontSize: 28, color: 'rgba(212, 219, 227, 0.06)', vertAlign: 'center', horzAlign: 'center' },
+      rightPriceScale: { borderColor: '#333B47', scaleMargins: { top: 0.1, bottom: 0.2 } },
+      timeScale: { borderColor: '#333B47', timeVisible: true, secondsVisible: false },
+      watermark: { visible: true, text: `Fliance ${pair}`, fontSize: 28, color: 'rgba(234, 236, 239, 0.06)', vertAlign: 'center', horzAlign: 'center' },
     });
     chartRef.current = chart;
     // A fresh chart has no series. Clear stale refs left over from a previous
@@ -126,9 +130,14 @@ export function ChartPanel({ pair }: { pair: string }) {
     fibSeriesRef.current = [];
     pivotSeriesRef.current = [];
 
+    // Fallback resize path: autoSize covers most cases, but keep a manual
+    // sync for browsers without ResizeObserver. Guard against 0-size reads so
+    // an early (hidden/deferred) layout pass never locks the canvas at its
+    // default 300x150 backing store.
     const handleResize = () => {
-      if (chartContainerRef.current) {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
+      const el = chartContainerRef.current;
+      if (el && el.clientWidth > 0 && el.clientHeight > 0) {
+        chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
       }
     };
     window.addEventListener('resize', handleResize);
@@ -149,6 +158,7 @@ export function ChartPanel({ pair }: { pair: string }) {
     return () => {
       window.removeEventListener('resize', handleResize);
       chart.remove();
+      chartRef.current = null;
     };
   }, [pair]);
 
@@ -165,11 +175,12 @@ export function ChartPanel({ pair }: { pair: string }) {
         if (wrapper) wrapper.appendChild(container);
 
         const subChart = createChart(container, {
-          layout: { background: { color: 'transparent' }, textColor: '#d4dbe3' },
-          grid: { vertLines: { color: '#1e242c' }, horzLines: { color: '#1e242c' } },
+          autoSize: true,
+          layout: { background: { color: 'transparent' }, textColor: '#EAECEF' },
+          grid: { vertLines: { color: '#2B3139' }, horzLines: { color: '#2B3139' } },
           crosshair: { mode: CrosshairMode.Magnet },
-          rightPriceScale: { borderColor: '#2a313c' },
-          timeScale: { borderColor: '#2a313c', visible: false },
+          rightPriceScale: { borderColor: '#333B47' },
+          timeScale: { borderColor: '#333B47', visible: false },
           height: p.height,
         });
 
@@ -243,7 +254,7 @@ export function ChartPanel({ pair }: { pair: string }) {
     const handleResize = () => {
       SUB_PANELS.forEach((p) => {
         const ref = subRefs.current[p.id];
-        if (ref?.chart && ref.container) {
+        if (ref?.chart && ref.container && ref.container.clientWidth > 0) {
           ref.chart.applyOptions({ width: ref.container.clientWidth, height: p.height });
         }
       });
@@ -253,9 +264,23 @@ export function ChartPanel({ pair }: { pair: string }) {
     return () => window.removeEventListener('resize', handleResize);
   }, [activePanels]);
 
+  // Unmount cleanup: dispose sub-panel charts and their imperatively appended
+  // DOM nodes so StrictMode double-mounts and route changes don't leak them.
   useEffect(() => {
+    return () => {
+      Object.values(subRefs.current).forEach((ref) => {
+        ref.chart?.remove();
+        ref.container?.remove();
+      });
+      subRefs.current = {};
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
     getCandles(pair, interval)
       .then((data) => {
+        if (cancelled) return;
         const mapped: Candle[] = data.map((c) => ({
           time: Math.floor(c.timestamp / 1e6 / 1000),
           open: parseFloat(c.open),
@@ -266,7 +291,8 @@ export function ChartPanel({ pair }: { pair: string }) {
         }));
         setCandles(mapped);
       })
-      .catch(() => setCandles([]));
+      .catch(() => { if (!cancelled) setCandles([]); });
+    return () => { cancelled = true; };
   }, [pair, interval]);
 
   useEffect(() => {
@@ -307,7 +333,7 @@ export function ChartPanel({ pair }: { pair: string }) {
       mainSeriesRef.current = series;
     } else if (chartType === 'bar') {
       const series = chart.addBarSeries({
-        upColor: '#0ecb81', downColor: '#f6465d',
+        upColor: '#2EBD85', downColor: '#F6465D',
         thinBars: false,
       });
       series.setData(displayCandles.map((c) => ({
@@ -316,9 +342,9 @@ export function ChartPanel({ pair }: { pair: string }) {
       mainSeriesRef.current = series;
     } else {
       const series = chart.addCandlestickSeries({
-        upColor: '#0ecb81', downColor: '#f6465d',
-        borderUpColor: '#0ecb81', borderDownColor: '#f6465d',
-        wickUpColor: '#0ecb81', wickDownColor: '#f6465d',
+        upColor: '#2EBD85', downColor: '#F6465D',
+        borderUpColor: '#2EBD85', borderDownColor: '#F6465D',
+        wickUpColor: '#2EBD85', wickDownColor: '#F6465D',
       });
       series.setData(displayCandles.map((c) => ({
         time: c.time as Time, open: c.open, high: c.high, low: c.low, close: c.close,
@@ -337,7 +363,7 @@ export function ChartPanel({ pair }: { pair: string }) {
       volSeries.setData(displayCandles.map((c) => ({
         time: c.time as Time,
         value: c.volume,
-        color: c.close >= c.open ? 'rgba(14, 203, 129, 0.5)' : 'rgba(246, 70, 93, 0.5)',
+        color: c.close >= c.open ? 'rgba(46, 189, 133, 0.5)' : 'rgba(246, 70, 93, 0.5)',
       })) as HistogramData<Time>[]);
       volumeSeriesRef.current = volSeries;
 
@@ -427,7 +453,7 @@ export function ChartPanel({ pair }: { pair: string }) {
       subRefs.current.macd.histogram?.setData(data.map((r) => ({
         time: r.time as Time,
         value: r.histogram,
-        color: r.histogram >= 0 ? 'rgba(14, 203, 129, 0.7)' : 'rgba(246, 70, 93, 0.7)',
+        color: r.histogram >= 0 ? 'rgba(46, 189, 133, 0.7)' : 'rgba(246, 70, 93, 0.7)',
       })) as HistogramData<Time>[]);
       subRefs.current.macd.chart?.timeScale().fitContent();
     }
@@ -525,7 +551,14 @@ export function ChartPanel({ pair }: { pair: string }) {
         ))}
       </div>
       <div className="relative flex-1 min-h-[300px]">
-        <div ref={chartContainerRef} className="absolute inset-0" style={{ bottom: activePanels.length > 0 ? undefined : 0 }} />
+        {/* Explicit width/height guards against a 0-size first layout pass:
+            lightweight-charts would otherwise initialize its canvas at the
+            default 300x150 backing store. */}
+        <div
+          ref={chartContainerRef}
+          className="absolute inset-0"
+          style={{ width: '100%', height: '100%', minHeight: 300, minWidth: 80 }}
+        />
         {hover && (
           <div className="pointer-events-none absolute right-2 top-2 z-10 rounded bg-nexa-900/90 px-2 py-1 text-xs font-mono text-nexa-100 shadow">
             <div>O: {formatPrice(hover.price, 2)}</div>

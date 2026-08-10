@@ -1,4 +1,4 @@
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { TradingPage } from '@/pages/TradingPage';
 import { MarketsPage } from '@/pages/MarketsPage';
 import { FuturesPage } from '@/pages/FuturesPage';
@@ -52,6 +52,9 @@ export default function App() {
         <Route path="/legal/risk" element={<RiskDisclosurePage />} />
         <Route path="/legal/aml" element={<AmlPolicyPage />} />
         <Route path="/legal/cookies" element={<CookiePolicyPage />} />
+        {/* Unknown paths (e.g. /trade/BTC/USDT) redirect home instead of
+            rendering a blank page. */}
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       <ToastHost />
     </>
