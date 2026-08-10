@@ -22,8 +22,20 @@ export async function getTrades(pair: string, limit = 50): Promise<Trade[]> {
 }
 
 export async function getCandles(pair: string, interval: string, limit = 200): Promise<Candle[]> {
-  const res = await api.get(`/klines/${encodeURIComponent(pair)}?interval=${interval}&limit=${limit}`);
-  return res.data.candles || [];
+  // The server may still be backfilling this (pair, interval) series from the
+  // external mirror on first use; retry twice with a short backoff so the
+  // chart recovers without a manual page reload.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await api.get(`/klines/${encodeURIComponent(pair)}?interval=${interval}&limit=${limit}`);
+      return res.data.candles || [];
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 export async function getPriceComparison(pair: string): Promise<PriceComparison> {

@@ -95,6 +95,19 @@ export function formatPct(value: string | number | undefined | null, decimals = 
   return `${n > 0 ? '+' : ''}${n.toFixed(decimals)}%`;
 }
 
+/**
+ * formatChangePct: the backend sends change_pct_24h as a decimal fraction
+ * (e.g. 0.0022 for +0.22%), so scale to percentage points before formatting.
+ * Use this for change_pct_24h only; values already expressed in percent
+ * (e.g. PnL %, price-diff %) must keep using formatPct directly.
+ */
+export function formatChangePct(value: string | number | undefined | null, decimals = 2): string {
+  if (value === undefined || value === null || value === '') return '--';
+  const n = typeof value === 'string' ? parseFloat(value) : value;
+  if (Number.isNaN(n)) return '--';
+  return formatPct(n * 100, decimals);
+}
+
 export function changeColorClass(value: string | number | undefined | null): string {
   const n = typeof value === 'string' ? parseFloat(value) : value;
   if (n === undefined || n === null || Number.isNaN(n) || n === 0) return 'text-nexa-300';

@@ -1,10 +1,13 @@
 package api
 
 import (
+	"errors"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/WkT010/nexa-exchange/internal/market"
 	"github.com/WkT010/nexa-exchange/internal/matching"
@@ -28,6 +31,12 @@ type CandlestickStore interface {
 	Candles(pair, interval string, from, to int64, limit int) ([]*matching.Candle, error)
 }
 
+// KlineFetcher backfills historical candles from an external market (Binance)
+// when the local candle store has no data yet (fresh deployment).
+type KlineFetcher interface {
+	FetchKlines(pair, interval string, limit int) ([]*matching.Candle, error)
+}
+
 // OrderReleaser releases reserved balances for cancelled or filled orders.
 type OrderReleaser interface {
 	ReleaseOrder(orderID, userID string) error
@@ -47,6 +56,7 @@ type OrderHandler struct {
 	exchange    *matching.ExchangeEngine
 	store       OrderStore
 	candleStore CandlestickStore
+	klines      KlineFetcher
 	wallet      WalletService
 	releaser    OrderReleaser
 	risk        *risk.Engine
@@ -79,6 +89,12 @@ func (h *OrderHandler) SetPriceProvider(p MarketDataProvider) {
 	h.prices = p
 }
 
+// SetKlineFetcher wires the external (Binance) kline source used to backfill
+// candles when the local store is empty.
+func (h *OrderHandler) SetKlineFetcher(k KlineFetcher) {
+	h.klines = k
+}
+
 func (h *OrderHandler) getEngine(pair string) *matching.MatchingEngine {
 	if h.exchange != nil {
 		return h.exchange.Get(pair)
@@ -104,7 +120,12 @@ func (h *OrderHandler) GetCandles(c *gin.Context) {
 	}
 	var candles []*matching.Candle
 	if h.candleStore != nil {
-		stored, err := h.candleStore.Candles(pair, interval, 0, 0, limit)
+		// Query the most recent window only: the store orders ASC, so an
+		// unbounded query would return the OLDEST `limit` candles and miss
+		// the recent ones (and repeatedly trigger backfill).
+		intervalNs := matching.IntervalSeconds(interval) * int64(time.Second)
+		start := time.Now().UnixNano() - int64(limit)*intervalNs
+		stored, err := h.candleStore.Candles(pair, interval, start, 0, limit)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load candles"})
 			return
@@ -112,6 +133,35 @@ func (h *OrderHandler) GetCandles(c *gin.Context) {
 		candles = stored
 	} else if engine := h.getEngine(pair); engine != nil && engine.MD != nil {
 		candles = engine.MD.Candles(interval, limit, 0, 0)
+	}
+	// Backfill from Binance when the local store cannot cover the recent
+	// window: either it is empty (fresh deployment) or its newest candle
+	// ended more than one interval ago (e.g. only stale simulator-recorded
+	// candles exist). Fetched klines are persisted (upsert per bucket) so
+	// subsequent reads hit the store, then served.
+	needBackfill := len(candles) == 0
+	if !needBackfill && interval != "1s" {
+		last := candles[len(candles)-1]
+		// The newest candle must cover the current instant (i.e. the in-progress
+		// bucket). A bucket that merely ended less than one interval ago still
+		// means the current bucket is missing.
+		if last == nil || last.CloseTime < time.Now().UnixNano() {
+			needBackfill = true
+		}
+		// Thin series (fewer bars than the requested window, e.g. only a handful
+		// of stale simulator-recorded buckets) are refreshed even when the last
+		// bucket looks current: the upsert overwrites those rows with real
+		// external data.
+		if !needBackfill && len(candles) < limit {
+			needBackfill = true
+		}
+	}
+	if needBackfill && h.klines != nil && interval != "1s" {
+		fetchLimit := klineBackfillLimit(interval, limit)
+		if fetched, err := h.fetchKlinesWithTimeout(pair, interval, fetchLimit); err == nil && len(fetched) > 0 {
+			h.persistCandles(fetched)
+			candles = fetched
+		}
 	}
 	if candles == nil {
 		candles = []*matching.Candle{}
@@ -121,6 +171,130 @@ func (h *OrderHandler) GetCandles(c *gin.Context) {
 		result[i] = candleToJSON(cd)
 	}
 	c.JSON(http.StatusOK, gin.H{"candles": result, "interval": interval, "pair": pair})
+}
+
+// klineFetchTimeout bounds synchronous external backfills so a slow mirror can
+// never stall a /klines request for 30s+ (the cold-start 500s).
+const klineFetchTimeout = 8 * time.Second
+
+// klineBackfillLimits sets how many historical candles are fetched from the
+// external mirror per interval. Long intervals need fewer bars to cover a
+// useful span; all values stay within Binance's hard limit of 1000.
+var klineBackfillLimits = map[string]int{
+	"1m": 500, "5m": 500, "15m": 500, "1h": 500, "4h": 300, "1d": 365,
+}
+
+// klineBackfillLimit picks the fetch size for an interval: the per-interval
+// default, or the client's requested limit when larger, capped at 1000.
+func klineBackfillLimit(interval string, requested int) int {
+	l, ok := klineBackfillLimits[interval]
+	if !ok {
+		l = 500
+	}
+	if requested > l {
+		l = requested
+	}
+	if l > 1000 {
+		l = 1000
+	}
+	return l
+}
+
+// fetchKlinesWithTimeout runs the external fetch in a guard goroutine and
+// gives up after klineFetchTimeout, serving whatever local candles exist
+// instead of hanging the HTTP request.
+func (h *OrderHandler) fetchKlinesWithTimeout(pair, interval string, limit int) ([]*matching.Candle, error) {
+	type fetchResult struct {
+		candles []*matching.Candle
+		err     error
+	}
+	ch := make(chan fetchResult, 1)
+	go func() {
+		f, err := h.klines.FetchKlines(pair, interval, limit)
+		ch <- fetchResult{f, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.candles, r.err
+	case <-time.After(klineFetchTimeout):
+		slog.Warn("kline backfill timed out", "pair", pair, "interval", interval, "timeout", klineFetchTimeout.String())
+		return nil, errors.New("kline backfill timeout")
+	}
+}
+
+// persistCandles stores fetched candles when the backing store supports it
+// (upsert per bucket, so re-fetches refresh stale simulator-era rows). Batch
+// upserts are preferred; the remote store otherwise pays one round-trip per
+// row, which dominates backfill latency.
+func (h *OrderHandler) persistCandles(candles []*matching.Candle) {
+	if batcher, ok := h.candleStore.(interface{ SaveCandles([]*matching.Candle) error }); ok {
+		_ = batcher.SaveCandles(candles)
+		return
+	}
+	saver, ok := h.candleStore.(interface{ SaveCandle(*matching.Candle) error })
+	if !ok {
+		return
+	}
+	for _, cd := range candles {
+		_ = saver.SaveCandle(cd)
+	}
+}
+
+// klineFresh reports whether the local store already covers the current bucket
+// for pair/interval with a reasonable number of bars (i.e. no backfill is
+// needed). Thin series (e.g. only a handful of stale simulator candles) are
+// treated as missing so prewarming repairs them.
+func (h *OrderHandler) klineFresh(pair, interval string, want int) bool {
+	intervalNs := matching.IntervalSeconds(interval) * int64(time.Second)
+	if intervalNs == 0 {
+		return false
+	}
+	start := time.Now().UnixNano() - int64(want)*intervalNs
+	candles, err := h.candleStore.Candles(pair, interval, start, 0, want)
+	if err != nil || len(candles) == 0 {
+		return false
+	}
+	last := candles[len(candles)-1]
+	if last == nil || last.CloseTime < time.Now().UnixNano() {
+		return false
+	}
+	return len(candles) >= want/2
+}
+
+// StartKlinePrewarm asynchronously backfills candles for every supported pair
+// and chart interval right after boot, so the first /klines request per
+// (pair, interval) hits the local store instead of blocking on the external
+// mirror (which caused the cold-start hangs/500s). Fetches are spaced out to
+// stay well within the mirror's rate limits.
+func (h *OrderHandler) StartKlinePrewarm(pairs []string) {
+	if h.klines == nil || h.candleStore == nil {
+		return
+	}
+	go func() {
+		series, total := 0, 0
+		for _, interval := range []string{"1m", "5m", "15m", "1h", "4h", "1d"} {
+			limit := klineBackfillLimit(interval, 0)
+			for _, pair := range pairs {
+				if h.klineFresh(pair, interval, limit) {
+					continue
+				}
+				slog.Info("kline prewarm backfilling", "pair", pair, "interval", interval, "limit", limit)
+				fetched, err := h.fetchKlinesWithTimeout(pair, interval, limit)
+				if err != nil || len(fetched) == 0 {
+					if err != nil {
+						slog.Warn("kline prewarm failed", "pair", pair, "interval", interval, "err", err)
+					}
+					continue
+				}
+				h.persistCandles(fetched)
+				series++
+				total += len(fetched)
+				// ~4 calls/s max keeps the mirror weight usage trivial.
+				time.Sleep(250 * time.Millisecond)
+			}
+		}
+		slog.Info("kline prewarm complete", "series", series, "candles", total)
+	}()
 }
 
 // GetOrderbook with *pair support

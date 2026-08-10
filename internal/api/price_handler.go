@@ -2,68 +2,183 @@ package api
 
 import (
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/WkT010/nexa-exchange/internal/market"
 	"github.com/gin-gonic/gin"
 )
 
 type PriceHandler struct {
-	// ammFeed is the primary, self-contained price source. Every ticker, depth
-	// and recent-trade the handler exposes is derived from AMM pool reserves,
-	// so the exchange shows a live market with no external dependency.
+	// binanceWS is the primary price source: real Binance market data pushed
+	// over the combined WebSocket stream and cached in memory.
+	binanceWS *market.BinanceWSClient
+	// binance is the REST feed, used by the background poller as the second
+	// source when the WS cache is missing/stale, and for on-demand depth /
+	// trade / kline fetches.
+	binance *market.BinancePriceFeed
+	// ammFeed is the last-resort fallback: pool-reserve-derived prices keep
+	// the exchange showing a market when every external source is down. AMM
+	// pool state is never overwritten by external data.
 	ammFeed *market.AMMPriceFeed
-	// External sources are kept but only consulted when externalFallback is
-	// enabled (opt-in, default off) AND the AMM feed has no data for a pair.
-	// This preserves the "不依赖于源" contract by default while leaving a
-	// escape hatch for operators who want to blend in real-world prices.
-	feed             *market.WSPriceFeed
-	uniswap          *market.UniswapRPCProvider
-	binance          *market.BinancePriceFeed
-	externalFallback bool
+	// Legacy external providers, kept only for the dedicated Uniswap
+	// comparison endpoints.
+	feed    *market.WSPriceFeed
+	uniswap *market.UniswapRPCProvider
+
+	// staleness is the freshness window for cached market data; anything
+	// older degrades to the next source in the chain.
+	staleness time.Duration
+
+	// REST poller cache (second source behind the WS cache).
+	pollMu      sync.RWMutex
+	restTickers map[string]*market.Ticker
+	pollDone    chan struct{}
+
+	// Tiny TTL cache so REST depth/trades fallbacks don't hammer the mirror
+	// on every frontend poll.
+	restCacheMu sync.Mutex
+	restDepth   map[string]depthCacheEntry
+	restTrades  map[string]tradesCacheEntry
 }
 
-func NewPriceHandler(apiKey string) *PriceHandler {
+type depthCacheEntry struct {
+	at    time.Time
+	depth *market.Depth
+}
+
+type tradesCacheEntry struct {
+	at     time.Time
+	trades []market.RecentTrade
+}
+
+func NewPriceHandler(apiKey string, binanceMirrors []string) *PriceHandler {
 	return &PriceHandler{
-		feed:    market.NewWSPriceFeed(apiKey),
-		uniswap: market.NewUniswapRPCProvider(apiKey),
-		binance: market.NewBinancePriceFeed(),
+		feed:       market.NewWSPriceFeed(apiKey),
+		uniswap:    market.NewUniswapRPCProvider(apiKey),
+		binance:    market.NewBinancePriceFeed(binanceMirrors),
+		staleness:  10 * time.Second,
+		restDepth:  make(map[string]depthCacheEntry),
+		restTrades: make(map[string]tradesCacheEntry),
 	}
 }
 
-// SetAMMFeed wires the self-contained AMM price feed as the primary source.
-// Once set, all ticker/depth/recent-trade reads prefer the AMM feed.
+// BinanceFeed exposes the REST feed so other handlers (e.g. kline backfill)
+// can reuse the same mirror/backoff state.
+func (h *PriceHandler) BinanceFeed() *market.BinancePriceFeed { return h.binance }
+
+// SetAMMFeed wires the AMM price feed used as the last-resort fallback.
 func (h *PriceHandler) SetAMMFeed(f *market.AMMPriceFeed) {
 	h.ammFeed = f
 }
 
-// SetExternalFallback enables/disables consulting Binance/Uniswap/Alchemy when
-// the AMM feed has no data for a pair. Default is off (fully self-contained).
-func (h *PriceHandler) SetExternalFallback(on bool) {
-	h.externalFallback = on
+// SetBinanceWS wires the Binance WebSocket cache as the primary source.
+func (h *PriceHandler) SetBinanceWS(ws *market.BinanceWSClient) {
+	h.binanceWS = ws
 }
 
+// SetStaleness overrides the freshness window (MARKET_DATA_STALENESS).
+func (h *PriceHandler) SetStaleness(d time.Duration) {
+	if d > 0 {
+		h.staleness = d
+	}
+}
+
+func (h *PriceHandler) isFresh(unixMs int64) bool {
+	if unixMs <= 0 {
+		return false
+	}
+	return time.Since(time.UnixMilli(unixMs)) <= h.staleness
+}
+
+// StartPolling launches the REST ticker poller (BINANCE_POLL_INTERVAL). It is
+// the second source in the chain: used whenever the WS cache has no fresh
+// data for a pair.
+func (h *PriceHandler) StartPolling(interval time.Duration) {
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	h.pollMu.Lock()
+	if h.pollDone != nil {
+		h.pollMu.Unlock()
+		return
+	}
+	h.pollDone = make(chan struct{})
+	done := h.pollDone
+	h.pollMu.Unlock()
+	go func() {
+		h.pollOnce()
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				h.pollOnce()
+			}
+		}
+	}()
+}
+
+// StopPolling stops the REST poller.
+func (h *PriceHandler) StopPolling() {
+	h.pollMu.Lock()
+	defer h.pollMu.Unlock()
+	if h.pollDone != nil {
+		close(h.pollDone)
+		h.pollDone = nil
+	}
+}
+
+func (h *PriceHandler) pollOnce() {
+	all, err := h.binance.FetchAllTickers()
+	if err != nil || len(all) == 0 {
+		slog.Debug("binance rest poll failed", "err", err)
+		return
+	}
+	now := time.Now().UnixMilli()
+	for _, t := range all {
+		if t != nil {
+			t.Timestamp = now // poll time = cache freshness reference
+		}
+	}
+	h.pollMu.Lock()
+	h.restTickers = all
+	h.pollMu.Unlock()
+}
+
+func (h *PriceHandler) restTicker(pair string) *market.Ticker {
+	h.pollMu.RLock()
+	defer h.pollMu.RUnlock()
+	if h.restTickers == nil {
+		return nil
+	}
+	return h.restTickers[pair]
+}
+
+// bestTicker resolves a pair through the source chain:
+// Binance WS cache -> Binance REST poll cache -> AMM pool feed.
+// Each cached source is freshness-gated (MARKET_DATA_STALENESS); stale data
+// degrades to the next source instead of being served.
 func (h *PriceHandler) bestTicker(pair string) (*market.Ticker, string) {
-	// Primary: AMM feed (self-contained, always available once seeded).
+	if h.binanceWS != nil {
+		if t, _ := h.binanceWS.Ticker(pair); t != nil && t.Last != nil && t.Last.Sign() > 0 && h.isFresh(t.Timestamp) {
+			return t, "binance-ws"
+		}
+	}
+	if t := h.restTicker(pair); t != nil && t.Last != nil && t.Last.Sign() > 0 && h.isFresh(t.Timestamp) {
+		return t, "binance-rest"
+	}
+	// Primary sources stale or absent: degrade to the self-contained AMM feed.
 	if h.ammFeed != nil {
 		if t, err := h.ammFeed.FetchTicker(pair); err == nil && t != nil && t.Last != nil && t.Last.Sign() > 0 {
 			return t, "amm"
 		}
-	}
-	if !h.externalFallback {
-		return nil, ""
-	}
-	// Opt-in external fallback only when the AMM feed has nothing for the pair.
-	if t, err := h.binance.FetchTicker(pair); err == nil && t != nil {
-		return t, "binance"
-	}
-	if t, err := h.uniswap.FetchTicker(pair); err == nil && t != nil {
-		return t, "uniswap-v3-rpc"
-	}
-	if t := h.feed.Get(pair); t != nil {
-		return t, "alchemy-ws"
 	}
 	return nil, ""
 }
@@ -76,31 +191,69 @@ func (h *PriceHandler) BestPrice(pair string) (*big.Float, string, error) {
 	return new(big.Float).Copy(t.Last), source, nil
 }
 
-// MarketDepth returns an L2 order book synthesized from the AMM pool's mid
-// price + fee. Used by the order handler when the matching engine's own book
-// is empty (the common case on a fresh deployment), so the trading UI shows a
-// realistic, self-contained book instead of a blank panel or external data.
+// MarketDepth returns an L2 order book through the source chain: Binance WS
+// depth cache -> Binance REST snapshot -> AMM-synthesized ladder. Used by the
+// order handler when the matching engine's own book is empty.
 func (h *PriceHandler) MarketDepth(pair string, limit int) (*market.Depth, error) {
+	if h.binanceWS != nil {
+		if d, at := h.binanceWS.Depth(pair); d != nil && (len(d.Bids) > 0 || len(d.Asks) > 0) && h.isFresh(at) {
+			return d, nil
+		}
+	}
+	if d := h.cachedRESTDepth(pair, limit); d != nil {
+		return d, nil
+	}
 	if h.ammFeed != nil {
 		return h.ammFeed.FetchDepth(pair, limit)
 	}
-	if h.externalFallback {
-		return h.binance.FetchDepth(pair, limit)
-	}
-	return nil, fmt.Errorf("amm: no feed available")
+	return nil, fmt.Errorf("no depth source available")
 }
 
-// RecentTrades returns the simulator's recent trade tape for `pair`. Used by
-// the order handler as a fallback when the matching engine has no recorded
-// fills, so the recent-trades panel shows live, self-contained activity.
+// cachedRESTDepth fetches a REST depth snapshot at most once per 2s per pair
+// so frontend polling cannot hammer the mirror.
+func (h *PriceHandler) cachedRESTDepth(pair string, limit int) *market.Depth {
+	h.restCacheMu.Lock()
+	defer h.restCacheMu.Unlock()
+	if e, ok := h.restDepth[pair]; ok && time.Since(e.at) < 2*time.Second {
+		return e.depth
+	}
+	d, err := h.binance.FetchDepth(pair, limit)
+	if err != nil || d == nil {
+		return nil
+	}
+	h.restDepth[pair] = depthCacheEntry{at: time.Now(), depth: d}
+	return d
+}
+
+// RecentTrades returns the recent trade tape through the source chain:
+// Binance WS tape -> Binance REST aggTrades -> AMM simulator tape.
 func (h *PriceHandler) RecentTrades(pair string, limit int) ([]market.RecentTrade, error) {
+	if h.binanceWS != nil {
+		if rt, at := h.binanceWS.RecentTrades(pair, limit); len(rt) > 0 && h.isFresh(at) {
+			return rt, nil
+		}
+	}
+	if rt := h.cachedRESTTrades(pair, limit); rt != nil {
+		return rt, nil
+	}
 	if h.ammFeed != nil {
 		return h.ammFeed.FetchRecentTrades(pair, limit)
 	}
-	if h.externalFallback {
-		return h.binance.FetchRecentTrades(pair, limit)
+	return nil, fmt.Errorf("no trades source available")
+}
+
+func (h *PriceHandler) cachedRESTTrades(pair string, limit int) []market.RecentTrade {
+	h.restCacheMu.Lock()
+	defer h.restCacheMu.Unlock()
+	if e, ok := h.restTrades[pair]; ok && time.Since(e.at) < 2*time.Second {
+		return e.trades
 	}
-	return nil, fmt.Errorf("amm: no feed available")
+	rt, err := h.binance.FetchRecentTrades(pair, limit)
+	if err != nil || len(rt) == 0 {
+		return nil
+	}
+	h.restTrades[pair] = tradesCacheEntry{at: time.Now(), trades: rt}
+	return rt
 }
 
 func (h *PriceHandler) GetTicker(c *gin.Context) {
@@ -127,37 +280,45 @@ func (h *PriceHandler) GetAllTickers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"tickers": tickers, "count": len(tickers)})
 }
 
+// allTickers merges every source in priority order and reports the actual
+// source per pair (binance-ws / binance-rest / amm). Binance covers the five
+// listed spot pairs; the AMM feed fills any remaining pool-backed pairs.
 func (h *PriceHandler) allTickers() []gin.H {
 	merged := make(map[string]*market.Ticker)
-	// Primary: AMM feed covers every seeded market and is always available.
-	if h.ammFeed != nil {
-		if all, err := h.ammFeed.FetchAllTickers(); err == nil {
-			for pair, t := range all {
+	sources := make(map[string]string)
+	// 1. Binance WS cache (fresh entries only).
+	if h.binanceWS != nil {
+		for pair, t := range h.binanceWS.AllTickers() {
+			if t != nil && t.Last != nil && t.Last.Sign() > 0 && h.isFresh(t.Timestamp) {
 				merged[pair] = t
+				sources[pair] = "binance-ws"
 			}
 		}
 	}
-	// Opt-in external fallback only fills pairs the AMM feed does not cover.
-	if h.externalFallback {
-		if all, err := h.binance.FetchAllTickers(); err == nil {
+	// 2. Binance REST poll cache fills pairs the WS cache doesn't cover.
+	h.pollMu.RLock()
+	rest := h.restTickers
+	h.pollMu.RUnlock()
+	for pair, t := range rest {
+		if _, ok := merged[pair]; ok {
+			continue
+		}
+		if t != nil && t.Last != nil && t.Last.Sign() > 0 && h.isFresh(t.Timestamp) {
+			merged[pair] = t
+			sources[pair] = "binance-rest"
+		}
+	}
+	// 3. AMM feed as the last-resort fallback for anything still missing.
+	if h.ammFeed != nil {
+		if all, err := h.ammFeed.FetchAllTickers(); err == nil {
 			for pair, t := range all {
-				if existing, ok := merged[pair]; ok && existing != nil && existing.Last != nil && existing.Last.Sign() > 0 {
+				if _, ok := merged[pair]; ok {
 					continue
 				}
-				merged[pair] = t
-			}
-		}
-		for pair := range market.UniV3Pools {
-			if existing, ok := merged[pair]; ok && existing != nil && existing.Last != nil && existing.Last.Sign() > 0 {
-				continue
-			}
-			if t, err := h.uniswap.FetchTicker(pair); err == nil && t != nil {
-				merged[pair] = t
-			}
-		}
-		for pair, t := range h.feed.GetAll() {
-			if _, ok := merged[pair]; !ok {
-				merged[pair] = t
+				if t != nil && t.Last != nil && t.Last.Sign() > 0 {
+					merged[pair] = t
+					sources[pair] = "amm"
+				}
 			}
 		}
 	}
@@ -168,7 +329,7 @@ func (h *PriceHandler) allTickers() []gin.H {
 			"last":             safeFloatStr(t.Last),
 			"bid":              safeFloatStr(t.Bid),
 			"ask":              safeFloatStr(t.Ask),
-			"source":           "amm",
+			"source":           sources[t.Pair],
 			"volume_24h":       safeFloatStr(t.Volume24h),
 			"quote_volume_24h": safeFloatStr(t.QuoteVolume24h),
 			"high_24h":         safeFloatStr(t.High24h),
@@ -196,12 +357,10 @@ func (h *PriceHandler) GetUniswapTicker(c *gin.Context) {
 	c.JSON(http.StatusOK, t)
 }
 
-// GetPriceComparison returns the internal (AMM) price for `pair` alongside
-// the Uniswap V3 reference price. The internal column uses the AMM feed (the
-// platform's primary, self-contained price source) — not the legacy Alchemy
-// WebSocket feed — so the comparison always reflects the same data the
-// trading UI is using. The Uniswap column returns N/A when the RPC provider
-// is unavailable (the common case on a self-contained deployment).
+// GetPriceComparison returns the exchange's live market price for `pair`
+// (resolved through the same source chain the trading UI uses: Binance WS ->
+// Binance REST -> AMM) alongside the Uniswap V3 reference price. The Uniswap
+// column returns N/A when the RPC provider is unavailable.
 func (h *PriceHandler) GetPriceComparison(c *gin.Context) {
 	pair := strings.TrimPrefix(c.Param("pair"), "/")
 	if pair == "" {
@@ -209,14 +368,10 @@ func (h *PriceHandler) GetPriceComparison(c *gin.Context) {
 		return
 	}
 	out := gin.H{"pair": pair}
-	if h.ammFeed != nil {
-		if t, err := h.ammFeed.FetchTicker(pair); err == nil && t != nil && t.Last != nil && t.Last.Sign() > 0 {
-			out["internal"] = gin.H{"available": true, "last": t.Last.String(), "source": "amm"}
-		} else {
-			out["internal"] = gin.H{"available": false, "error": "no AMM pool for this pair"}
-		}
+	if t, source := h.bestTicker(pair); t != nil {
+		out["internal"] = gin.H{"available": true, "last": t.Last.String(), "source": source}
 	} else {
-		out["internal"] = gin.H{"available": false, "error": "AMM feed not configured"}
+		out["internal"] = gin.H{"available": false, "error": "no price source available for this pair"}
 	}
 	uni, uniErr := h.uniswap.FetchTicker(pair)
 	if uni != nil && uni.Last != nil && uni.Last.Sign() > 0 {

@@ -13,7 +13,7 @@ import { useMarketStore } from '@/store/marketStore';
 import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { Select } from '@/components/common/Select';
 import { Badge } from '@/components/common/Badge';
-import { formatPrice, formatQty, formatPct, changeColorClass, cls } from '@/utils/format';
+import { formatPrice, formatQty, formatChangePct, changeColorClass, cls } from '@/utils/format';
 import { getBalances } from '@/api/wallet';
 import type { Balance } from '@/types';
 
@@ -60,7 +60,7 @@ export function TradingPage() {
                 </span>
               </div>
               <Badge color={Number(ticker?.change_pct_24h ?? 0) >= 0 ? 'up' : 'down'}>
-                {formatPct(ticker?.change_pct_24h)}
+                {formatChangePct(ticker?.change_pct_24h)}
               </Badge>
               <span className={cls('font-mono text-sm font-medium', changeColorClass(ticker?.change_24h))}>
                 {ticker?.change_24h ? `${Number(ticker.change_24h) >= 0 ? '+' : ''}${formatPrice(ticker.change_24h, 2)}` : '—'}

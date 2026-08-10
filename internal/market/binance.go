@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/WkT010/nexa-exchange/internal/matching"
 )
 
 type BinanceTicker struct {
@@ -18,17 +22,38 @@ type BinancePriceFeed struct {
 	mirrors []string
 	mu      sync.RWMutex
 	active  int // index of last-known-good mirror
+	// backoffUntil marks mirrors rate-limited by Binance (HTTP 429/418); they
+	// are skipped until the backoff expires instead of burning requests.
+	backoffUntil map[int]time.Time
 }
 
-func NewBinancePriceFeed() *BinancePriceFeed {
+// DefaultBinanceMirrors is tried in order when BINANCE_REST_URLS is unset:
+// the public market-data mirror first (api.binance.com is geo-blocked in
+// some regions), then the canonical host, then a third-party mirror as the
+// last-resort degraded source.
+var DefaultBinanceMirrors = []string{
+	"https://data-api.binance.vision",
+	"https://api.binance.com",
+	"https://www.usnbweb.red",
+}
+
+// NewBinancePriceFeed creates a REST feed over the given mirror list. Empty
+// entries are dropped; an empty list falls back to DefaultBinanceMirrors.
+func NewBinancePriceFeed(mirrors []string) *BinancePriceFeed {
+	var list []string
+	for _, m := range mirrors {
+		if m = strings.TrimRight(strings.TrimSpace(m), "/"); m != "" {
+			list = append(list, m)
+		}
+	}
+	if len(list) == 0 {
+		list = append(list, DefaultBinanceMirrors...)
+	}
 	return &BinancePriceFeed{
-		client: &http.Client{Timeout: 6 * time.Second},
-		// api.binance.com is geo-blocked in some regions; data-api.binance.vision
-		// is Binance's public market-data mirror and serves the identical
-		// /api/v3/ticker/24hr payload without authentication. Try the mirror
-		// first, then fall back to the canonical host.
-		mirrors: []string{"https://data-api.binance.vision", "https://api.binance.com"},
-		active:  0,
+		client:       &http.Client{Timeout: 6 * time.Second},
+		mirrors:      list,
+		active:       0,
+		backoffUntil: make(map[int]time.Time),
 	}
 }
 
@@ -58,8 +83,25 @@ func (b *BinancePriceFeed) get(path string) (*http.Response, error) {
 	var lastErr error
 	for i := 0; i < len(mirrors); i++ {
 		idx := (start + i) % len(mirrors)
+		b.mu.RLock()
+		paused := time.Now().Before(b.backoffUntil[idx])
+		b.mu.RUnlock()
+		if paused {
+			continue
+		}
 		resp, err := b.client.Get(mirrors[idx] + path)
 		if err == nil {
+			// Rate-limit responses (429 slowed down, 418 IP ban) must not be
+			// passed to callers: back the mirror off and try the next one.
+			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusTeapot {
+				delay := rateLimitDelay(resp)
+				resp.Body.Close()
+				b.mu.Lock()
+				b.backoffUntil[idx] = time.Now().Add(delay)
+				b.mu.Unlock()
+				lastErr = fmt.Errorf("binance rate limited (%d) by %s; backing off %s", resp.StatusCode, mirrors[idx], delay)
+				continue
+			}
 			if idx != start {
 				b.mu.Lock()
 				b.active = idx
@@ -69,7 +111,25 @@ func (b *BinancePriceFeed) get(path string) (*http.Response, error) {
 		}
 		lastErr = err
 	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("binance: all mirrors are in rate-limit backoff")
+	}
 	return nil, lastErr
+}
+
+// rateLimitDelay derives the backoff for a 429/418 response, honouring the
+// Retry-After header when present (418 bans default to 2 minutes, 429 to 1).
+func rateLimitDelay(resp *http.Response) time.Duration {
+	def := 60 * time.Second
+	if resp.StatusCode == http.StatusTeapot {
+		def = 120 * time.Second
+	}
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	return def
 }
 
 func (b *BinancePriceFeed) FetchTicker(pair string) (*Ticker, error) {
@@ -124,6 +184,67 @@ func (b *BinancePriceFeed) FetchAllTickers() (map[string]*Ticker, error) {
 		return nil, fmt.Errorf("binance: no tickers available")
 	}
 	return result, nil
+}
+
+// FetchKlines backfills historical OHLCV candles from Binance's /api/v3/klines
+// endpoint. Interval names match Binance's 1:1 for every interval supported by
+// the matching engine except "1s". `limit` is clamped to [1, 1000]. Returned
+// candles use nanosecond timestamps (open-time / close-time) to match the
+// CandleService convention.
+func (b *BinancePriceFeed) FetchKlines(pair, interval string, limit int) ([]*matching.Candle, error) {
+	sym, ok := supportedPairs[pair]
+	if !ok {
+		return nil, fmt.Errorf("unsupported pair: %s", pair)
+	}
+	if interval == "1s" {
+		return nil, fmt.Errorf("binance klines: interval %s not available from the public mirror", interval)
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	resp, err := b.get(fmt.Sprintf("/api/v3/klines?symbol=%s&interval=%s&limit=%d", sym, interval, limit))
+	if err != nil {
+		return nil, fmt.Errorf("binance klines: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("binance klines: status %d", resp.StatusCode)
+	}
+	var rows [][]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, fmt.Errorf("binance klines decode: %w", err)
+	}
+	out := make([]*matching.Candle, 0, len(rows))
+	for _, r := range rows {
+		if len(r) < 7 {
+			continue
+		}
+		var openMs, closeMs int64
+		var o, h, l, cl, v string
+		if json.Unmarshal(r[0], &openMs) != nil || json.Unmarshal(r[6], &closeMs) != nil {
+			continue
+		}
+		if json.Unmarshal(r[1], &o) != nil || json.Unmarshal(r[2], &h) != nil ||
+			json.Unmarshal(r[3], &l) != nil || json.Unmarshal(r[4], &cl) != nil ||
+			json.Unmarshal(r[5], &v) != nil {
+			continue
+		}
+		open, ok1 := new(big.Float).SetString(o)
+		high, ok2 := new(big.Float).SetString(h)
+		low, ok3 := new(big.Float).SetString(l)
+		close_, ok4 := new(big.Float).SetString(cl)
+		vol, ok5 := new(big.Float).SetString(v)
+		if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
+			continue
+		}
+		out = append(out, &matching.Candle{
+			Pair: pair, Interval: interval,
+			Open: open, High: high, Low: low, Close: close_, Volume: vol,
+			Timestamp: openMs * int64(time.Millisecond),
+			CloseTime: closeMs * int64(time.Millisecond),
+		})
+	}
+	return out, nil
 }
 
 func toTicker(bt *BinanceTicker, pair string) *Ticker {

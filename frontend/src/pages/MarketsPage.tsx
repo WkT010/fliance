@@ -7,7 +7,7 @@ import { Badge } from '@/components/common/Badge';
 import { EmptyState } from '@/components/common/EmptyState';
 import { get24hTickers, getPriceComparison } from '@/api/market';
 import { usePolling } from '@/hooks/usePolling';
-import { formatPrice, formatQty, formatPct, changeColorClass, cls } from '@/utils/format';
+import { formatPrice, formatQty, formatPct, formatChangePct, changeColorClass, cls } from '@/utils/format';
 import type { Ticker, PriceComparison } from '@/types';
 
 interface TickerWithMeta extends Ticker {
@@ -65,7 +65,7 @@ export function MarketsPage() {
         <div className="font-mono text-xs text-nexa-300">{formatPrice(ticker.last, 2)}</div>
       </div>
       <div className={cls('rounded-md px-2 py-0.5 font-mono text-xs font-semibold', changeColorClass(ticker.change_pct_24h), ticker._change > 0 ? 'bg-up/10' : ticker._change < 0 ? 'bg-down/10' : 'bg-nexa-800')}>
-        {formatPct(ticker.change_pct_24h)}
+        {formatChangePct(ticker.change_pct_24h)}
       </div>
     </Link>
   );
@@ -102,7 +102,7 @@ export function MarketsPage() {
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-nexa-100">{formatPrice(tk.last, 2)}</td>
                     <td className={cls('px-4 py-3 text-right font-mono font-semibold', changeColorClass(tk.change_pct_24h))}>
-                      {tk.change_pct_24h ? formatPct(tk.change_pct_24h) : '—'}
+                      {tk.change_pct_24h ? formatChangePct(tk.change_pct_24h) : '—'}
                     </td>
                     <td className="px-4 py-3 text-right font-mono text-nexa-300">{formatQty(tk.volume_24h, 2)}</td>
                     <td className="px-4 py-3 text-right">

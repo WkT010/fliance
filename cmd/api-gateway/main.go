@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -184,6 +186,38 @@ func main() {
 
 	ammH := api.NewAmmHandler(ammSvc)
 
+	// ── Binance market data (primary market-data source) ──
+	// Combined WebSocket streams feed the price handler's cache and are also
+	// bridged into the platform WS hub (wired below, once the hub exists) so
+	// the orderbook/trades panels show live Binance activity with the exact
+	// message shapes the frontend already consumes from the matching engine.
+	binanceWS := market.NewBinanceWSClient(cfg.BinanceWSURL, cfg.TradingPairs)
+	// Persist live Binance kline updates into the candle store so the
+	// in-progress bucket is always current and /klines reads never need a REST
+	// backfill for the newest bar. Throttled per (pair, interval) — the kline
+	// streams tick on every trade and the store is a remote database.
+	var (
+		klinePersistMu   sync.Mutex
+		klinePersistLast = make(map[string]time.Time)
+	)
+	binanceWS.SetKlineHandler(func(cd *matching.Candle) {
+		if cd == nil {
+			return
+		}
+		key := cd.Pair + "|" + cd.Interval
+		klinePersistMu.Lock()
+		last, ok := klinePersistLast[key]
+		klinePersistMu.Unlock()
+		if ok && time.Since(last) < 10*time.Second {
+			return
+		}
+		if err := candleSvc.SaveCandle(cd); err == nil {
+			klinePersistMu.Lock()
+			klinePersistLast[key] = time.Now()
+			klinePersistMu.Unlock()
+		}
+	})
+
 	// ── Handlers ──
 	orderH := api.NewOrderHandlerWithExchange(exchange, orderStore, riskEng)
 	orderH.SetWallet(withdrawalSvc, withdrawalSvc)
@@ -195,19 +229,24 @@ func main() {
 	walletH.SetUserLookup(userStore)
 	walletH.SetAuditLogger(auditLog)
 
-	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey)
-	// AMM feed is the primary price source. External sources (Binance/Uniswap/
-	// Alchemy) are only consulted when ENABLE_EXTERNAL_PRICE_FALLBACK=true AND
-	// the AMM feed has no data for a pair — default off keeps the exchange fully
-	// self-contained.
+	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey, cfg.BinanceRESTURLs)
+	// Source chain: Binance WS cache -> Binance REST poller -> AMM pool feed.
+	// Cached sources are freshness-gated (MARKET_DATA_STALENESS); the AMM
+	// feed is only used as a fallback and its pool reserves are never
+	// overwritten by external market data.
+	priceH.SetBinanceWS(binanceWS)
+	priceH.SetStaleness(cfg.MarketDataStaleness)
+	priceH.StartPolling(cfg.BinancePollInterval)
+	binanceWS.Start()
 	priceH.SetAMMFeed(ammFeed)
-	if os.Getenv("ENABLE_EXTERNAL_PRICE_FALLBACK") == "true" {
-		priceH.SetExternalFallback(true)
-		slog.Info("external price fallback enabled (opt-in)")
-	}
+	// Historical candle backfill for /klines when the local store is empty.
+	orderH.SetKlineFetcher(priceH.BinanceFeed())
+	// Warm every (pair x interval) series in the background at boot so the
+	// first chart request never blocks on the external mirror (cold-start 500s).
+	orderH.StartKlinePrewarm(cfg.TradingPairs)
 	// Order book / recent-trades fallback for the matching engine (which is
-	// empty on a fresh deployment with no resting orders) comes from the same
-	// AMM feed, so the trading UI shows live, self-contained depth and tape.
+	// empty on a fresh deployment with no resting orders) resolves through
+	// the same chain: Binance depth/trades first, AMM synthesis last.
 	orderH.SetPriceProvider(priceH)
 	futuresH := api.NewFuturesHandler(priceH, walletSvc, futuresStore)
 
@@ -292,6 +331,9 @@ func main() {
 	go hub.Run()
 	wsH := api.NewWSHandler(hub, mgr)
 
+	// Bridge Binance depth/trade events into the hub (see wireBinanceHubBridge).
+	wireBinanceHubBridge(hub, binanceWS)
+
 	// ── WebSocket bridge (engine events -> hub) ──
 	bridge := wsbridge.NewBridge(hub, exchangeEnginesMap(exchange), orderStore)
 	bridge.SetSettler(withdrawalSvc)
@@ -352,9 +394,10 @@ func main() {
 	}
 
 	// ── AMM market simulator ──
-	// Periodically runs small swaps against every pool so prices move even when
-	// no real trader is active. This is what makes the exchange's market
-	// self-contained: the AMM pools themselves produce all price action.
+	// Optionally runs small swaps against every pool so AMM-derived prices
+	// move on their own. Disabled by default: Binance real market data is the
+	// primary source and the simulator would only perturb AMM pool reserves.
+	// Admins can still toggle it at runtime via the admin endpoints.
 	simInterval := 3 * time.Second
 	if v := os.Getenv("MARKET_SIM_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
@@ -362,7 +405,12 @@ func main() {
 		}
 	}
 	simulator := market.NewSimulator(ammFeed, simInterval)
-	simulator.Start()
+	if cfg.EnableMarketSimulator {
+		simulator.Start()
+		slog.Info("AMM market simulator started (opt-in)")
+	} else {
+		slog.Info("AMM market simulator disabled (ENABLE_MARKET_SIMULATOR=false)")
+	}
 	// Expose simulator control + bootstrap to admin endpoints (start/stop/status/seed).
 	adminH.SetAMMSimulator(simulator)
 	adminH.SetAMMFeed(ammFeed)
@@ -383,6 +431,8 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		simulator.Stop()
+		binanceWS.Stop()
+		priceH.StopPolling()
 		bridge.Stop()
 		exchange.Stop()
 		_ = srv.Shutdown(ctx)
@@ -406,6 +456,58 @@ func exchangeEnginesMap(ex *matching.ExchangeEngine) map[string]*matching.Matchi
 		}
 	}
 	return out
+}
+
+// wireBinanceHubBridge forwards Binance depth snapshots and trades into the
+// platform WS hub using the exact message shapes wsbridge produces for
+// matching-engine events, so the frontend needs zero changes.
+func wireBinanceHubBridge(hub *websocket.Hub, ws *market.BinanceWSClient) {
+	var (
+		seq      uint64
+		lastMu   sync.Mutex
+		lastSent = make(map[string]time.Time)
+	)
+	// depth10@100ms arrives ~10x/s per pair; throttle broadcasts to ~4x/s so
+	// the hub fan-out stays cheap while the book still feels live.
+	const depthMinInterval = 250 * time.Millisecond
+	ws.SetDepthHandler(func(pair string, d *market.Depth) {
+		lastMu.Lock()
+		if time.Since(lastSent[pair]) < depthMinInterval {
+			lastMu.Unlock()
+			return
+		}
+		lastSent[pair] = time.Now()
+		lastMu.Unlock()
+		seq++
+		bids := make([]matching.PriceLevel, 0, len(d.Bids))
+		for _, lv := range d.Bids {
+			bids = append(bids, matching.PriceLevel{Price: lv.Price, Quantity: lv.Quantity, Count: 1})
+		}
+		asks := make([]matching.PriceLevel, 0, len(d.Asks))
+		for _, lv := range d.Asks {
+			asks = append(asks, matching.PriceLevel{Price: lv.Price, Quantity: lv.Quantity, Count: 1})
+		}
+		data, _ := json.Marshal(map[string]interface{}{
+			"type": "snapshot", "pair": pair,
+			"bids": bids, "asks": asks, "seq": seq,
+		})
+		hub.BroadcastToRoom(websocket.ChannelOrderbook+":"+pair, data)
+	})
+	ws.SetTradeHandler(func(pair string, t market.RecentTrade) {
+		side := "sell"
+		if t.IsBuyer {
+			side = "buy"
+		}
+		data, _ := json.Marshal(map[string]interface{}{
+			"type": "trade", "pair": pair,
+			// Field names mirror the frontend's Trade type (quantity, not qty).
+			"price": t.Price.String(), "quantity": t.Quantity.String(), "qty": t.Quantity.String(),
+			"side": side,
+			// Frontend formatTime() divides by 1e6: convert Binance ms -> ns.
+			"time": t.Time * int64(time.Millisecond),
+		})
+		hub.BroadcastToRoom(websocket.ChannelTrades+":"+pair, data)
+	})
 }
 
 func defaultFeeSchedule() wallet.FeeSchedule {

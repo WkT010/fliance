@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,7 @@ func (s *PGCandleStore) SaveCandle(c *matching.Candle) error {
 		INSERT INTO candles (pair, interval, timestamp, open, high, low, close, volume, close_time)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (pair, interval, timestamp) DO UPDATE SET
+			open = EXCLUDED.open,
 			high = EXCLUDED.high,
 			low = EXCLUDED.low,
 			close = EXCLUDED.close,
@@ -40,6 +42,48 @@ func (s *PGCandleStore) SaveCandle(c *matching.Candle) error {
 			close_time = EXCLUDED.close_time
 	`, c.Pair, c.Interval, c.Timestamp, text(c.Open), text(c.High), text(c.Low), text(c.Close), text(c.Volume), c.CloseTime)
 	return err
+}
+
+// SaveCandles upserts a batch of candles in a single statement (chunked),
+// avoiding one remote round-trip per row during backfills.
+func (s *PGCandleStore) SaveCandles(cs []*matching.Candle) error {
+	rows := make([]*matching.Candle, 0, len(cs))
+	for _, c := range cs {
+		if c != nil {
+			rows = append(rows, c)
+		}
+	}
+	const chunk = 100
+	for i := 0; i < len(rows); i += chunk {
+		end := i + chunk
+		if end > len(rows) {
+			end = len(rows)
+		}
+		batch := rows[i:end]
+		var sb strings.Builder
+		sb.WriteString(`INSERT INTO candles (pair, interval, timestamp, open, high, low, close, volume, close_time) VALUES `)
+		args := make([]interface{}, 0, len(batch)*9)
+		for j, c := range batch {
+			if j > 0 {
+				sb.WriteString(", ")
+			}
+			base := j * 9
+			sb.WriteString(fmt.Sprintf("($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+				base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8, base+9))
+			args = append(args, c.Pair, c.Interval, c.Timestamp, text(c.Open), text(c.High), text(c.Low), text(c.Close), text(c.Volume), c.CloseTime)
+		}
+		sb.WriteString(` ON CONFLICT (pair, interval, timestamp) DO UPDATE SET
+			open = EXCLUDED.open,
+			high = EXCLUDED.high,
+			low = EXCLUDED.low,
+			close = EXCLUDED.close,
+			volume = EXCLUDED.volume,
+			close_time = EXCLUDED.close_time`)
+		if _, err := s.db.Exec(sb.String(), args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetCandles returns candles ordered by timestamp ascending.
@@ -95,6 +139,16 @@ type MemoryCandleStore struct {
 
 // NewMemoryCandleStore creates an in-memory candle store.
 func NewMemoryCandleStore() *MemoryCandleStore { return &MemoryCandleStore{} }
+
+// SaveCandles stores a batch of candles.
+func (m *MemoryCandleStore) SaveCandles(cs []*matching.Candle) error {
+	for _, c := range cs {
+		if err := m.SaveCandle(c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // SaveCandle stores a candle.
 func (m *MemoryCandleStore) SaveCandle(c *matching.Candle) error {
@@ -219,6 +273,32 @@ func (s *CandleService) Candles(pair, interval string, start, end int64, limit i
 		return []*matching.Candle{}, nil
 	}
 	return s.store.GetCandles(pair, interval, start, end, limit)
+}
+
+// SaveCandle persists a pre-built candle (e.g. backfilled from Binance
+// klines). It bypasses the lastCandle trade-aggregation cache on purpose.
+func (s *CandleService) SaveCandle(c *matching.Candle) error {
+	if s.store == nil || c == nil {
+		return nil
+	}
+	return s.store.SaveCandle(c)
+}
+
+// SaveCandles upserts a batch, delegating to the store's batch path when
+// available so backfills avoid one round-trip per row.
+func (s *CandleService) SaveCandles(cs []*matching.Candle) error {
+	if s.store == nil || len(cs) == 0 {
+		return nil
+	}
+	if batcher, ok := s.store.(interface{ SaveCandles([]*matching.Candle) error }); ok {
+		return batcher.SaveCandles(cs)
+	}
+	for _, c := range cs {
+		if err := s.store.SaveCandle(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newBigFloatCopy(f *big.Float) *big.Float {

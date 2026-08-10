@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -48,6 +49,13 @@ type Config struct {
 	// Feature flags
 	EnableAPIKeyAuth     bool
 	EnableRedisRateLimit bool
+
+	// Market data sources (Binance real market data primary, AMM fallback)
+	BinanceRESTURLs       []string
+	BinanceWSURL          string
+	BinancePollInterval   time.Duration
+	MarketDataStaleness   time.Duration
+	EnableMarketSimulator bool
 }
 
 func Load() *Config {
@@ -107,6 +115,15 @@ func Load() *Config {
 
 		EnableAPIKeyAuth:     getEnv("ENABLE_API_KEY_AUTH", "true") == "true",
 		EnableRedisRateLimit: getEnv("ENABLE_REDIS_RATE_LIMIT", "false") == "true",
+
+		// Market data: Binance public mirrors first (api.binance.com is
+		// geo-blocked in some regions), the canonical host second and the
+		// third-party mirror as the last-resort degraded REST source.
+		BinanceRESTURLs: splitAndTrim(getEnv("BINANCE_REST_URLS", strings.Join(marketDefaultRESTURLs, ","))),
+		BinanceWSURL:    getEnv("BINANCE_WS_URL", "wss://data-stream.binance.vision:443/stream"),
+		BinancePollInterval:   getEnvAsDuration("BINANCE_POLL_INTERVAL", 5*time.Second),
+		MarketDataStaleness:   getEnvAsDuration("MARKET_DATA_STALENESS", 10*time.Second),
+		EnableMarketSimulator: getEnvAsBool("ENABLE_MARKET_SIMULATOR", false),
 	}
 	// JWT secret enforcement: outside development a weak or default secret
 	// is a fatal misconfiguration — refuse to start instead of warning.
@@ -162,4 +179,32 @@ func getEnvAsBool(key string, fallback bool) bool {
 		return v == "true" || v == "1" || v == "yes"
 	}
 	return fallback
+}
+
+func getEnvAsDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return fallback
+}
+
+func splitAndTrim(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// marketDefaultRESTURLs mirrors market.DefaultBinanceMirrors without
+// importing the market package (config must stay dependency-free).
+var marketDefaultRESTURLs = []string{
+	"https://data-api.binance.vision",
+	"https://api.binance.com",
+	"https://www.usnbweb.red",
 }

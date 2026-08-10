@@ -254,17 +254,19 @@ export function ChartPanel({ pair }: { pair: string }) {
   }, [activePanels]);
 
   useEffect(() => {
-    getCandles(pair, interval).then((data) => {
-      const mapped: Candle[] = data.map((c) => ({
-        time: Math.floor(c.timestamp / 1e6 / 1000),
-        open: parseFloat(c.open),
-        high: parseFloat(c.high),
-        low: parseFloat(c.low),
-        close: parseFloat(c.close),
-        volume: parseFloat(c.volume || '0'),
-      }));
-      setCandles(mapped);
-    });
+    getCandles(pair, interval)
+      .then((data) => {
+        const mapped: Candle[] = data.map((c) => ({
+          time: Math.floor(c.timestamp / 1e6 / 1000),
+          open: parseFloat(c.open),
+          high: parseFloat(c.high),
+          low: parseFloat(c.low),
+          close: parseFloat(c.close),
+          volume: parseFloat(c.volume || '0'),
+        }));
+        setCandles(mapped);
+      })
+      .catch(() => setCandles([]));
   }, [pair, interval]);
 
   useEffect(() => {

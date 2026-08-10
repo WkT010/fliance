@@ -5,7 +5,7 @@ import { useAuthStore } from '@/store/authStore';
 import { Button } from '@/components/common/Button';
 import { Badge } from '@/components/common/Badge';
 import { getTickers } from '@/api/market';
-import { formatPrice, formatPct, changeColorClass, cls, formatUsd } from '@/utils/format';
+import { formatPrice, formatChangePct, changeColorClass, cls, formatUsd } from '@/utils/format';
 import type { Ticker } from '@/types';
 
 const FEATURES = [
@@ -189,7 +189,7 @@ export function LandingPage() {
                   <span className="font-semibold text-nexa-200">{tk.pair}</span>
                   <span className="font-mono text-nexa-100">{formatPrice(tk.last, 2)}</span>
                   <span className={cls('font-mono text-xs font-semibold', changeColorClass(tk.change_pct_24h))}>
-                    {formatPct(tk.change_pct_24h)}
+                    {formatChangePct(tk.change_pct_24h)}
                   </span>
                 </div>
               ))}
@@ -257,7 +257,7 @@ export function LandingPage() {
                     </td>
                     <td className="px-6 py-4 text-right font-mono text-nexa-100">{formatPrice(tk.last, 2)}</td>
                     <td className={cls('px-6 py-4 text-right font-mono font-semibold', changeColorClass(tk.change_pct_24h))}>
-                      {formatPct(tk.change_pct_24h)}
+                      {formatChangePct(tk.change_pct_24h)}
                     </td>
                     <td className="px-6 py-4 text-right font-mono text-nexa-400">{formatUsd(tk.volume_24h, 2)}</td>
                   </tr>
