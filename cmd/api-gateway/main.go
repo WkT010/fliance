@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -310,7 +311,12 @@ func main() {
 			return nil
 		}
 		_, err := walletStore.GetWallet("__healthcheck__", "USDT")
-		return err
+		// A missing row for the synthetic user is expected — it only proves the
+		// DB round-trip works. Only real errors mark the check unhealthy.
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return nil
 	}))
 
 	// ── HTTP router ──
