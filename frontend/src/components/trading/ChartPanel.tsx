@@ -14,6 +14,8 @@ import {
   PriceScaleMode,
 } from 'lightweight-charts';
 import { useMarketStore } from '@/store/marketStore';
+import { useThemeStore, type Theme } from '@/store/themeStore';
+import { CHART_PALETTES, chartLayoutOptions } from '@/utils/chartTheme';
 import { getCandles } from '@/api/market';
 import { INTERVALS } from '@/utils/constants';
 import { Card } from '../common/Card';
@@ -80,6 +82,8 @@ export function ChartPanel({ pair }: { pair: string }) {
     chart: IChartApi | null;
     series: ISeriesApi<'Line'>[];
     histogram?: ISeriesApi<'Histogram'> | null;
+    /** Theme the sub-chart was built with, so it can be rebuilt on switch. */
+    theme: Theme;
   }>>({});
 
   const [interval, setInterval] = useState('15m');
@@ -96,6 +100,7 @@ export function ChartPanel({ pair }: { pair: string }) {
   const [candles, setCandles] = useState<Candle[]>([]);
   const [hover, setHover] = useState<{ price: number; time: number } | null>(null);
   const tickers = useMarketStore((s) => s.tickers);
+  const theme = useThemeStore((s) => s.theme);
 
   const rawCandles = useMemo(() => candles, [candles]);
   const displayCandles = useMemo(() => (chartType === 'heikin' ? heikinAshi(rawCandles) : rawCandles), [rawCandles, chartType]);
@@ -109,12 +114,11 @@ export function ChartPanel({ pair }: { pair: string }) {
       // container even when the window itself never resizes (flex re-layout,
       // background-tab layout deferral, etc.).
       autoSize: true,
-      layout: { background: { color: 'transparent' }, textColor: '#EAECEF' },
-      grid: { vertLines: { color: '#2B3139' }, horzLines: { color: '#2B3139' } },
+      ...chartLayoutOptions(theme),
       crosshair: { mode: CrosshairMode.Magnet },
-      rightPriceScale: { borderColor: '#333B47', scaleMargins: { top: 0.1, bottom: 0.2 } },
-      timeScale: { borderColor: '#333B47', timeVisible: true, secondsVisible: false },
-      watermark: { visible: true, text: `Fliance ${pair}`, fontSize: 28, color: 'rgba(234, 236, 239, 0.06)', vertAlign: 'center', horzAlign: 'center' },
+      rightPriceScale: { borderColor: CHART_PALETTES[theme].border, scaleMargins: { top: 0.1, bottom: 0.2 } },
+      timeScale: { borderColor: CHART_PALETTES[theme].border, timeVisible: true, secondsVisible: false },
+      watermark: { visible: true, text: `Fliance ${pair}`, fontSize: 28, color: CHART_PALETTES[theme].watermark, vertAlign: 'center', horzAlign: 'center' },
     });
     chartRef.current = chart;
     // A fresh chart has no series. Clear stale refs left over from a previous
@@ -160,14 +164,31 @@ export function ChartPanel({ pair }: { pair: string }) {
       chart.remove();
       chartRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pair]);
+
+  // Re-skin existing charts in place when the theme switches (series are
+  // rebuilt by the data effect below, which also depends on `theme`).
+  useEffect(() => {
+    const opts = chartLayoutOptions(theme);
+    const pal = CHART_PALETTES[theme];
+    chartRef.current?.applyOptions({ ...opts, watermark: { color: pal.watermark } });
+    Object.values(subRefs.current).forEach((ref) => ref.chart?.applyOptions(opts));
+  }, [theme]);
 
   // Sub-panel initialization
   useEffect(() => {
+    const pal = CHART_PALETTES[theme];
     SUB_PANELS.forEach((p) => {
       const existing = subRefs.current[p.id];
       if (activePanels.includes(p.id)) {
-        if (existing?.chart) return;
+        if (existing?.chart) {
+          if (existing.theme === theme) return;
+          // Theme switched: rebuild so series colors match the new palette.
+          existing.chart.remove();
+          existing.container?.remove();
+          delete subRefs.current[p.id];
+        }
         const container = document.createElement('div');
         container.style.height = `${p.height}px`;
         container.className = 'border-t border-nexa-700';
@@ -176,11 +197,9 @@ export function ChartPanel({ pair }: { pair: string }) {
 
         const subChart = createChart(container, {
           autoSize: true,
-          layout: { background: { color: 'transparent' }, textColor: '#EAECEF' },
-          grid: { vertLines: { color: '#2B3139' }, horzLines: { color: '#2B3139' } },
+          ...chartLayoutOptions(theme),
           crosshair: { mode: CrosshairMode.Magnet },
-          rightPriceScale: { borderColor: '#333B47' },
-          timeScale: { borderColor: '#333B47', visible: false },
+          timeScale: { borderColor: pal.border, visible: false },
           height: p.height,
         });
 
@@ -189,10 +208,10 @@ export function ChartPanel({ pair }: { pair: string }) {
 
         if (p.id === 'rsi') {
           series.push(subChart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'RSI' }));
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 70 }, { time: 9999999999 as Time, value: 70 },
           ]);
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 30 }, { time: 9999999999 as Time, value: 30 },
           ]);
         } else if (p.id === 'macd') {
@@ -207,43 +226,43 @@ export function ChartPanel({ pair }: { pair: string }) {
         } else if (p.id === 'stochastic') {
           series.push(subChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'K' }));
           series.push(subChart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'D' }));
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 80 }, { time: 9999999999 as Time, value: 80 },
           ]);
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 20 }, { time: 9999999999 as Time, value: 20 },
           ]);
         } else if (p.id === 'atr') {
           series.push(subChart.addLineSeries({ color: '#a855f7', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'ATR' }));
         } else if (p.id === 'williamsR') {
           series.push(subChart.addLineSeries({ color: '#06b6d4', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'W%R' }));
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: -20 }, { time: 9999999999 as Time, value: -20 },
           ]);
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: -80 }, { time: 9999999999 as Time, value: -80 },
           ]);
         } else if (p.id === 'cci') {
           series.push(subChart.addLineSeries({ color: '#ec4899', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'CCI' }));
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 100 }, { time: 9999999999 as Time, value: 100 },
           ]);
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: -100 }, { time: 9999999999 as Time, value: -100 },
           ]);
         } else if (p.id === 'obv') {
           series.push(subChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'OBV' }));
         } else if (p.id === 'mfi') {
           series.push(subChart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'MFI' }));
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 80 }, { time: 9999999999 as Time, value: 80 },
           ]);
-          subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
+          subChart.addLineSeries({ color: pal.refLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 20 }, { time: 9999999999 as Time, value: 20 },
           ]);
         }
 
-        subRefs.current[p.id] = { container, chart: subChart, series, histogram };
+        subRefs.current[p.id] = { container, chart: subChart, series, histogram, theme };
       } else if (existing) {
         existing.chart?.remove();
         existing.container?.remove();
@@ -262,7 +281,7 @@ export function ChartPanel({ pair }: { pair: string }) {
     window.addEventListener('resize', handleResize);
     handleResize();
     return () => window.removeEventListener('resize', handleResize);
-  }, [activePanels]);
+  }, [activePanels, theme]);
 
   // Unmount cleanup: dispose sub-panel charts and their imperatively appended
   // DOM nodes so StrictMode double-mounts and route changes don't leak them.
@@ -298,6 +317,7 @@ export function ChartPanel({ pair }: { pair: string }) {
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    const pal = CHART_PALETTES[theme];
 
     indicatorSeriesRef.current.forEach((s) => chart.removeSeries(s));
     bollingerSeriesRef.current.forEach((s) => chart.removeSeries(s));
@@ -333,7 +353,7 @@ export function ChartPanel({ pair }: { pair: string }) {
       mainSeriesRef.current = series;
     } else if (chartType === 'bar') {
       const series = chart.addBarSeries({
-        upColor: '#2EBD85', downColor: '#F6465D',
+        upColor: pal.gain, downColor: pal.loss,
         thinBars: false,
       });
       series.setData(displayCandles.map((c) => ({
@@ -342,9 +362,9 @@ export function ChartPanel({ pair }: { pair: string }) {
       mainSeriesRef.current = series;
     } else {
       const series = chart.addCandlestickSeries({
-        upColor: '#2EBD85', downColor: '#F6465D',
-        borderUpColor: '#2EBD85', borderDownColor: '#F6465D',
-        wickUpColor: '#2EBD85', wickDownColor: '#F6465D',
+        upColor: pal.gain, downColor: pal.loss,
+        borderUpColor: pal.gain, borderDownColor: pal.loss,
+        wickUpColor: pal.gain, wickDownColor: pal.loss,
       });
       series.setData(displayCandles.map((c) => ({
         time: c.time as Time, open: c.open, high: c.high, low: c.low, close: c.close,
@@ -363,7 +383,7 @@ export function ChartPanel({ pair }: { pair: string }) {
       volSeries.setData(displayCandles.map((c) => ({
         time: c.time as Time,
         value: c.volume,
-        color: c.close >= c.open ? 'rgba(46, 189, 133, 0.5)' : 'rgba(246, 70, 93, 0.5)',
+        color: c.close >= c.open ? pal.gainSoft : pal.lossSoft,
       })) as HistogramData<Time>[]);
       volumeSeriesRef.current = volSeries;
 
@@ -388,7 +408,7 @@ export function ChartPanel({ pair }: { pair: string }) {
     if (showBollinger) {
       const bb = bollinger(rawCandles);
       const upper = chart.addLineSeries({ color: '#a855f7', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed });
-      const middle = chart.addLineSeries({ color: '#d4dbe3', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+      const middle = chart.addLineSeries({ color: pal.neutralLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
       const lower = chart.addLineSeries({ color: '#a855f7', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed });
       upper.setData(bb.map((b) => ({ time: b.time as Time, value: b.upper })) as LineData<Time>[]);
       middle.setData(bb.map((b) => ({ time: b.time as Time, value: b.middle })) as LineData<Time>[]);
@@ -431,7 +451,7 @@ export function ChartPanel({ pair }: { pair: string }) {
 
     if (showPivot && rawCandles.length > 1) {
       const pivots = pivotPoints(rawCandles);
-      const pp = chart.addLineSeries({ color: '#d4dbe3', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: 'PP' });
+      const pp = chart.addLineSeries({ color: pal.neutralLine, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: 'PP' });
       const r1 = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: 'R1' });
       const s1 = chart.addLineSeries({ color: '#22c55e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: 'S1' });
       pp.setData(pivots.map((p) => ({ time: p.time as Time, value: p.pp })) as LineData<Time>[]);
@@ -453,7 +473,7 @@ export function ChartPanel({ pair }: { pair: string }) {
       subRefs.current.macd.histogram?.setData(data.map((r) => ({
         time: r.time as Time,
         value: r.histogram,
-        color: r.histogram >= 0 ? 'rgba(46, 189, 133, 0.7)' : 'rgba(246, 70, 93, 0.7)',
+        color: r.histogram >= 0 ? pal.gainSoft : pal.lossSoft,
       })) as HistogramData<Time>[]);
       subRefs.current.macd.chart?.timeScale().fitContent();
     }
@@ -497,7 +517,8 @@ export function ChartPanel({ pair }: { pair: string }) {
     }
 
     chart.timeScale().fitContent();
-  }, [displayCandles, rawCandles, chartType, activeIndicators, showVolume, showVolumeMa, showBollinger, showSuperTrend, showIchimoku, showFib, showPivot, activePanels]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayCandles, rawCandles, chartType, activeIndicators, showVolume, showVolumeMa, showBollinger, showSuperTrend, showIchimoku, showFib, showPivot, activePanels, theme]);
 
   const toggleIndicator = (id: string) => {
     setActiveIndicators((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));

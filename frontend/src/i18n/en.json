@@ -235,6 +235,7 @@
     "claimRemove": "Remove screenshot",
     "claimSubmit": "Submit Proof",
     "claimSubmitted": "Deposit proof submitted — awaiting review",
+    "claimAutoApproved": "Deposit verified on-chain and credited automatically",
     "claimSubmitFailed": "Failed to submit deposit proof",
     "claimRecords": "Deposit Records",
     "claimEmpty": "No deposit records yet",
@@ -352,6 +353,8 @@
   },
   "common": {
     "loading": "Loading...",
+    "switchToLight": "Switch to light theme",
+    "switchToDark": "Switch to dark theme",
     "save": "Save",
     "cancel": "Cancel",
     "confirm": "Confirm",

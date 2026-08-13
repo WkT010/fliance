@@ -69,8 +69,10 @@ func claimRow(status string) *sqlmock.Rows {
 		"id", "user_id", "asset", "amount", "txid",
 		"screenshot_path", "status", "reject_reason", "reviewer_id",
 		"created_at", "reviewed_at",
+		"auto_verified", "verify_note", "verified_at",
 	}).AddRow("dep_test", "usr_alice", "USDT", "1000.000000000000000000", "0xabc123",
-		"", status, "", "", int64(1700000000000000000), int64(0))
+		"", status, "", "", int64(1700000000000000000), int64(0),
+		false, "", int64(0))
 }
 
 // TestPGDepositClaimReviewApprove asserts the full approval transaction: the
@@ -167,6 +169,71 @@ func TestPGDepositClaimReviewInvalidAction(t *testing.T) {
 	s, mock := newClaimMock(t)
 	if _, err := s.ReviewClaim("dep_test", "usr_admin", "maybe", ""); err == nil {
 		t.Fatal("invalid action accepted, want error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestPGDepositClaimAutoApprove covers the Alchemy auto-verification path:
+// same credit transaction as a manual approval, plus the auto_verified /
+// verify_note / verified_at stamps, all committed atomically.
+func TestPGDepositClaimAutoApprove(t *testing.T) {
+	s, mock := newClaimMock(t)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("FROM deposit_claims WHERE id").WillReturnRows(claimRow("pending"))
+	mock.ExpectExec("UPDATE deposit_claims").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO wallets").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE wallets SET balance").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id FROM wallets").WillReturnRows(
+		sqlmock.NewRows([]string{"id"}).AddRow("wal_spot_1"))
+	mock.ExpectExec("INSERT INTO transactions").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	cl, err := s.AutoApproveClaim("dep_test", "auto-verified via Alchemy: USDT 1000", "alchemy")
+	if err != nil {
+		t.Fatalf("auto approve: %v", err)
+	}
+	if cl.Status != "approved" || cl.ReviewerID != "alchemy" || !cl.AutoVerified {
+		t.Errorf("claim = %+v, want approved + auto-verified by alchemy", cl)
+	}
+	if !strings.Contains(cl.VerifyNote, "auto-verified") || cl.VerifiedAt == 0 {
+		t.Errorf("claim = %+v, want verify note + verified_at stamped", cl)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestPGDepositClaimAutoApproveAlreadyReviewed asserts the pending-guard also
+// protects the automated path (e.g. a manual admin beat the verifier).
+func TestPGDepositClaimAutoApproveAlreadyReviewed(t *testing.T) {
+	s, mock := newClaimMock(t)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("FROM deposit_claims WHERE id").WillReturnRows(claimRow("approved"))
+	mock.ExpectExec("UPDATE deposit_claims").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	_, err := s.AutoApproveClaim("dep_test", "note", "alchemy")
+	if err == nil || !strings.Contains(err.Error(), "already reviewed") {
+		t.Fatalf("err = %v, want already-reviewed error", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestPGDepositClaimRecordVerifyNote stores the verification outcome on a
+// claim that stays pending; it must never touch the status column.
+func TestPGDepositClaimRecordVerifyNote(t *testing.T) {
+	s, mock := newClaimMock(t)
+
+	mock.ExpectExec("UPDATE deposit_claims SET verify_note").WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := s.RecordVerifyNote("dep_test", "amount below claim"); err != nil {
+		t.Fatalf("record note: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)

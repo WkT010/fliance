@@ -2,6 +2,101 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   Theme tokens — all colors are CSS-variable driven.
+   :root is the dark theme (default). [data-theme="light"]
+   overrides every token for the light theme. Tailwind classes
+   (bg-bg1, text-pri, ...) resolve through these variables, so
+   swapping data-theme re-skins the whole app.
+   Variables hold raw RGB triplets so Tailwind alpha modifiers
+   (e.g. bg-cta/15) keep working via rgb(var(--c-x) / <alpha>).
+   ============================================================ */
+:root {
+  /* surfaces */
+  --c-bg1: 32 38 48;        /* #202630 page primary background */
+  --c-bg2: 24 26 32;        /* #181A20 secondary background */
+  --c-bg3: 11 14 17;        /* #0B0E11 deepest background */
+  --c-container: 41 49 61;  /* #29313D cards / inputs / hover rows */
+  --c-line: 51 59 71;       /* #333B47 hairline dividers */
+  /* text */
+  --c-pri: 234 236 239;     /* #EAECEF primary text */
+  --c-sec: 146 154 165;     /* #929AA5 secondary text */
+  --c-third: 112 122 138;   /* #707A8A tertiary text */
+  /* brand */
+  --c-cta: 20 184 166;      /* #14B8A6 CTA background */
+  --c-cta-bright: 45 212 191; /* #2DD4BF brighter teal accents */
+  --c-cta-deep: 13 148 136; /* #0D9488 teal hover */
+  --c-brand: 45 212 191;    /* #2DD4BF brand / badges */
+  --c-accent: 45 212 191;
+  --c-on-cta: 24 26 32;     /* text on teal surfaces */
+  /* buttons placed ON the teal CTA band (landing bottom CTA) */
+  --c-band-bg: 32 38 48;
+  --c-band-bg-hover: 11 14 17;
+  --c-band-text: 20 184 166;
+  /* semantic */
+  --c-gain: 46 189 133;     /* #2EBD85 up / buy */
+  --c-loss: 246 70 93;      /* #F6465D down / sell */
+  --c-warning: 240 185 11;  /* #F0B90B */
+  /* legacy nexa ramp */
+  --c-nexa-950: 11 14 17;
+  --c-nexa-900: 24 26 32;
+  --c-nexa-800: 32 38 48;
+  --c-nexa-700: 43 49 57;
+  --c-nexa-600: 51 59 71;
+  --c-nexa-500: 94 102 117;
+  --c-nexa-400: 112 122 138;
+  --c-nexa-300: 146 154 165;
+  --c-nexa-200: 201 205 212;
+  --c-nexa-100: 234 236 239;
+  --c-nexa-50: 255 255 255;
+  /* chrome */
+  --scroll-track: #181A20;
+  --scroll-thumb: #29313D;
+  --scroll-thumb-hover: #333B47;
+  --grid-line: 255 255 255; /* decorative fine-grid overlay */
+}
+
+[data-theme="light"] {
+  --c-bg1: 255 255 255;     /* cards / header */
+  --c-bg2: 245 246 248;     /* #F5F6F8 page body */
+  --c-bg3: 235 238 242;     /* #EBEEF2 wells / footer */
+  --c-container: 240 242 245; /* #F0F2F5 hover rows / inputs */
+  --c-line: 226 230 236;    /* #E2E6EC dividers */
+  --c-pri: 27 30 36;        /* #1B1E24 primary text */
+  --c-sec: 94 102 117;      /* #5E6675 secondary text */
+  --c-third: 139 147 161;   /* #8B93A1 tertiary text */
+  --c-cta: 20 184 166;      /* brand teal unchanged */
+  --c-cta-bright: 13 148 136; /* deeper teal for light-surface accents */
+  --c-cta-deep: 15 118 110; /* #0F766E hover */
+  --c-brand: 13 148 136;    /* deeper teal: contrast on white */
+  --c-accent: 13 148 136;
+  --c-on-cta: 11 14 17;     /* dark text stays legible on teal */
+  /* charcoal pill on the teal band: white text keeps full contrast */
+  --c-band-bg: 27 30 36;
+  --c-band-bg-hover: 42 47 56;
+  --c-band-text: 255 255 255;
+  --c-gain: 10 143 95;      /* #0A8F5F deepened for white bg */
+  --c-loss: 217 46 69;      /* #D92E45 deepened for white bg */
+  --c-warning: 161 98 7;    /* #A16207 readable amber */
+  /* legacy nexa ramp — inverted so semantic usage (900s = bg,
+     100s = text) keeps its meaning on light surfaces */
+  --c-nexa-950: 255 255 255;
+  --c-nexa-900: 245 246 248;
+  --c-nexa-800: 235 238 242;
+  --c-nexa-700: 226 230 236;
+  --c-nexa-600: 211 216 223;
+  --c-nexa-500: 139 147 161;
+  --c-nexa-400: 94 102 117;
+  --c-nexa-300: 69 76 88;
+  --c-nexa-200: 42 47 56;
+  --c-nexa-100: 27 30 36;
+  --c-nexa-50: 11 14 17;
+  --scroll-track: #F5F6F8;
+  --scroll-thumb: #D1D6DE;
+  --scroll-thumb-hover: #BDC4CD;
+  --grid-line: 11 14 17;
+}
+
 html, body, #root {
   height: 100%;
 }
@@ -12,7 +107,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #29313D #181A20;
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
 }
 
 ::-webkit-scrollbar {
@@ -21,16 +116,16 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #181A20;
+  background: var(--scroll-track);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #29313D;
+  background: var(--scroll-thumb);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #333B47;
+  background: var(--scroll-thumb-hover);
 }
 
 /* ---------- Animations ---------- */

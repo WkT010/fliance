@@ -41,7 +41,7 @@ export function Hero({ market }: { market: LandingMarketData }) {
       <div className="relative z-10 mx-auto max-w-6xl px-6 pb-16 pt-16 lg:pb-24 lg:pt-24">
         {/* "No.1" badge */}
         <div className="flex items-center gap-3">
-          <span className="flex h-9 min-w-9 items-center justify-center rounded bg-cta px-1 text-[11px] font-bold leading-none text-bg1">
+          <span className="flex h-9 min-w-9 items-center justify-center rounded bg-cta px-1 text-[11px] font-bold leading-none text-on-cta">
             No.1
           </span>
           <span className="text-sm font-medium uppercase tracking-widest text-sec">
@@ -62,7 +62,7 @@ export function Hero({ market }: { market: LandingMarketData }) {
         <div className="mt-10 flex flex-wrap items-center gap-6">
           <Link
             to="/register"
-            className="inline-flex h-12 w-[180px] items-center justify-center rounded-lg bg-cta text-base font-semibold text-bg1 transition-all duration-200 hover:-translate-y-0.5 hover:bg-cta-deep hover:shadow-[0_10px_30px_-6px_rgba(45,212,191,0.45)]"
+            className="inline-flex h-12 w-[180px] items-center justify-center rounded-lg bg-cta text-base font-semibold text-on-cta transition-all duration-200 hover:-translate-y-0.5 hover:bg-cta-deep hover:shadow-[0_10px_30px_-6px_rgba(45,212,191,0.45)]"
           >
             {t('auth.register')}
           </Link>

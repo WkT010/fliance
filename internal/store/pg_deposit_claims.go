@@ -27,14 +27,16 @@ func NewPGDepositClaimStore(db *sql.DB) *PGDepositClaimStore { return &PGDeposit
 const depositClaimSelectCols = `id, user_id, asset, amount, txid,
 	COALESCE(screenshot_path,''), status,
 	COALESCE(reject_reason,''), COALESCE(reviewer_id,''),
-	created_at, COALESCE(reviewed_at,0)`
+	created_at, COALESCE(reviewed_at,0),
+	auto_verified, COALESCE(verify_note,''), COALESCE(verified_at,0)`
 
 func scanDepositClaim(row interface{ Scan(...interface{}) error }) (*api.DepositClaim, error) {
 	cl := &api.DepositClaim{Amount: new(big.Float)}
 	var amountStr string
 	err := row.Scan(&cl.ID, &cl.UserID, &cl.Asset, &amountStr, &cl.TxID,
 		&cl.ScreenshotPath, &cl.Status, &cl.RejectReason, &cl.ReviewerID,
-		&cl.CreatedAt, &cl.ReviewedAt)
+		&cl.CreatedAt, &cl.ReviewedAt,
+		&cl.AutoVerified, &cl.VerifyNote, &cl.VerifiedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +107,9 @@ func (s *PGDepositClaimStore) ListClaimsForAdmin(status string, limit, offset in
 	query := `SELECT c.id, c.user_id, c.asset, c.amount, c.txid,
 		COALESCE(c.screenshot_path,''), c.status,
 		COALESCE(c.reject_reason,''), COALESCE(c.reviewer_id,''),
-		c.created_at, COALESCE(c.reviewed_at,0), COALESCE(u.email,'')
+		c.created_at, COALESCE(c.reviewed_at,0),
+		c.auto_verified, COALESCE(c.verify_note,''), COALESCE(c.verified_at,0),
+		COALESCE(u.email,'')
 		FROM deposit_claims c LEFT JOIN users u ON u.id = c.user_id`
 	var (
 		rows *sql.Rows
@@ -127,7 +131,8 @@ func (s *PGDepositClaimStore) ListClaimsForAdmin(status string, limit, offset in
 		var amountStr string
 		if err := rows.Scan(&cl.ID, &cl.UserID, &cl.Asset, &amountStr, &cl.TxID,
 			&cl.ScreenshotPath, &cl.Status, &cl.RejectReason, &cl.ReviewerID,
-			&cl.CreatedAt, &cl.ReviewedAt, &cl.Email); err != nil {
+			&cl.CreatedAt, &cl.ReviewedAt,
+			&cl.AutoVerified, &cl.VerifyNote, &cl.VerifiedAt, &cl.Email); err != nil {
 			return nil, err
 		}
 		if _, _, err := cl.Amount.Parse(amountStr, 10); err != nil {
@@ -204,6 +209,71 @@ func (s *PGDepositClaimStore) ReviewClaim(id, reviewerID, action, reason string)
 	cl.ReviewerID = reviewerID
 	cl.ReviewedAt = now
 	return cl, nil
+}
+
+// AutoApproveClaim is the automated-reviewer (Alchemy auto-verification)
+// variant of ReviewClaim approval: identical atomic credit semantics —
+// status transition, spot-wallet credit and type=1 deposit ledger entry in
+// one transaction — plus it stamps auto_verified=true, verify_note and
+// verified_at in the SAME transaction, so a credited claim always carries
+// its verification provenance.
+func (s *PGDepositClaimStore) AutoApproveClaim(id, note, reviewer string) (*api.DepositClaim, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	cl, err := scanDepositClaim(tx.QueryRow(
+		`SELECT `+depositClaimSelectCols+` FROM deposit_claims WHERE id=$1`, id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("deposit claim %s not found", id)
+		}
+		return nil, fmt.Errorf("deposit claim get: %w", err)
+	}
+
+	now := time.Now().UnixNano()
+	res, err := tx.Exec(
+		`UPDATE deposit_claims
+		 SET status='approved', reject_reason=$2, reviewer_id=$3, reviewed_at=$4,
+		     auto_verified=true, verify_note=$2, verified_at=$4
+		 WHERE id=$1 AND status='pending'`,
+		id, note, reviewer, now)
+	if err != nil {
+		return nil, fmt.Errorf("deposit claim auto-approve: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, errors.New("claim is not pending review (already reviewed)")
+	}
+
+	if err := creditSpotWalletTx(tx, cl); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	cl.Status = "approved"
+	cl.RejectReason = note
+	cl.ReviewerID = reviewer
+	cl.ReviewedAt = now
+	cl.AutoVerified = true
+	cl.VerifyNote = note
+	cl.VerifiedAt = now
+	return cl, nil
+}
+
+// RecordVerifyNote stores the auto-verification outcome on a claim that
+// stays pending (verification failed or was impossible). Never touches the
+// claim status, so manual review proceeds unchanged.
+func (s *PGDepositClaimStore) RecordVerifyNote(id, note string) error {
+	_, err := s.db.Exec(
+		`UPDATE deposit_claims SET verify_note=$2, verified_at=$3 WHERE id=$1`,
+		id, note, time.Now().UnixNano())
+	if err != nil {
+		return fmt.Errorf("deposit claim verify note: %w", err)
+	}
+	return nil
 }
 
 // creditSpotWalletTx credits the claim amount to the user's spot wallet and

@@ -2,8 +2,10 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/WkT010/nexa-exchange/internal/wallet"
 	"github.com/gin-gonic/gin"
 )
 
@@ -102,6 +105,57 @@ func (f *fakeDepositClaimStore) ReviewClaim(id, reviewerID, action, reason strin
 	cl.ReviewerID = reviewerID
 	cl.ReviewedAt = 1700000001000000000
 	return cl, nil
+}
+
+func (f *fakeDepositClaimStore) AutoApproveClaim(id, note, reviewer string) (*DepositClaim, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cl := f.claims[id]
+	if cl == nil {
+		return nil, fmt.Errorf("deposit claim %s not found", id)
+	}
+	if cl.Status != "pending" {
+		return nil, fmt.Errorf("claim is not pending review (already reviewed)")
+	}
+	cl.Status = "approved"
+	cl.RejectReason = note
+	cl.ReviewerID = reviewer
+	cl.ReviewedAt = 1700000001000000000
+	cl.AutoVerified = true
+	cl.VerifyNote = note
+	cl.VerifiedAt = 1700000001000000000
+	return cl, nil
+}
+
+func (f *fakeDepositClaimStore) RecordVerifyNote(id, note string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if cl := f.claims[id]; cl != nil {
+		cl.VerifyNote = note
+		cl.VerifiedAt = 1700000001000000000
+	}
+	return nil
+}
+
+// fakeDepositVerifier stubs the on-chain verifier for handler tests.
+type fakeDepositVerifier struct {
+	mu        sync.Mutex
+	res       *wallet.VerifyResult
+	err       error
+	calls     int
+	lastAsset string
+	lastTxid  string
+}
+
+func (f *fakeDepositVerifier) VerifyDeposit(ctx context.Context, asset, txid string, amount *big.Float) (*wallet.VerifyResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.lastAsset, f.lastTxid = asset, txid
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.res, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -411,4 +465,146 @@ func TestDepositClaimAdminListAndScreenshot(t *testing.T) {
 		t.Errorf("unknown claim screenshot: status %d, want 404", w.Code)
 	}
 	_ = out
+}
+
+// ---------------------------------------------------------------------------
+// on-chain auto-verification (Alchemy)
+// ---------------------------------------------------------------------------
+
+func TestDepositClaimAutoVerifyApproves(t *testing.T) {
+	s := newClaimTestServer(t)
+	v := &fakeDepositVerifier{res: &wallet.VerifyResult{
+		OK:            true,
+		Note:          "auto-verified via Alchemy: USDT transfer of 1000 confirmed in tx 0xok (12 confirmations)",
+		MatchedAmount: big.NewFloat(1000),
+		TxHash:        "0xok",
+	}}
+	s.h.SetDepositVerifier(v)
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "USDT", "amount": "900", "txid": "0xok"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	// The response lets the frontend see the auto-approval immediately.
+	if body["status"] != "approved" || body["auto_verified"] != true {
+		t.Fatalf("payload = %v, want approved + auto_verified", body)
+	}
+	if note, _ := body["verify_note"].(string); !strings.Contains(note, "auto-verified") {
+		t.Errorf("verify_note = %q, want alchemy rationale", note)
+	}
+	// Store reflects the system review.
+	id, _ := body["id"].(string)
+	cl := s.store.claims[id]
+	if cl.Status != "approved" || !cl.AutoVerified {
+		t.Fatalf("claim = %+v, want approved + auto-verified", cl)
+	}
+	if cl.ReviewerID != "alchemy" {
+		t.Errorf("reviewer = %q, want alchemy", cl.ReviewerID)
+	}
+	if v.calls != 1 || v.lastAsset != "USDT" || v.lastTxid != "0xok" {
+		t.Errorf("verifier usage = %+v, want one USDT/0xok call", v)
+	}
+}
+
+func TestDepositClaimAutoVerifyInsufficientAmountStaysPending(t *testing.T) {
+	s := newClaimTestServer(t)
+	s.h.SetDepositVerifier(&fakeDepositVerifier{res: &wallet.VerifyResult{
+		OK:   false,
+		Note: "on-chain USDT transfer value 100 is below the claimed amount (claimed >= 900 required)",
+	}})
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "USDT", "amount": "900", "txid": "0xshort"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+	id, _ := body["id"].(string)
+	cl := s.store.claims[id]
+	if cl.Status != "pending" {
+		t.Fatalf("claim status = %q, want pending (never auto-reject)", cl.Status)
+	}
+	if !strings.Contains(cl.VerifyNote, "below the claimed amount") {
+		t.Errorf("verify_note = %q, want insufficiency reason", cl.VerifyNote)
+	}
+}
+
+func TestDepositClaimAutoVerifyFailedReceiptStaysPending(t *testing.T) {
+	s := newClaimTestServer(t)
+	s.h.SetDepositVerifier(&fakeDepositVerifier{res: &wallet.VerifyResult{
+		OK:   false,
+		Note: "transaction reverted on chain (receipt status 0x0)",
+	}})
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "ETH", "amount": "1", "txid": "0xreverted"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+	id, _ := body["id"].(string)
+	if note := s.store.claims[id].VerifyNote; !strings.Contains(note, "reverted") {
+		t.Errorf("verify_note = %q, want receipt-failure reason", note)
+	}
+}
+
+func TestDepositClaimAutoVerifySkipsUnverifiableAssets(t *testing.T) {
+	s := newClaimTestServer(t)
+	v := &fakeDepositVerifier{res: &wallet.VerifyResult{OK: true, Note: "should never be used"}}
+	s.h.SetDepositVerifier(v)
+
+	// BTC/ADA/SOL/BNB are not covered by the Ethereum verifier and must go
+	// straight to the manual queue without consulting the chain.
+	for i, asset := range []string{"BTC", "ADA", "SOL", "BNB"} {
+		w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+			map[string]string{"asset": asset, "amount": "1", "txid": fmt.Sprintf("0xnv%d", i)})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("%s submit: status %d", asset, w.Code)
+		}
+		if body["status"] != "pending" || body["auto_verified"] != false {
+			t.Errorf("%s payload = %v, want pending + not auto-verified", asset, body)
+		}
+		if note, _ := body["verify_note"].(string); note != "" {
+			t.Errorf("%s verify_note = %q, want empty (no attempt)", asset, note)
+		}
+	}
+	if v.calls != 0 {
+		t.Errorf("verifier called %d times, want 0 for unverifiable assets", v.calls)
+	}
+}
+
+func TestDepositClaimAutoVerifyGracefulWithoutVerifier(t *testing.T) {
+	// No ALCHEMY_API_KEY → no verifier wired → plain manual flow, no error.
+	s := newClaimTestServer(t)
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "ETH", "amount": "2", "txid": "0xnokey"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+}
+
+func TestDepositClaimAutoVerifyInfraErrorStaysPending(t *testing.T) {
+	s := newClaimTestServer(t)
+	s.h.SetDepositVerifier(&fakeDepositVerifier{err: errors.New("rpc eth_getTransactionReceipt: connection refused")})
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "USDC", "amount": "10", "txid": "0xnetdown"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+	id, _ := body["id"].(string)
+	if note := s.store.claims[id].VerifyNote; !strings.Contains(note, "auto-verify unavailable") {
+		t.Errorf("verify_note = %q, want unavailable reason", note)
+	}
 }

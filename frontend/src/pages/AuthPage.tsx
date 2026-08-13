@@ -17,14 +17,14 @@ function AuthShell({ children, title, subtitle }: { children: React.ReactNode; t
           className="absolute inset-0 opacity-[0.04]"
           style={{
             backgroundImage:
-              'linear-gradient(to right, #fff 1px, transparent 1px), linear-gradient(to bottom, #fff 1px, transparent 1px)',
+              'linear-gradient(to right, rgb(var(--grid-line)) 1px, transparent 1px), linear-gradient(to bottom, rgb(var(--grid-line)) 1px, transparent 1px)',
             backgroundSize: '40px 40px',
           }}
         />
       </div>
       <div className="relative w-full max-w-md animate-fade-in">
         <div className="mb-8 flex items-center justify-center gap-2">
-          <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent text-lg font-bold text-nexa-950 shadow-lg shadow-accent/30">
+          <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent text-lg font-bold text-on-cta shadow-lg shadow-accent/30">
             F
           </span>
           <span className="text-2xl font-bold text-nexa-100">

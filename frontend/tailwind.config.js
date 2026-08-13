@@ -1,4 +1,9 @@
 /** @type {import('tailwindcss').Config} */
+
+// Resolve a theme token from CSS variables (defined in src/index.css).
+// <alpha-value> keeps Tailwind opacity modifiers (bg-cta/15) working.
+const token = (name) => `rgb(var(--c-${name}) / <alpha-value>)`;
+
 export default {
   content: [
     "./index.html",
@@ -8,43 +13,49 @@ export default {
   theme: {
     extend: {
       colors: {
-        // ── Fliance design tokens (measured from the reference exchange UI) ──
-        bg1: '#202630', // page primary background
-        bg2: '#181A20', // secondary background
-        bg3: '#0B0E11', // deepest background (footer / inputs wells)
-        container: '#29313D', // cards / inputs / hover rows
-        line: '#333B47', // hairline dividers
-        pri: '#EAECEF', // primary text
-        sec: '#929AA5', // secondary text
-        third: '#707A8A', // tertiary text
-        cta: '#14B8A6', // CTA button background (teal)
-        'cta-bright': '#2DD4BF', // brighter teal for dark-surface accents
-        'cta-deep': '#0D9488', // teal hover state
-        brand: '#2DD4BF', // brand teal / badges
-        'brand-soft': 'rgba(45, 212, 191, 0.12)', // translucent brand tint
-        gain: '#2EBD85', // up / buy (semantic — unchanged)
-        loss: '#F6465D', // down / sell (semantic — unchanged)
-        'gain-bg': 'rgba(46, 189, 133, 0.1)',
-        'loss-bg': 'rgba(246, 70, 93, 0.1)',
+        // ── Fliance design tokens — CSS-variable driven so the whole
+        //    app re-skins when <html data-theme> switches (dark default,
+        //    [data-theme="light"] overrides every token in index.css) ──
+        bg1: token('bg1'), // page primary background
+        bg2: token('bg2'), // secondary background
+        bg3: token('bg3'), // deepest background (footer / inputs wells)
+        container: token('container'), // cards / inputs / hover rows
+        line: token('line'), // hairline dividers
+        pri: token('pri'), // primary text
+        sec: token('sec'), // secondary text
+        third: token('third'), // tertiary text
+        cta: token('cta'), // CTA button background (teal)
+        'cta-bright': token('cta-bright'), // brighter teal for dark-surface accents
+        'cta-deep': token('cta-deep'), // teal hover state
+        brand: token('brand'), // brand teal / badges
+        'brand-soft': 'rgb(var(--c-brand) / 0.12)', // translucent brand tint
+        'on-cta': token('on-cta'), // text on teal CTA surfaces
+        'band-bg': token('band-bg'), // button bg on the teal CTA band
+        'band-bg-hover': token('band-bg-hover'),
+        'band-text': token('band-text'),
+        gain: token('gain'), // up / buy (semantic)
+        loss: token('loss'), // down / sell (semantic)
+        'gain-bg': 'rgb(var(--c-gain) / 0.1)',
+        'loss-bg': 'rgb(var(--c-loss) / 0.1)',
         // ── Legacy palette remapped onto the token ramp so existing pages
-        //    pick up the new scheme automatically ──
+        //    pick up the new scheme automatically (ramp inverts per theme) ──
         nexa: {
-          950: '#0B0E11',
-          900: '#181A20',
-          800: '#202630',
-          700: '#2B3139',
-          600: '#333B47',
-          500: '#5E6675',
-          400: '#707A8A',
-          300: '#929AA5',
-          200: '#C9CDD4',
-          100: '#EAECEF',
-          50: '#FFFFFF',
+          950: token('nexa-950'),
+          900: token('nexa-900'),
+          800: token('nexa-800'),
+          700: token('nexa-700'),
+          600: token('nexa-600'),
+          500: token('nexa-500'),
+          400: token('nexa-400'),
+          300: token('nexa-300'),
+          200: token('nexa-200'),
+          100: token('nexa-100'),
+          50: token('nexa-50'),
         },
-        up: '#2EBD85',
-        down: '#F6465D',
-        accent: '#2DD4BF',
-        warning: '#F0B90B',
+        up: token('gain'),
+        down: token('loss'),
+        accent: token('accent'),
+        warning: token('warning'),
       },
       fontFamily: {
         sans: ['IBM Plex Sans', 'Inter', 'system-ui', 'sans-serif'],

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/store/authStore';
+import { useThemeStore } from '@/store/themeStore';
 import { getKycStatus } from '@/api/kyc';
 import { cls } from '@/utils/format';
 import { LANGS, setLanguage } from '@/i18n';
@@ -17,6 +18,7 @@ interface NavItem {
 export function Header() {
   const { t, i18n } = useTranslation();
   const { user, isAdmin, logout } = useAuthStore();
+  const { theme, toggleTheme } = useThemeStore();
   const navigate = useNavigate();
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -136,6 +138,36 @@ export function Header() {
     </div>
   );
 
+  // Dark/light theme toggle. The label describes the action (switch *to*
+  // the other theme), not the current state.
+  const themeToggle = (
+    <button
+      onClick={toggleTheme}
+      className="flex h-9 w-9 items-center justify-center rounded border border-line bg-bg2 text-sec transition-colors hover:bg-container hover:text-pri"
+      aria-label={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')}
+      title={theme === 'dark' ? t('common.switchToLight') : t('common.switchToDark')}
+    >
+      {theme === 'dark' ? (
+        /* Sun: switching to light */
+        <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+          <circle cx="12" cy="12" r="4" stroke="currentColor" strokeWidth="2" />
+          <path
+            d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          />
+        </svg>
+      ) : (
+        /* Moon: switching to dark */
+        <svg viewBox="0 0 24 24" fill="none" width="18" height="18">
+          <path
+            d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"
+            stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          />
+        </svg>
+      )}
+    </button>
+  );
+
   return (
     <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-line bg-bg1/95 px-4 backdrop-blur-md">
       <div className="flex items-center gap-6">
@@ -148,6 +180,7 @@ export function Header() {
         <nav className="hidden items-center gap-1 md:flex">{navLinks}</nav>
       </div>
       <div className="flex items-center gap-2 sm:gap-3">
+        {themeToggle}
         <div className="hidden sm:block">{langSwitcher}</div>
         {user && kycVerified !== null && (
           kycVerified ? (
@@ -216,7 +249,7 @@ export function Header() {
             </button>
             <button
               onClick={() => navigate('/register')}
-              className="hidden rounded bg-cta px-4 py-1.5 text-sm font-semibold text-bg1 transition-colors hover:bg-cta-deep sm:inline-flex"
+              className="hidden rounded bg-cta px-4 py-1.5 text-sm font-semibold text-on-cta transition-colors hover:bg-cta-deep sm:inline-flex"
             >
               {t('auth.register')}
             </button>
@@ -247,6 +280,7 @@ export function Header() {
           <div className="mt-4 border-t border-line pt-4">
             <div className="mb-2 text-xs text-third">{t('common.language')}</div>
             {langSwitcher}
+            <div className="mt-3 flex items-center gap-2">{themeToggle}</div>
           </div>
           {user && (
             <div className="mt-4 truncate border-t border-line pt-3 text-sm text-sec">

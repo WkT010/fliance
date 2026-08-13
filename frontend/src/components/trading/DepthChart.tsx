@@ -1,6 +1,8 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useMarketStore } from '@/store/marketStore';
+import { useThemeStore } from '@/store/themeStore';
+import { CHART_PALETTES } from '@/utils/chartTheme';
 import { Card } from '../common/Card';
 import { formatPrice, formatQty } from '@/utils/format';
 
@@ -22,6 +24,7 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const ob = useMarketStore((s) => s.orderbook);
+  const theme = useThemeStore((s) => s.theme);
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [dim, setDim] = useState({ w: 600, h: 350 });
 
@@ -65,9 +68,10 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
     canvas.width = w * dpr; canvas.height = h * dpr;
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, w, h);
+    const pal = CHART_PALETTES[theme];
     const { bids, asks, maxCum, minP, maxP, midP } = buildDepth();
     if (bids.length === 0 && asks.length === 0) {
-      ctx.fillStyle = '#5d6b7a'; ctx.font = '14px Inter, sans-serif'; ctx.textAlign = 'center';
+      ctx.fillStyle = pal.axisLabel; ctx.font = '14px Inter, sans-serif'; ctx.textAlign = 'center';
       ctx.fillText(t('trading.waitingOrderbook'), w / 2, h / 2);
       return;
     }
@@ -75,25 +79,25 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
     const chartW = w - ml - mr; const chartH = h - mt - mb;
     const xPx = (price: number) => ml + ((price - minP) / (maxP - minP)) * chartW;
     const yPx = (cum: number) => mt + chartH - (cum / maxCum) * chartH;
-    ctx.strokeStyle = '#1e242c'; ctx.lineWidth = 1;
+    ctx.strokeStyle = pal.grid; ctx.lineWidth = 1;
     for (let i = 0; i <= 5; i++) {
       const y = mt + (chartH / 5) * i;
       ctx.beginPath(); ctx.moveTo(ml, y); ctx.lineTo(w - mr, y); ctx.stroke();
-      ctx.fillStyle = '#5d6b7a'; ctx.font = '10px JetBrains Mono, monospace'; ctx.textAlign = 'right';
+      ctx.fillStyle = pal.axisLabel; ctx.font = '10px JetBrains Mono, monospace'; ctx.textAlign = 'right';
       ctx.fillText(formatQty(maxCum - (maxCum / 5) * i, 2), ml - 6, y + 4);
     }
     for (let i = 0; i <= 6; i++) {
       const x = ml + (chartW / 6) * i;
       ctx.beginPath(); ctx.moveTo(x, mt); ctx.lineTo(x, h - mb); ctx.stroke();
-      ctx.fillStyle = '#5d6b7a'; ctx.font = '10px JetBrains Mono, monospace'; ctx.textAlign = 'center';
+      ctx.fillStyle = pal.axisLabel; ctx.font = '10px JetBrains Mono, monospace'; ctx.textAlign = 'center';
       ctx.fillText(formatPrice(minP + (maxP - minP) * (i / 6), 2), x, h - mb + 18);
     }
     if (asks.length > 0) {
       ctx.beginPath(); ctx.moveTo(xPx(asks[0].price), h - mb);
       for (const p of asks) ctx.lineTo(xPx(p.price), yPx(p.cumulative));
       ctx.lineTo(xPx(asks[asks.length - 1].price), h - mb); ctx.closePath();
-      ctx.fillStyle = 'rgba(246, 70, 93, 0.15)'; ctx.fill();
-      ctx.strokeStyle = '#f6465d'; ctx.lineWidth = 1.5; ctx.beginPath();
+      ctx.fillStyle = pal.lossFill; ctx.fill();
+      ctx.strokeStyle = pal.loss; ctx.lineWidth = 1.5; ctx.beginPath();
       for (let i = 0; i < asks.length; i++) { const px = xPx(asks[i].price); const py = yPx(asks[i].cumulative); if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); }
       ctx.stroke();
     }
@@ -101,26 +105,26 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
       ctx.beginPath(); ctx.moveTo(xPx(bids[0].price), h - mb);
       for (const p of bids) ctx.lineTo(xPx(p.price), yPx(p.cumulative));
       ctx.lineTo(xPx(bids[bids.length - 1].price), h - mb); ctx.closePath();
-      ctx.fillStyle = 'rgba(14, 203, 129, 0.15)'; ctx.fill();
-      ctx.strokeStyle = '#0ecb81'; ctx.lineWidth = 1.5; ctx.beginPath();
+      ctx.fillStyle = pal.gainFill; ctx.fill();
+      ctx.strokeStyle = pal.gain; ctx.lineWidth = 1.5; ctx.beginPath();
       for (let i = 0; i < bids.length; i++) { const px = xPx(bids[i].price); const py = yPx(bids[i].cumulative); if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py); }
       ctx.stroke();
     }
     const midX = xPx(midP);
-    ctx.strokeStyle = '#2DD4BF'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = pal.midLine; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(midX, mt); ctx.lineTo(midX, h - mb); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = '#2DD4BF'; ctx.font = '11px JetBrains Mono, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = pal.midLine; ctx.font = '11px JetBrains Mono, monospace'; ctx.textAlign = 'center';
     ctx.fillText(formatPrice(midP, 2), midX, mt - 4);
-    ctx.fillStyle = '#8b97a8'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillStyle = pal.mutedLabel; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(t('trading.price'), w / 2, h - 2);
     ctx.save(); ctx.translate(12, mt + chartH / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = 'center';
-    ctx.fillStyle = '#8b97a8'; ctx.font = '11px Inter, sans-serif'; ctx.fillText(t('trading.cumulativeDepth'), 0, 0); ctx.restore();
+    ctx.fillStyle = pal.mutedLabel; ctx.font = '11px Inter, sans-serif'; ctx.fillText(t('trading.cumulativeDepth'), 0, 0); ctx.restore();
     ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'left';
-    ctx.fillStyle = '#0ecb81'; ctx.fillRect(w - mr - 100, mt + 6, 10, 10);
+    ctx.fillStyle = pal.gain; ctx.fillRect(w - mr - 100, mt + 6, 10, 10);
     ctx.fillText(t('trading.bids'), w - mr - 86, mt + 15);
-    ctx.fillStyle = '#f6465d'; ctx.fillRect(w - mr - 52, mt + 6, 10, 10);
+    ctx.fillStyle = pal.loss; ctx.fillRect(w - mr - 52, mt + 6, 10, 10);
     ctx.fillText(t('trading.asks'), w - mr - 38, mt + 15);
-  }, [dim, ob, buildDepth, t]);
+  }, [dim, ob, buildDepth, t, theme]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;

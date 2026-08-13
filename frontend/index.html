@@ -5,6 +5,18 @@
     <link rel="icon" type="image/png" href="/fliance-logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fliance（梵响）— 数字资产交易平台</title>
+    <script>
+      // Theme bootstrap: apply the persisted theme before first paint to
+      // avoid a dark→light flash. Mirrors src/store/themeStore.ts.
+      try {
+        document.documentElement.setAttribute(
+          'data-theme',
+          localStorage.getItem('fliance-theme') === 'light' ? 'light' : 'dark'
+        );
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">

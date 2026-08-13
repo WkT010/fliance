@@ -123,8 +123,10 @@ function DepositClaimForm({ assets, asset, onAssetChange, onSubmitted }: {
     if (busy) return;
     setBusy(true);
     try {
-      await submitDepositClaim({ asset, amount, txid: txid.trim(), screenshot: screenshot || undefined });
-      toast.success(t('wallet.claimSubmitted'));
+      const claim = await submitDepositClaim({ asset, amount, txid: txid.trim(), screenshot: screenshot || undefined });
+      // On-chain verification can approve the deposit instantly; otherwise it
+      // enters the manual review queue.
+      toast.success(claim.status === 'approved' ? t('wallet.claimAutoApproved') : t('wallet.claimSubmitted'));
       setAmount('');
       setTxid('');
       setScreenshot('');

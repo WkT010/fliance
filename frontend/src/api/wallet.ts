@@ -40,10 +40,12 @@ export async function getSupportedAssets(): Promise<string[]> {
 
 /**
  * POST /wallet/deposit/claim — submit an on-chain deposit proof (txid
- * required, screenshot optional). 201 → { id, status: 'pending' };
- * 409 → duplicate txid, 400 → { error }.
+ * required, screenshot optional). 201 → { id, status, auto_verified }:
+ * status is 'pending' for manual review, or 'approved' (with
+ * auto_verified=true) when the on-chain Alchemy verification passed
+ * immediately. 409 → duplicate txid, 400 → { error }.
  */
-export async function submitDepositClaim(req: DepositClaimReq): Promise<{ id: string; status: string }> {
+export async function submitDepositClaim(req: DepositClaimReq): Promise<{ id: string; status: string; auto_verified?: boolean }> {
   const res = await api.post('/wallet/deposit/claim', req);
   return res.data;
 }

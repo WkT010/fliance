@@ -334,9 +334,18 @@ func main() {
 	}
 	// Manual deposit claims: users file txid + optional screenshot, admins
 	// review; approval credits the spot wallet atomically with the status
-	// change. Without Postgres the endpoints degrade to 503.
+	// change. Without Postgres the endpoints degrade to 503. When an Alchemy
+	// key is configured, ETH/USDT/USDC claims are additionally verified
+	// on-chain at submission time and auto-approved on a full match; every
+	// other case falls back to the manual queue.
 	dcH := api.NewDepositClaimHandler(claimStore, "")
 	dcH.SetAuditLogger(auditLog)
+	if cfg.AlchemyAPIKey != "" {
+		dcH.SetDepositVerifier(wallet.NewDepositVerifier(cfg.AlchemyEthURL, 25*time.Second))
+		slog.Info("deposit auto-verification enabled", "chain", "ethereum-mainnet", "assets", "ETH/USDT/USDC")
+	} else {
+		slog.Info("deposit auto-verification disabled (ALCHEMY_API_KEY not set); claims go to manual review")
+	}
 
 	// ── Shared cache (Redis with in-memory fallback) ──
 	// Backs the login lockout counters, the JWT token blacklist and the WS

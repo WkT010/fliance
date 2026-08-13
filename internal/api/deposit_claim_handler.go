@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"math/big"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/WkT010/nexa-exchange/internal/audit"
+	"github.com/WkT010/nexa-exchange/internal/wallet"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -35,6 +37,12 @@ type DepositClaim struct {
 	ReviewerID     string
 	CreatedAt      int64 // unix nanos
 	ReviewedAt     int64
+	// Auto-verification bookkeeping (migration 013). AutoVerified is true
+	// only when the on-chain verifier approved the claim itself; VerifyNote
+	// carries the outcome / failure reason of the verification attempt.
+	AutoVerified bool
+	VerifyNote   string
+	VerifiedAt   int64
 	// Admin-listing enrichment (populated only by the admin list endpoint).
 	UID   string
 	Email string
@@ -56,6 +64,13 @@ type DepositClaimStore interface {
 	// wallet and writes the deposit ledger entry atomically with the status
 	// change; reviewing an already-reviewed claim is an error.
 	ReviewClaim(id, reviewerID, action, reason string) (*DepositClaim, error)
+	// AutoApproveClaim is the automated-reviewer variant of ReviewClaim:
+	// same atomic credit semantics, plus it stamps auto_verified=true,
+	// verify_note and verified_at in the same transaction.
+	AutoApproveClaim(id, note, reviewer string) (*DepositClaim, error)
+	// RecordVerifyNote stores the auto-verification outcome on a claim that
+	// stays pending (failed / unverifiable attempts). Never changes status.
+	RecordVerifyNote(id, note string) error
 }
 
 const (
@@ -65,14 +80,30 @@ const (
 	// depositClaimMaxTxIDLen caps the accepted txid length (longest common
 	// chain hashes are 64 hex chars; generous headroom, still bounded).
 	depositClaimMaxTxIDLen = 256
+	// depositAutoReviewer is the reviewer_id recorded when the on-chain
+	// verifier approves a claim without human intervention.
+	depositAutoReviewer = "alchemy"
+	// depositVerifyTimeout bounds the synchronous on-chain verification at
+	// submission time; on expiry the claim simply stays pending for manual
+	// review (the verifier's own HTTP timeout is tighter). Generous because
+	// the verification includes one retry on infra errors.
+	depositVerifyTimeout = 55 * time.Second
 )
+
+// DepositTxVerifier checks a claimed deposit transaction on-chain. The
+// wallet.DepositVerifier (Alchemy, Ethereum mainnet) implements it; the
+// interface exists so tests can fake the chain.
+type DepositTxVerifier interface {
+	VerifyDeposit(ctx context.Context, asset, txid string, amount *big.Float) (*wallet.VerifyResult, error)
+}
 
 // DepositClaimHandler serves the user-facing deposit-claim endpoints and the
 // admin review endpoints (registered on separate route groups).
 type DepositClaimHandler struct {
-	store   DepositClaimStore
-	dataDir string
-	audit   *audit.Logger
+	store    DepositClaimStore
+	dataDir  string
+	audit    *audit.Logger
+	verifier DepositTxVerifier
 }
 
 // NewDepositClaimHandler constructs a deposit-claim handler rooted at
@@ -87,6 +118,11 @@ func NewDepositClaimHandler(store DepositClaimStore, dataDir string) *DepositCla
 // SetAuditLogger wires the asynchronous admin audit logger. Optional: without
 // it review decisions simply do not record audit entries (nil-safe).
 func (h *DepositClaimHandler) SetAuditLogger(l *audit.Logger) { h.audit = l }
+
+// SetDepositVerifier wires the on-chain auto-verifier (Alchemy). Optional:
+// without it — or without an ALCHEMY_API_KEY at startup — every claim stays
+// pending for manual review.
+func (h *DepositClaimHandler) SetDepositVerifier(v DepositTxVerifier) { h.verifier = v }
 
 type depositClaimSubmitReq struct {
 	Asset      string `json:"asset" binding:"required"`
@@ -178,7 +214,68 @@ func (h *DepositClaimHandler) Submit(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "deposit claim submit failed"})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"id": claim.ID, "status": claim.Status})
+
+	// On-chain auto-verification (Alchemy, ETH/USDT/USDC on Ethereum
+	// mainnet). Strictly best-effort: every failure mode — missing verifier
+	// (no ALCHEMY_API_KEY), unverifiable asset, network error, mismatched
+	// amount — leaves the claim pending for manual review. A claim is NEVER
+	// auto-rejected and NEVER auto-approved on anything but a full match.
+	autoVerified, verifyNote := h.autoVerify(c, claim)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"id":            claim.ID,
+		"status":        claim.Status,
+		"auto_verified": autoVerified,
+		"verify_note":   verifyNote,
+	})
+}
+
+// autoVerify runs the synchronous on-chain check for a freshly submitted
+// claim and applies the outcome. Returns the final auto_verified flag and a
+// human-readable note (empty when verification was not attempted). It never
+// fails the request: worst case the claim stays pending.
+func (h *DepositClaimHandler) autoVerify(c *gin.Context, claim *DepositClaim) (bool, string) {
+	if h.verifier == nil || !wallet.IsAutoVerifiableAsset(claim.Asset) {
+		return false, ""
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), depositVerifyTimeout)
+	defer cancel()
+	res, err := h.verifier.VerifyDeposit(ctx, claim.Asset, claim.TxID, claim.Amount)
+	if err != nil && ctx.Err() == nil {
+		// One retry on infra errors (TLS handshake blips / slow responses);
+		// approval semantics are unaffected — errors still mean "pending".
+		time.Sleep(time.Second)
+		res, err = h.verifier.VerifyDeposit(ctx, claim.Asset, claim.TxID, claim.Amount)
+	}
+	now := time.Now().UnixNano()
+	if err != nil {
+		note := "auto-verify unavailable (manual review required): " + err.Error()
+		_ = h.store.RecordVerifyNote(claim.ID, note)
+		claim.VerifyNote, claim.VerifiedAt = note, now
+		return false, note
+	}
+	if !res.OK {
+		_ = h.store.RecordVerifyNote(claim.ID, res.Note)
+		claim.VerifyNote, claim.VerifiedAt = res.Note, now
+		return false, res.Note
+	}
+	approved, aerr := h.store.AutoApproveClaim(claim.ID, res.Note, depositAutoReviewer)
+	if aerr != nil {
+		// Verification passed but the credit transaction failed (e.g. the
+		// claim raced with a manual review): keep it pending, leave a note.
+		note := "auto-verify passed but automatic credit failed: " + aerr.Error()
+		_ = h.store.RecordVerifyNote(claim.ID, note)
+		claim.VerifyNote, claim.VerifiedAt = note, now
+		h.audit.Log(c, "deposit.claim.auto_approve_failed", "deposit_claim", claim.ID, gin.H{
+			"txid": claim.TxID, "asset": claim.Asset, "error": aerr.Error(),
+		}, aerr)
+		return false, note
+	}
+	*claim = *approved
+	h.audit.Log(c, "deposit.claim.auto_approved", "deposit_claim", claim.ID, gin.H{
+		"txid": claim.TxID, "asset": claim.Asset, "note": res.Note,
+	}, nil)
+	return true, res.Note
 }
 
 // List handles GET /api/v2/wallet/deposit/claims: the caller's own claims,
@@ -354,6 +451,9 @@ func depositClaimToJSON(cl *DepositClaim) gin.H {
 		"txid":          cl.TxID,
 		"status":        cl.Status,
 		"reject_reason": cl.RejectReason,
+		"auto_verified": cl.AutoVerified,
+		"verify_note":   cl.VerifyNote,
+		"verified_at":   cl.VerifiedAt,
 		"created_at":    cl.CreatedAt,
 		"reviewed_at":   cl.ReviewedAt,
 	}
