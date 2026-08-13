@@ -233,8 +233,17 @@
     "claimTxid": "On-chain Transaction ID (TxID)",
     "claimScreenshot": "Transfer Screenshot (optional)",
     "claimRemove": "Remove screenshot",
+    "claimNetwork": "Network",
+    "claimManualReviewNotice": "Automatic verification isn't available for this asset yet — it will be reviewed manually, so crediting may take longer.",
+    "networks": {
+      "eth-mainnet": "Ethereum",
+      "polygon-mainnet": "Polygon",
+      "arbitrum-mainnet": "Arbitrum One",
+      "optimism-mainnet": "Optimism",
+      "base-mainnet": "Base"
+    },
     "claimSubmit": "Submit Proof",
-    "claimSubmitted": "Deposit proof submitted — awaiting review",
+    "claimSubmitted": "Submitted — under manual review, crediting may take some time",
     "claimAutoApproved": "Deposit verified on-chain and credited automatically",
     "claimSubmitFailed": "Failed to submit deposit proof",
     "claimRecords": "Deposit Records",

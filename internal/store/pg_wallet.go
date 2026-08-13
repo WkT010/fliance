@@ -74,6 +74,35 @@ func (s *PGWalletStore) SaveWallet(w *wallet.Wallet) error {
 	return err
 }
 
+// AssignDepositAddress idempotently binds a deposit address to the user's
+// spot wallet row for an asset, upserting the row when it does not exist yet.
+// It returns the address that is actually persisted afterwards: when the row
+// already carries an address (even one written concurrently by another
+// request) that one wins and the candidate is discarded, so the endpoint
+// never hands out an address it did not persist. The single atomic
+// INSERT ... ON CONFLICT ... RETURNING statement makes the first address
+// ever assigned win under concurrent requests — there is no
+// check-then-write race window.
+func (s *PGWalletStore) AssignDepositAddress(userID, asset, address string) (string, error) {
+	if userID == "" || asset == "" || address == "" {
+		return "", fmt.Errorf("assign deposit address: userID, asset and address are required")
+	}
+	now := time.Now().UnixNano()
+	wid := "wal_" + nowText() + randSuffix()
+	var persisted string
+	err := s.db.QueryRow(
+		`INSERT INTO wallets (id,user_id,asset,balance,locked,address,created_at,updated_at,account_type)
+		 VALUES ($1,$2,$3,0,0,$4,$5,$5,'spot')
+		 ON CONFLICT (user_id, asset, account_type) DO UPDATE
+		 SET address = CASE WHEN wallets.address IS NULL OR wallets.address = '' THEN EXCLUDED.address ELSE wallets.address END,
+		     updated_at = CASE WHEN wallets.address IS NULL OR wallets.address = '' THEN EXCLUDED.updated_at ELSE wallets.updated_at END
+		 RETURNING COALESCE(address,'')`, wid, userID, asset, address, now).Scan(&persisted)
+	if err != nil {
+		return "", fmt.Errorf("assign deposit address: %w", err)
+	}
+	return persisted, nil
+}
+
 func (s *PGWalletStore) UpdateBalance(id string, delta *big.Float) error {
 	_, err := s.db.Exec(`UPDATE wallets SET balance = balance + $1, updated_at = $2 WHERE id=$3`,
 		delta.Text('f', 18), time.Now().UnixNano(), id)

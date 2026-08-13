@@ -40,3 +40,4 @@ data/
 
 # IDE/agent workspace metadata
 .qoder/
+.agents/

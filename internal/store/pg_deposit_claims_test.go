@@ -51,11 +51,34 @@ func TestPGDepositClaimSubmitDuplicateTxid(t *testing.T) {
 	}
 }
 
-// TestPGDepositClaimSubmitOK covers the happy path insert.
+// TestPGDepositClaimSubmitOK covers the happy path insert, asserting the
+// network column is persisted (defaulting to eth-mainnet when omitted).
 func TestPGDepositClaimSubmitOK(t *testing.T) {
 	s, mock := newClaimMock(t)
-	mock.ExpectExec("INSERT INTO deposit_claims").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO deposit_claims").
+		WithArgs("dep_test", "usr_alice", "USDT", "1000.000000000000000000", "0xabc123",
+			nil, "pending", int64(1700000000000000000), "eth-mainnet").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := s.SubmitClaim(pendingClaim()); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestPGDepositClaimSubmitWithNetwork persists an explicit multi-chain
+// network value (migration 014).
+func TestPGDepositClaimSubmitWithNetwork(t *testing.T) {
+	s, mock := newClaimMock(t)
+	cl := pendingClaim()
+	cl.TxID = "0xpolygon"
+	cl.Network = "polygon-mainnet"
+	mock.ExpectExec("INSERT INTO deposit_claims").
+		WithArgs("dep_test", "usr_alice", "USDT", "1000.000000000000000000", "0xpolygon",
+			nil, "pending", int64(1700000000000000000), "polygon-mainnet").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	if err := s.SubmitClaim(cl); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -70,9 +93,11 @@ func claimRow(status string) *sqlmock.Rows {
 		"screenshot_path", "status", "reject_reason", "reviewer_id",
 		"created_at", "reviewed_at",
 		"auto_verified", "verify_note", "verified_at",
+		"network",
 	}).AddRow("dep_test", "usr_alice", "USDT", "1000.000000000000000000", "0xabc123",
 		"", status, "", "", int64(1700000000000000000), int64(0),
-		false, "", int64(0))
+		false, "", int64(0),
+		"eth-mainnet")
 }
 
 // TestPGDepositClaimReviewApprove asserts the full approval transaction: the

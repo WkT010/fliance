@@ -28,7 +28,8 @@ const depositClaimSelectCols = `id, user_id, asset, amount, txid,
 	COALESCE(screenshot_path,''), status,
 	COALESCE(reject_reason,''), COALESCE(reviewer_id,''),
 	created_at, COALESCE(reviewed_at,0),
-	auto_verified, COALESCE(verify_note,''), COALESCE(verified_at,0)`
+	auto_verified, COALESCE(verify_note,''), COALESCE(verified_at,0),
+	COALESCE(network,'eth-mainnet')`
 
 func scanDepositClaim(row interface{ Scan(...interface{}) error }) (*api.DepositClaim, error) {
 	cl := &api.DepositClaim{Amount: new(big.Float)}
@@ -36,7 +37,7 @@ func scanDepositClaim(row interface{ Scan(...interface{}) error }) (*api.Deposit
 	err := row.Scan(&cl.ID, &cl.UserID, &cl.Asset, &amountStr, &cl.TxID,
 		&cl.ScreenshotPath, &cl.Status, &cl.RejectReason, &cl.ReviewerID,
 		&cl.CreatedAt, &cl.ReviewedAt,
-		&cl.AutoVerified, &cl.VerifyNote, &cl.VerifiedAt)
+		&cl.AutoVerified, &cl.VerifyNote, &cl.VerifiedAt, &cl.Network)
 	if err != nil {
 		return nil, err
 	}
@@ -56,11 +57,16 @@ func (s *PGDepositClaimStore) SubmitClaim(cl *api.DepositClaim) error {
 	if cl.Amount == nil || cl.Amount.Sign() <= 0 {
 		return wallet.ErrNegativeAmount
 	}
+	// Mirror the column default so callers that omit the network never
+	// hit the NOT NULL constraint.
+	if cl.Network == "" {
+		cl.Network = wallet.DefaultNetwork
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO deposit_claims (id, user_id, asset, amount, txid, screenshot_path, status, created_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		`INSERT INTO deposit_claims (id, user_id, asset, amount, txid, screenshot_path, status, created_at, network)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		cl.ID, cl.UserID, cl.Asset, cl.Amount.Text('f', 18), cl.TxID,
-		nullString(cl.ScreenshotPath), cl.Status, cl.CreatedAt)
+		nullString(cl.ScreenshotPath), cl.Status, cl.CreatedAt, cl.Network)
 	if err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
@@ -109,6 +115,7 @@ func (s *PGDepositClaimStore) ListClaimsForAdmin(status string, limit, offset in
 		COALESCE(c.reject_reason,''), COALESCE(c.reviewer_id,''),
 		c.created_at, COALESCE(c.reviewed_at,0),
 		c.auto_verified, COALESCE(c.verify_note,''), COALESCE(c.verified_at,0),
+		COALESCE(c.network,'eth-mainnet'),
 		COALESCE(u.email,'')
 		FROM deposit_claims c LEFT JOIN users u ON u.id = c.user_id`
 	var (
@@ -132,7 +139,7 @@ func (s *PGDepositClaimStore) ListClaimsForAdmin(status string, limit, offset in
 		if err := rows.Scan(&cl.ID, &cl.UserID, &cl.Asset, &amountStr, &cl.TxID,
 			&cl.ScreenshotPath, &cl.Status, &cl.RejectReason, &cl.ReviewerID,
 			&cl.CreatedAt, &cl.ReviewedAt,
-			&cl.AutoVerified, &cl.VerifyNote, &cl.VerifiedAt, &cl.Email); err != nil {
+			&cl.AutoVerified, &cl.VerifyNote, &cl.VerifiedAt, &cl.Network, &cl.Email); err != nil {
 			return nil, err
 		}
 		if _, _, err := cl.Amount.Parse(amountStr, 10); err != nil {

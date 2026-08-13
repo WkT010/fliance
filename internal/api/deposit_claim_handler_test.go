@@ -139,23 +139,49 @@ func (f *fakeDepositClaimStore) RecordVerifyNote(id, note string) error {
 
 // fakeDepositVerifier stubs the on-chain verifier for handler tests.
 type fakeDepositVerifier struct {
-	mu        sync.Mutex
-	res       *wallet.VerifyResult
-	err       error
-	calls     int
-	lastAsset string
-	lastTxid  string
+	mu          sync.Mutex
+	res         *wallet.VerifyResult
+	err         error
+	calls       int
+	lastNetwork string
+	lastAsset   string
+	lastTxid    string
+	lastAddress string
 }
 
-func (f *fakeDepositVerifier) VerifyDeposit(ctx context.Context, asset, txid string, amount *big.Float) (*wallet.VerifyResult, error) {
+func (f *fakeDepositVerifier) VerifyDeposit(ctx context.Context, network, asset, txid string, amount *big.Float, depositAddress string) (*wallet.VerifyResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	f.lastAsset, f.lastTxid = asset, txid
+	f.lastNetwork, f.lastAsset, f.lastTxid, f.lastAddress = network, asset, txid, depositAddress
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.res, nil
+}
+
+// fakeDepositAddressLookup stubs the server-side deposit-address resolution
+// (wallets.address). addresses maps userID+"/"+asset → address; a missing
+// entry resolves to ("", nil), i.e. "the user has no deposit address".
+type fakeDepositAddressLookup struct {
+	mu        sync.Mutex
+	addresses map[string]string
+	err       error
+	calls     int
+}
+
+func newFakeDepositAddressLookup() *fakeDepositAddressLookup {
+	return &fakeDepositAddressLookup{addresses: map[string]string{}}
+}
+
+func (f *fakeDepositAddressLookup) DepositAddressFor(userID, asset string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.addresses[userID+"/"+asset], nil
 }
 
 // ---------------------------------------------------------------------------
@@ -166,12 +192,18 @@ type claimTestServer struct {
 	engine *gin.Engine
 	store  *fakeDepositClaimStore
 	h      *DepositClaimHandler
+	lookup *fakeDepositAddressLookup
 }
 
 func newClaimTestServer(t *testing.T) *claimTestServer {
 	t.Helper()
 	st := newFakeDepositClaimStore()
 	h := NewDepositClaimHandler(st, t.TempDir())
+	// Default wiring mirrors production: the address lookup is always present;
+	// individual tests seed the addresses they need (a missing entry means
+	// "user has no deposit address" → must stay pending).
+	lookup := newFakeDepositAddressLookup()
+	h.SetDepositAddressLookup(lookup)
 	r := gin.New()
 	// Stand-in for the JWT middleware: the test picks the identity via the
 	// X-User header.
@@ -184,7 +216,7 @@ func newClaimTestServer(t *testing.T) *claimTestServer {
 	r.GET("/api/v2/admin/deposit/claims", mw, h.AdminList)
 	r.GET("/api/v2/admin/deposit/claims/:id/screenshot", mw, h.AdminScreenshot)
 	r.POST("/api/v2/admin/deposit/claims/:id/review", mw, h.AdminReview)
-	return &claimTestServer{engine: r, store: st, h: h}
+	return &claimTestServer{engine: r, store: st, h: h, lookup: lookup}
 }
 
 func (s *claimTestServer) do(t *testing.T, method, path, user string, body any) (*httptest.ResponseRecorder, map[string]any) {
@@ -327,10 +359,13 @@ func TestDepositClaimListOwnOnly(t *testing.T) {
 	}
 	// Newest first and contract fields present.
 	first, _ := claims[0].(map[string]any)
-	for _, k := range []string{"id", "asset", "amount", "txid", "status", "reject_reason", "created_at", "reviewed_at"} {
+	for _, k := range []string{"id", "asset", "amount", "txid", "network", "status", "reject_reason", "created_at", "reviewed_at"} {
 		if _, ok := first[k]; !ok {
 			t.Errorf("claim JSON missing key %q: %v", k, first)
 		}
+	}
+	if first["network"] != "eth-mainnet" {
+		t.Errorf("claim network = %v, want default eth-mainnet", first["network"])
 	}
 	if first["txid"] != "0xb" {
 		t.Errorf("first claim txid = %v, want newest (0xb)", first["txid"])
@@ -427,7 +462,7 @@ func TestDepositClaimAdminListAndScreenshot(t *testing.T) {
 		t.Fatalf("admin claims = %d, want 2", len(claims))
 	}
 	item, _ := claims[0].(map[string]any)
-	for _, k := range []string{"id", "user_id", "uid", "email", "asset", "amount", "txid", "status", "reject_reason", "created_at", "reviewed_at", "reviewer_id"} {
+	for _, k := range []string{"id", "user_id", "uid", "email", "asset", "amount", "txid", "network", "status", "reject_reason", "created_at", "reviewed_at", "reviewer_id"} {
 		if _, ok := item[k]; !ok {
 			t.Errorf("admin claim JSON missing key %q: %v", k, item)
 		}
@@ -473,6 +508,7 @@ func TestDepositClaimAdminListAndScreenshot(t *testing.T) {
 
 func TestDepositClaimAutoVerifyApproves(t *testing.T) {
 	s := newClaimTestServer(t)
+	s.lookup.addresses["usr_alice/USDT"] = "0xDepositAddrAlice"
 	v := &fakeDepositVerifier{res: &wallet.VerifyResult{
 		OK:            true,
 		Note:          "auto-verified via Alchemy: USDT transfer of 1000 confirmed in tx 0xok (12 confirmations)",
@@ -490,6 +526,9 @@ func TestDepositClaimAutoVerifyApproves(t *testing.T) {
 	if body["status"] != "approved" || body["auto_verified"] != true {
 		t.Fatalf("payload = %v, want approved + auto_verified", body)
 	}
+	if body["network"] != "eth-mainnet" {
+		t.Errorf("payload network = %v, want default eth-mainnet", body["network"])
+	}
 	if note, _ := body["verify_note"].(string); !strings.Contains(note, "auto-verified") {
 		t.Errorf("verify_note = %q, want alchemy rationale", note)
 	}
@@ -504,6 +543,14 @@ func TestDepositClaimAutoVerifyApproves(t *testing.T) {
 	}
 	if v.calls != 1 || v.lastAsset != "USDT" || v.lastTxid != "0xok" {
 		t.Errorf("verifier usage = %+v, want one USDT/0xok call", v)
+	}
+	if v.lastNetwork != "eth-mainnet" {
+		t.Errorf("verifier network = %q, want eth-mainnet default", v.lastNetwork)
+	}
+	// The verifier must receive the SERVER-SIDE deposit address, never a
+	// client-supplied one.
+	if v.lastAddress != "0xDepositAddrAlice" {
+		t.Errorf("verifier address = %q, want the lookup-resolved deposit address", v.lastAddress)
 	}
 }
 
@@ -606,5 +653,219 @@ func TestDepositClaimAutoVerifyInfraErrorStaysPending(t *testing.T) {
 	id, _ := body["id"].(string)
 	if note := s.store.claims[id].VerifyNote; !strings.Contains(note, "auto-verify unavailable") {
 		t.Errorf("verify_note = %q, want unavailable reason", note)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// T52 security hardening: recipient binding, confirmation floor, multi-chain
+// ---------------------------------------------------------------------------
+
+// TestDepositClaimAutoVerifyAddressMismatchStaysPending: the verifier's
+// definitive negative (wrong recipient) must keep the claim pending with an
+// explanatory note — never approve, never auto-reject.
+func TestDepositClaimAutoVerifyAddressMismatchStaysPending(t *testing.T) {
+	s := newClaimTestServer(t)
+	s.lookup.addresses["usr_alice/ETH"] = "0xAliceAddr"
+	s.h.SetDepositVerifier(&fakeDepositVerifier{res: &wallet.VerifyResult{
+		OK:   false,
+		Note: "transfer destination 0x9999999999999999999999999999999999999999 does not match the user's platform deposit address",
+	}})
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "ETH", "amount": "5", "txid": "0xwrongdest"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+	id, _ := body["id"].(string)
+	cl := s.store.claims[id]
+	if cl.Status != "pending" {
+		t.Fatalf("claim status = %q, want pending (never auto-reject)", cl.Status)
+	}
+	if !strings.Contains(cl.VerifyNote, "deposit address") {
+		t.Errorf("verify_note = %q, want recipient-mismatch reason", cl.VerifyNote)
+	}
+}
+
+// TestDepositClaimAutoVerifyNoDepositAddressStaysPending: a user without a
+// platform deposit address cannot be auto-approved — the verifier gets an
+// empty address and refuses.
+func TestDepositClaimAutoVerifyNoDepositAddressStaysPending(t *testing.T) {
+	s := newClaimTestServer(t)
+	// No entry seeded → lookup resolves to ("", nil).
+	v := &fakeDepositVerifier{res: &wallet.VerifyResult{
+		OK:   false,
+		Note: "user has no platform deposit address for USDT; cannot verify recipient (manual review required)",
+	}}
+	s.h.SetDepositVerifier(v)
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "USDT", "amount": "100", "txid": "0xnoaddr"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+	if v.lastAddress != "" {
+		t.Errorf("verifier address = %q, want empty (no deposit address on record)", v.lastAddress)
+	}
+	id, _ := body["id"].(string)
+	if note := s.store.claims[id].VerifyNote; !strings.Contains(note, "no platform deposit address") {
+		t.Errorf("verify_note = %q, want missing-address reason", note)
+	}
+}
+
+// TestDepositClaimAutoVerifyLookupErrorStaysPending: an infra failure while
+// resolving the deposit address must never approve.
+func TestDepositClaimAutoVerifyLookupErrorStaysPending(t *testing.T) {
+	s := newClaimTestServer(t)
+	s.lookup.err = errors.New("pg connection refused")
+	v := &fakeDepositVerifier{res: &wallet.VerifyResult{OK: true, Note: "should never be used"}}
+	s.h.SetDepositVerifier(v)
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "USDT", "amount": "100", "txid": "0xlookuperr"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+	if v.calls != 0 {
+		t.Errorf("verifier called %d times, want 0 when the lookup fails", v.calls)
+	}
+	id, _ := body["id"].(string)
+	if note := s.store.claims[id].VerifyNote; !strings.Contains(note, "failed to load deposit address") {
+		t.Errorf("verify_note = %q, want lookup-failure reason", note)
+	}
+}
+
+// TestDepositClaimAutoVerifyInsufficientConfirmationsStaysPending: below the
+// confirmation floor the claim stays pending; the note records the count.
+func TestDepositClaimAutoVerifyInsufficientConfirmationsStaysPending(t *testing.T) {
+	s := newClaimTestServer(t)
+	s.lookup.addresses["usr_alice/USDC"] = "0xAliceAddr"
+	s.h.SetDepositVerifier(&fakeDepositVerifier{res: &wallet.VerifyResult{
+		OK:            false,
+		Note:          "insufficient confirmations on eth-mainnet: 3 (minimum 12 required)",
+		Confirmations: 3,
+	}})
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "USDC", "amount": "50", "txid": "0xconf3"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+	id, _ := body["id"].(string)
+	note := s.store.claims[id].VerifyNote
+	if !strings.Contains(note, "insufficient confirmations") || !strings.Contains(note, "3") {
+		t.Errorf("verify_note = %q, want confirmation count in the reason", note)
+	}
+}
+
+// TestDepositClaimMultiChainPolygonUSDT: an explicit network is persisted,
+// echoed in the response and routed to the verifier.
+func TestDepositClaimMultiChainPolygonUSDT(t *testing.T) {
+	s := newClaimTestServer(t)
+	s.lookup.addresses["usr_alice/USDT"] = "0xAliceAddr"
+	v := &fakeDepositVerifier{res: &wallet.VerifyResult{
+		OK:            true,
+		Note:          "auto-verified via Alchemy: USDT transfer of 500 confirmed in tx 0xpoly (40 confirmations)",
+		MatchedAmount: big.NewFloat(500),
+		Network:       "polygon-mainnet",
+	}}
+	s.h.SetDepositVerifier(v)
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "USDT", "amount": "500", "txid": "0xpoly", "network": "Polygon-Mainnet"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["network"] != "polygon-mainnet" {
+		t.Fatalf("payload network = %v, want normalized polygon-mainnet", body["network"])
+	}
+	if body["status"] != "approved" || body["auto_verified"] != true {
+		t.Fatalf("payload = %v, want approved + auto_verified on polygon", body)
+	}
+	if v.lastNetwork != "polygon-mainnet" {
+		t.Errorf("verifier network = %q, want polygon-mainnet", v.lastNetwork)
+	}
+	id, _ := body["id"].(string)
+	if cl := s.store.claims[id]; cl.Network != "polygon-mainnet" {
+		t.Errorf("stored network = %q, want polygon-mainnet", cl.Network)
+	}
+	// The user listing carries the network too.
+	_, list := s.do(t, http.MethodGet, "/api/v2/wallet/deposit/claims", "usr_alice", nil)
+	claims, _ := list["claims"].([]any)
+	if len(claims) != 1 {
+		t.Fatalf("claims = %d, want 1", len(claims))
+	}
+	if item, _ := claims[0].(map[string]any); item["network"] != "polygon-mainnet" {
+		t.Errorf("listed network = %v, want polygon-mainnet", item["network"])
+	}
+}
+
+// TestDepositClaimUnknownNetworkStaysPending: networks outside the whitelist
+// are stored (so reviewers see what was claimed) but routed to manual review.
+func TestDepositClaimUnknownNetworkStaysPending(t *testing.T) {
+	s := newClaimTestServer(t)
+	s.lookup.addresses["usr_alice/USDT"] = "0xAliceAddr"
+	v := &fakeDepositVerifier{res: &wallet.VerifyResult{
+		OK:   false,
+		Note: `network "bsc-mainnet" is not supported for auto-verification (manual review required)`,
+	}}
+	s.h.SetDepositVerifier(v)
+
+	w, body := s.do(t, http.MethodPost, "/api/v2/wallet/deposit/claim", "usr_alice",
+		map[string]string{"asset": "USDT", "amount": "10", "txid": "0xbsc", "network": "bsc-mainnet"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	if body["status"] != "pending" || body["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", body)
+	}
+	if body["network"] != "bsc-mainnet" {
+		t.Errorf("payload network = %v, want the submitted value echoed back", body["network"])
+	}
+	id, _ := body["id"].(string)
+	if note := s.store.claims[id].VerifyNote; !strings.Contains(note, "not supported for auto-verification") {
+		t.Errorf("verify_note = %q, want unsupported-network reason", note)
+	}
+}
+
+// TestDepositClaimAutoVerifyWithoutAddressLookup: production without
+// Postgres (lookup unavailable) must degrade to manual review, never approve.
+func TestDepositClaimAutoVerifyWithoutAddressLookup(t *testing.T) {
+	st := newFakeDepositClaimStore()
+	h := NewDepositClaimHandler(st, t.TempDir())
+	h.SetDepositVerifier(&fakeDepositVerifier{res: &wallet.VerifyResult{OK: true, Note: "should never be used"}})
+	// Deliberately NO SetDepositAddressLookup.
+	r := gin.New()
+	mw := func(c *gin.Context) { c.Set("user_id", c.GetHeader("X-User")); c.Next() }
+	r.POST("/api/v2/wallet/deposit/claim", mw, h.Submit)
+
+	body, _ := json.Marshal(map[string]string{"asset": "USDT", "amount": "1", "txid": "0xnolookup"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/wallet/deposit/claim", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User", "usr_alice")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("submit: status %d body %s", w.Code, w.Body.String())
+	}
+	out := map[string]any{}
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if out["status"] != "pending" || out["auto_verified"] != false {
+		t.Fatalf("payload = %v, want pending + not auto-verified", out)
+	}
+	if note, _ := out["verify_note"].(string); !strings.Contains(note, "deposit address lookup not configured") {
+		t.Errorf("verify_note = %q, want missing-lookup reason", note)
 	}
 }

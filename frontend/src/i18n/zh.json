@@ -233,8 +233,17 @@
     "claimTxid": "链上交易号 (TxID)",
     "claimScreenshot": "转账截图（可选）",
     "claimRemove": "移除截图",
+    "claimNetwork": "网络",
+    "claimManualReviewNotice": "该资产暂不支持自动核验，将转人工审核，到账可能较慢",
+    "networks": {
+      "eth-mainnet": "Ethereum",
+      "polygon-mainnet": "Polygon",
+      "arbitrum-mainnet": "Arbitrum One",
+      "optimism-mainnet": "Optimism",
+      "base-mainnet": "Base"
+    },
     "claimSubmit": "提交凭证",
-    "claimSubmitted": "充值凭证已提交，等待审核",
+    "claimSubmitted": "已提交，人工审核中，到账可能需要一些时间",
     "claimAutoApproved": "充值已自动核验到账",
     "claimSubmitFailed": "充值凭证提交失败",
     "claimRecords": "充值记录",

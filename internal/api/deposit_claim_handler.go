@@ -37,6 +37,10 @@ type DepositClaim struct {
 	ReviewerID     string
 	CreatedAt      int64 // unix nanos
 	ReviewedAt     int64
+	// Network is the chain the claim was filed for (migration 014): an
+	// Alchemy network slug such as eth-mainnet or polygon-mainnet. Empty
+	// means "not provided" and is treated as wallet.DefaultNetwork.
+	Network string
 	// Auto-verification bookkeeping (migration 013). AutoVerified is true
 	// only when the on-chain verifier approved the claim itself; VerifyNote
 	// carries the outcome / failure reason of the verification attempt.
@@ -91,19 +95,30 @@ const (
 )
 
 // DepositTxVerifier checks a claimed deposit transaction on-chain. The
-// wallet.DepositVerifier (Alchemy, Ethereum mainnet) implements it; the
-// interface exists so tests can fake the chain.
+// wallet.DepositVerifier (Alchemy, multi-chain) implements it; the interface
+// exists so tests can fake the chain. depositAddress is the claimant's
+// platform deposit address resolved server-side (never client-supplied) and
+// is mandatory for approval.
 type DepositTxVerifier interface {
-	VerifyDeposit(ctx context.Context, asset, txid string, amount *big.Float) (*wallet.VerifyResult, error)
+	VerifyDeposit(ctx context.Context, network, asset, txid string, amount *big.Float, depositAddress string) (*wallet.VerifyResult, error)
+}
+
+// DepositAddressLookup resolves the platform deposit address a user was
+// assigned for one asset (spot account, wallets.address). Implementations
+// return ("", nil) when the user has no deposit address yet — that must
+// keep the claim pending, never approve it.
+type DepositAddressLookup interface {
+	DepositAddressFor(userID, asset string) (string, error)
 }
 
 // DepositClaimHandler serves the user-facing deposit-claim endpoints and the
 // admin review endpoints (registered on separate route groups).
 type DepositClaimHandler struct {
-	store    DepositClaimStore
-	dataDir  string
-	audit    *audit.Logger
-	verifier DepositTxVerifier
+	store      DepositClaimStore
+	dataDir    string
+	audit      *audit.Logger
+	verifier   DepositTxVerifier
+	addrLookup DepositAddressLookup
 }
 
 // NewDepositClaimHandler constructs a deposit-claim handler rooted at
@@ -124,11 +139,20 @@ func (h *DepositClaimHandler) SetAuditLogger(l *audit.Logger) { h.audit = l }
 // pending for manual review.
 func (h *DepositClaimHandler) SetDepositVerifier(v DepositTxVerifier) { h.verifier = v }
 
+// SetDepositAddressLookup wires the server-side lookup for the claimant's own
+// platform deposit address. Mandatory for auto-approval: without it (or when
+// the user has no address) claims stay pending for manual review — the
+// verifier NEVER trusts a client-supplied address.
+func (h *DepositClaimHandler) SetDepositAddressLookup(l DepositAddressLookup) { h.addrLookup = l }
+
 type depositClaimSubmitReq struct {
 	Asset      string `json:"asset" binding:"required"`
 	Amount     string `json:"amount" binding:"required"`
 	TxID       string `json:"txid" binding:"required"`
 	Screenshot string `json:"screenshot"` // optional data URL, png/jpeg, <=5MB
+	// Network selects the chain the txid lives on. Optional; defaults to
+	// eth-mainnet. Unknown networks are accepted but routed to manual review.
+	Network string `json:"network"`
 }
 
 // Submit handles POST /api/v2/wallet/deposit/claim: the user files a deposit
@@ -168,6 +192,14 @@ func (h *DepositClaimHandler) Submit(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "txid too long"})
 		return
 	}
+	// Network: optional, defaults to eth-mainnet. Normalized (trim + lower)
+	// and length-capped; unknown values are persisted as-is and routed to
+	// manual review by the verifier (never auto-rejected, never validated
+	// against client claims about the chain).
+	network := wallet.NormalizeNetwork(r.Network)
+	if len(network) > 64 {
+		network = network[:64]
+	}
 
 	claim := &DepositClaim{
 		ID:        "dep_" + uuid.NewString(),
@@ -176,6 +208,7 @@ func (h *DepositClaimHandler) Submit(c *gin.Context) {
 		Amount:    amt,
 		TxID:      txid,
 		Status:    "pending",
+		Network:   network,
 		CreatedAt: time.Now().UnixNano(),
 	}
 
@@ -215,10 +248,12 @@ func (h *DepositClaimHandler) Submit(c *gin.Context) {
 		return
 	}
 
-	// On-chain auto-verification (Alchemy, ETH/USDT/USDC on Ethereum
-	// mainnet). Strictly best-effort: every failure mode — missing verifier
-	// (no ALCHEMY_API_KEY), unverifiable asset, network error, mismatched
-	// amount — leaves the claim pending for manual review. A claim is NEVER
+	// On-chain auto-verification (Alchemy; ETH/USDT/USDC on eth-mainnet,
+	// polygon-mainnet, arbitrum-mainnet, optimism-mainnet, base-mainnet).
+	// Strictly best-effort: every failure mode — missing verifier (no
+	// ALCHEMY_API_KEY), missing deposit-address lookup, unverifiable asset,
+	// unknown network, recipient/confirmation/amount mismatch, network error
+	// — leaves the claim pending for manual review. A claim is NEVER
 	// auto-rejected and NEVER auto-approved on anything but a full match.
 	autoVerified, verifyNote := h.autoVerify(c, claim)
 
@@ -227,6 +262,7 @@ func (h *DepositClaimHandler) Submit(c *gin.Context) {
 		"status":        claim.Status,
 		"auto_verified": autoVerified,
 		"verify_note":   verifyNote,
+		"network":       claim.Network,
 	})
 }
 
@@ -238,26 +274,39 @@ func (h *DepositClaimHandler) autoVerify(c *gin.Context, claim *DepositClaim) (b
 	if h.verifier == nil || !wallet.IsAutoVerifiableAsset(claim.Asset) {
 		return false, ""
 	}
+	recordNote := func(note string) (bool, string) {
+		_ = h.store.RecordVerifyNote(claim.ID, note)
+		claim.VerifyNote, claim.VerifiedAt = note, time.Now().UnixNano()
+		return false, note
+	}
+	// Resolve the claimant's own platform deposit address SERVER-SIDE.
+	// Client-supplied addresses are never trusted: without a resolvable
+	// address the claim cannot be bound to this user and must stay pending.
+	if h.addrLookup == nil {
+		return recordNote("auto-verify unavailable (manual review required): deposit address lookup not configured")
+	}
+	addr, err := h.addrLookup.DepositAddressFor(claim.UserID, claim.Asset)
+	if err != nil {
+		return recordNote("auto-verify unavailable (manual review required): failed to load deposit address: " + err.Error())
+	}
+	// addr may legitimately be "" (user never generated an address); the
+	// verifier turns that into a definitive negative with an explanatory
+	// note — it can never approve.
 	ctx, cancel := context.WithTimeout(c.Request.Context(), depositVerifyTimeout)
 	defer cancel()
-	res, err := h.verifier.VerifyDeposit(ctx, claim.Asset, claim.TxID, claim.Amount)
+	res, err := h.verifier.VerifyDeposit(ctx, claim.Network, claim.Asset, claim.TxID, claim.Amount, addr)
 	if err != nil && ctx.Err() == nil {
 		// One retry on infra errors (TLS handshake blips / slow responses);
 		// approval semantics are unaffected — errors still mean "pending".
 		time.Sleep(time.Second)
-		res, err = h.verifier.VerifyDeposit(ctx, claim.Asset, claim.TxID, claim.Amount)
+		res, err = h.verifier.VerifyDeposit(ctx, claim.Network, claim.Asset, claim.TxID, claim.Amount, addr)
 	}
 	now := time.Now().UnixNano()
 	if err != nil {
-		note := "auto-verify unavailable (manual review required): " + err.Error()
-		_ = h.store.RecordVerifyNote(claim.ID, note)
-		claim.VerifyNote, claim.VerifiedAt = note, now
-		return false, note
+		return recordNote("auto-verify unavailable (manual review required): " + err.Error())
 	}
 	if !res.OK {
-		_ = h.store.RecordVerifyNote(claim.ID, res.Note)
-		claim.VerifyNote, claim.VerifiedAt = res.Note, now
-		return false, res.Note
+		return recordNote(res.Note)
 	}
 	approved, aerr := h.store.AutoApproveClaim(claim.ID, res.Note, depositAutoReviewer)
 	if aerr != nil {
@@ -273,7 +322,7 @@ func (h *DepositClaimHandler) autoVerify(c *gin.Context, claim *DepositClaim) (b
 	}
 	*claim = *approved
 	h.audit.Log(c, "deposit.claim.auto_approved", "deposit_claim", claim.ID, gin.H{
-		"txid": claim.TxID, "asset": claim.Asset, "note": res.Note,
+		"txid": claim.TxID, "asset": claim.Asset, "network": claim.Network, "note": res.Note,
 	}, nil)
 	return true, res.Note
 }
@@ -449,6 +498,7 @@ func depositClaimToJSON(cl *DepositClaim) gin.H {
 		"asset":         cl.Asset,
 		"amount":        safeFloatStr(cl.Amount),
 		"txid":          cl.TxID,
+		"network":       depositClaimNetwork(cl),
 		"status":        cl.Status,
 		"reject_reason": cl.RejectReason,
 		"auto_verified": cl.AutoVerified,
@@ -457,4 +507,13 @@ func depositClaimToJSON(cl *DepositClaim) gin.H {
 		"created_at":    cl.CreatedAt,
 		"reviewed_at":   cl.ReviewedAt,
 	}
+}
+
+// depositClaimNetwork renders the claim's network with the same default the
+// database column applies (legacy rows may carry an empty value).
+func depositClaimNetwork(cl *DepositClaim) string {
+	if cl.Network == "" {
+		return wallet.DefaultNetwork
+	}
+	return cl.Network
 }

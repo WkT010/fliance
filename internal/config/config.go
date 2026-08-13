@@ -9,24 +9,27 @@ import (
 )
 
 type Config struct {
-	JWTSecret         string
-	JWTIssuer         string
-	ListenAddr        string
-	GRPCAddr          string
-	PostgresDSN       string
-	RedisAddr         string
-	RedisDB           int
-	RedisPass         string
-	KafkaBrokers      []string
-	KafkaTopic        string
-	TradingPairs      []string
-	AlchemyAPIKey     string
-	AlchemyEthURL     string
-	AlchemyPolygonURL string
-	LogLevel          string
-	LogFormat         string
-	Environment       string
-	DevMode           bool
+	JWTSecret          string
+	JWTIssuer          string
+	ListenAddr         string
+	GRPCAddr           string
+	PostgresDSN        string
+	RedisAddr          string
+	RedisDB            int
+	RedisPass          string
+	KafkaBrokers       []string
+	KafkaTopic         string
+	TradingPairs       []string
+	AlchemyAPIKey      string
+	AlchemyEthURL      string
+	AlchemyPolygonURL  string
+	AlchemyArbitrumURL string
+	AlchemyOptimismURL string
+	AlchemyBaseURL     string
+	LogLevel           string
+	LogFormat          string
+	Environment        string
+	DevMode            bool
 
 	// Security
 	CORSAllowOrigins          []string
@@ -92,11 +95,16 @@ func Load() *Config {
 		AlchemyAPIKey:     key,
 		AlchemyEthURL:     getEnv("ALCHEMY_ETH_URL", "https://eth-mainnet.g.alchemy.com/v2/"+key),
 		AlchemyPolygonURL: getEnv("ALCHEMY_POLYGON_URL", "https://polygon-mainnet.g.alchemy.com/v2/"+key),
-		LogLevel:          getEnv("LOG_LEVEL", "info"),
-		LogFormat:         getEnv("LOG_FORMAT", logFormatDefault),
-		Environment:       env,
-		TradingPairs:      strings.Split(getEnv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT"), ","),
-		DevMode:           env == "development",
+		// Arbitrum's Alchemy host slug is "arb-mainnet" (see the alchemy-api
+		// skill reference); Optimism and Base follow the {network} pattern.
+		AlchemyArbitrumURL: getEnv("ALCHEMY_ARBITRUM_URL", "https://arb-mainnet.g.alchemy.com/v2/"+key),
+		AlchemyOptimismURL: getEnv("ALCHEMY_OPTIMISM_URL", "https://optimism-mainnet.g.alchemy.com/v2/"+key),
+		AlchemyBaseURL:     getEnv("ALCHEMY_BASE_URL", "https://base-mainnet.g.alchemy.com/v2/"+key),
+		LogLevel:           getEnv("LOG_LEVEL", "info"),
+		LogFormat:          getEnv("LOG_FORMAT", logFormatDefault),
+		Environment:        env,
+		TradingPairs:       strings.Split(getEnv("TRADING_PAIRS", "BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT"), ","),
+		DevMode:            env == "development",
 
 		CORSAllowOrigins:          strings.Split(getEnv("CORS_ALLOW_ORIGINS", "*"), ","),
 		CORSAllowCreds:            getEnv("CORS_ALLOW_CREDENTIALS", "false") == "true",
@@ -119,8 +127,8 @@ func Load() *Config {
 		// Market data: Binance public mirrors first (api.binance.com is
 		// geo-blocked in some regions), the canonical host second and the
 		// third-party mirror as the last-resort degraded REST source.
-		BinanceRESTURLs: splitAndTrim(getEnv("BINANCE_REST_URLS", strings.Join(marketDefaultRESTURLs, ","))),
-		BinanceWSURL:    getEnv("BINANCE_WS_URL", "wss://data-stream.binance.vision:443/stream"),
+		BinanceRESTURLs:       splitAndTrim(getEnv("BINANCE_REST_URLS", strings.Join(marketDefaultRESTURLs, ","))),
+		BinanceWSURL:          getEnv("BINANCE_WS_URL", "wss://data-stream.binance.vision:443/stream"),
 		BinancePollInterval:   getEnvAsDuration("BINANCE_POLL_INTERVAL", 5*time.Second),
 		MarketDataStaleness:   getEnvAsDuration("MARKET_DATA_STALENESS", 10*time.Second),
 		EnableMarketSimulator: getEnvAsBool("ENABLE_MARKET_SIMULATOR", false),

@@ -19,10 +19,30 @@ import { usePolling } from '@/hooks/usePolling';
 import { formatUsd, formatQty, formatDate, changeColorClass, cls } from '@/utils/format';
 import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { toast } from '@/store/toastStore';
-import type { AccountType, DepositClaim, DepositClaimStatus, Ticker } from '@/types';
+import type { AccountType, DepositClaim, DepositClaimStatus, DepositNetwork, Ticker } from '@/types';
 
 // Stablecoins that are always treated as 1 USD for valuation.
 const STABLECOINS = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FRAX']);
+
+// Networks accepted by the deposit-claim backend (wire-format enum).
+const DEPOSIT_NETWORKS: DepositNetwork[] = [
+  'eth-mainnet',
+  'polygon-mainnet',
+  'arbitrum-mainnet',
+  'optimism-mainnet',
+  'base-mainnet',
+];
+
+// Assets with automatic on-chain verification on every supported network;
+// any other asset (BTC/ADA/SOL/BNB/…) goes to manual review.
+const AUTO_VERIFY_ASSETS = new Set(['ETH', 'USDT', 'USDC']);
+
+/** Friendly network name; missing/legacy values fall back to Ethereum. */
+function networkKey(network: string | undefined): DepositNetwork {
+  return network && (DEPOSIT_NETWORKS as string[]).includes(network)
+    ? (network as DepositNetwork)
+    : 'eth-mainnet';
+}
 
 // Deposit-claim screenshot constraints (same rules as KYC document uploads).
 const MAX_SHOT_BYTES = 5 * 1024 * 1024;
@@ -95,10 +115,15 @@ function DepositClaimForm({ assets, asset, onAssetChange, onSubmitted }: {
   const { t } = useTranslation();
   const [amount, setAmount] = useState('');
   const [txid, setTxid] = useState('');
+  const [network, setNetwork] = useState<DepositNetwork>('eth-mainnet');
   const [screenshot, setScreenshot] = useState('');
   const [shotError, setShotError] = useState('');
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Only these assets can be verified automatically on-chain; the rest
+  // always enter the manual review queue (slower crediting).
+  const autoVerify = AUTO_VERIFY_ASSETS.has(asset.toUpperCase());
 
   const pick = (file: File | undefined) => {
     if (!file) return;
@@ -123,7 +148,15 @@ function DepositClaimForm({ assets, asset, onAssetChange, onSubmitted }: {
     if (busy) return;
     setBusy(true);
     try {
-      const claim = await submitDepositClaim({ asset, amount, txid: txid.trim(), screenshot: screenshot || undefined });
+      const claim = await submitDepositClaim({
+        asset,
+        amount,
+        txid: txid.trim(),
+        screenshot: screenshot || undefined,
+        // Only meaningful for auto-verifiable assets; the backend defaults
+        // to eth-mainnet and routes everything else to manual review.
+        network: autoVerify ? network : undefined,
+      });
       // On-chain verification can approve the deposit instantly; otherwise it
       // enters the manual review queue.
       toast.success(claim.status === 'approved' ? t('wallet.claimAutoApproved') : t('wallet.claimSubmitted'));
@@ -146,6 +179,25 @@ function DepositClaimForm({ assets, asset, onAssetChange, onSubmitted }: {
       <Select label={t('wallet.asset')} value={asset} onChange={(e) => onAssetChange(e.target.value)}>
         {assets.map((a) => <option key={a} value={a}>{a}</option>)}
       </Select>
+      {/* Network selector for auto-verifiable assets, manual-review notice otherwise */}
+      {autoVerify ? (
+        <Select
+          label={t('wallet.claimNetwork')}
+          value={network}
+          onChange={(e) => setNetwork(e.target.value as DepositNetwork)}
+        >
+          {DEPOSIT_NETWORKS.map((n) => (
+            <option key={n} value={n}>{t(`wallet.networks.${n}`)}</option>
+          ))}
+        </Select>
+      ) : (
+        <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+          <svg viewBox="0 0 24 24" fill="none" className="mt-0.5 h-3.5 w-3.5 flex-shrink-0">
+            <path d="M12 9v4m0 4h.01M10.3 3.9L1.8 18.1a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span>{t('wallet.claimManualReviewNotice')}</span>
+        </div>
+      )}
       <Input
         label={t('wallet.claimAmount')}
         type="number"
@@ -227,6 +279,7 @@ function DepositClaimRecords({ claims }: { claims: DepositClaim[] }) {
         <thead className="text-nexa-400">
           <tr>
             <th className="px-3 py-2">{t('wallet.asset')}</th>
+            <th className="px-3 py-2">{t('wallet.claimNetwork')}</th>
             <th className="px-3 py-2 text-right">{t('wallet.amount')}</th>
             <th className="px-3 py-2">{t('wallet.claimTxid')}</th>
             <th className="px-3 py-2">{t('trading.status')}</th>
@@ -236,7 +289,7 @@ function DepositClaimRecords({ claims }: { claims: DepositClaim[] }) {
         <tbody>
           {claims.length === 0 && (
             <tr>
-              <td colSpan={5}>
+              <td colSpan={6}>
                 <EmptyState title={t('wallet.claimEmpty')} compact />
               </td>
             </tr>
@@ -244,6 +297,9 @@ function DepositClaimRecords({ claims }: { claims: DepositClaim[] }) {
           {claims.map((c) => (
             <tr key={c.id} className="border-b border-nexa-800/50 transition-colors hover:bg-nexa-800/30">
               <td className="px-3 py-2.5 font-medium">{c.asset}</td>
+              <td className="px-3 py-2.5">
+                <Badge color="neutral">{t(`wallet.networks.${networkKey(c.network)}`)}</Badge>
+              </td>
               <td className="px-3 py-2.5 text-right font-mono text-up">+{formatQty(c.amount, 8)}</td>
               <td className="px-3 py-2.5">
                 <div className="flex items-center gap-1">

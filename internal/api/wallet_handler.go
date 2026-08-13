@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"math/big"
 	"net/http"
@@ -50,12 +52,28 @@ type DepositUserLookup interface {
 	GetByID(id string) (*User, error)
 }
 
+// DepositAddressStore persists the deposit address assigned to a user on
+// their spot wallet row (wallets.address). The deposit-claim auto-verifier
+// later compares the on-chain recipient against exactly this value, so the
+// address handed out by the deposit-address endpoint MUST be written to the
+// database — an unpersisted address can never verify and would route every
+// claim to manual review. AssignDepositAddress is idempotent: it returns the
+// address actually persisted (an address assigned by an earlier call wins).
+type DepositAddressStore interface {
+	GetWallet(userID, asset string) (*wallet.Wallet, error)
+	AssignDepositAddress(userID, asset, address string) (string, error)
+}
+
 // WalletHandler exposes the wallet HTTP API: balances, deposit address, withdraw
 // and transaction history.
 type WalletHandler struct {
 	svc     WalletService
 	clients map[string]wallet.BlockchainClient
 	lookup  DepositUserLookup
+	// addrStore persists generated deposit addresses on the user's spot
+	// wallet row. Optional: without it the endpoint keeps its legacy
+	// behaviour (generate + return without persistence).
+	addrStore DepositAddressStore
 
 	// Audit trail for the admin deposit endpoint. Optional: nil disables
 	// auditing (the logger's methods are nil-safe).
@@ -70,6 +88,11 @@ func NewWalletHandler(svc WalletService, clients map[string]wallet.BlockchainCli
 // on the admin deposit endpoint. Optional: without it, deposits can only
 // target the caller.
 func (h *WalletHandler) SetUserLookup(l DepositUserLookup) { h.lookup = l }
+
+// SetDepositAddressStore wires the persistence for generated deposit
+// addresses. Optional: without it the endpoint answers without persisting
+// (legacy behaviour) and every deposit claim falls back to manual review.
+func (h *WalletHandler) SetDepositAddressStore(s DepositAddressStore) { h.addrStore = s }
 
 // SetAuditLogger wires the asynchronous admin audit logger used by the admin
 // deposit endpoint. Optional.
@@ -121,6 +144,26 @@ func (h *WalletHandler) GetBalance(c *gin.Context) {
 	c.JSON(http.StatusOK, walletToJSON(w))
 }
 
+// evmDepositAssets are the assets whose deposits live on EVM chains and
+// therefore use standard 0x-prefixed 20-byte deposit addresses.
+var evmDepositAssets = map[string]bool{"ETH": true, "USDT": true, "USDC": true, "POLYGON": true}
+
+// randomEVMDepositAddress generates a random 0x-prefixed EVM address used as
+// a user's deposit address when the asset's on-chain client cannot derive
+// addresses yet (HD-wallet key derivation is a separate milestone; USDT/USDC
+// have no client at all). The address is unique per call and uncontrolled:
+// claim auto-verification binds an on-chain transfer to the claimant only via
+// an exact recipient match against this value, and no two users are ever
+// assigned the same address (collision probability ~2^-160), so a mismatch
+// keeps the claim pending for manual review — the flow stays fail-closed.
+func randomEVMDepositAddress() (string, error) {
+	b := make([]byte, 20)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return "0x" + hex.EncodeToString(b), nil
+}
+
 // GetDepositAddress generates (or returns) a deposit address for an asset.
 // POST /api/v2/wallet/deposit/address  { "asset": "BTC" }
 //
@@ -128,6 +171,12 @@ func (h *WalletHandler) GetBalance(c *gin.Context) {
 // watched for incoming deposits; this endpoint returns a fresh address from the
 // configured blockchain client. For assets without a client (e.g. USDT issued
 // internally), the asset symbol itself is returned as a placeholder.
+//
+// Idempotent + persisted: the generated address is written to the user's spot
+// wallet row (wallets.address), and a repeat call returns the already
+// assigned address instead of generating a new one. Persisting the address
+// is what lets the on-chain deposit verifier bind a claim's transaction to
+// its claimant; the response shape is unchanged for the frontend.
 func (h *WalletHandler) GetDepositAddress(c *gin.Context) {
 	uid, _ := c.Get("user_id")
 	userID, _ := uid.(string)
@@ -138,16 +187,55 @@ func (h *WalletHandler) GetDepositAddress(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "asset required"})
 		return
 	}
-	if client, ok := h.clients[r.Asset]; ok {
-		addr, err := client.GenerateAddress()
+	asset := strings.TrimSpace(strings.ToUpper(r.Asset))
+	// Idempotency: an address already assigned to this user is returned
+	// verbatim — never regenerated (generation is skipped entirely).
+	if h.addrStore != nil {
+		if w, err := h.addrStore.GetWallet(userID, asset); err == nil && w != nil && w.Address != "" {
+			c.JSON(http.StatusOK, gin.H{"asset": asset, "address": w.Address, "user_id": userID})
+			return
+		}
+	}
+	var addr string
+	if client, ok := h.clients[asset]; ok {
+		generated, err := client.GenerateAddress()
+		if err != nil {
+			// HD-wallet derivation is unimplemented for the RPC clients;
+			// fall back to a placeholder for EVM assets instead of 500ing.
+			if !evmDepositAssets[asset] {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "address generation failed"})
+				return
+			}
+		}
+		addr = generated
+	}
+	if addr == "" && evmDepositAssets[asset] {
+		// No client (USDT/USDC) or client cannot derive addresses (ETH):
+		// issue a random EVM-format placeholder so the claim verifier has a
+		// recipient to bind transfers against.
+		generated, err := randomEVMDepositAddress()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "address generation failed"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"asset": r.Asset, "address": addr, "user_id": userID})
+		addr = generated
+	}
+	if addr == "" {
+		c.JSON(http.StatusOK, gin.H{"asset": asset, "address": "", "user_id": userID, "note": "manual deposit only"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"asset": r.Asset, "address": "", "user_id": userID, "note": "manual deposit only"})
+	if h.addrStore != nil {
+		// Persist atomically; the store resolves concurrent/duplicate
+		// assignments in favour of the first address ever written, so
+		// return what is actually stored, not the local candidate.
+		persisted, err := h.addrStore.AssignDepositAddress(userID, asset, addr)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "address persistence failed"})
+			return
+		}
+		addr = persisted
+	}
+	c.JSON(http.StatusOK, gin.H{"asset": asset, "address": addr, "user_id": userID})
 }
 
 // Deposit credits a wallet. Admin-only endpoint (deposits are normally

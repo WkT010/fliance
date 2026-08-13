@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { AccountType, Balance, DepositClaim, DepositClaimReq, Transaction, WithdrawReq } from '@/types';
+import type { AccountType, Balance, DepositClaim, DepositClaimReq, DepositNetwork, Transaction, WithdrawReq } from '@/types';
 
 /** Balance row as the wire format may omit account_type on older builds. */
 type RawBalance = Omit<Balance, 'account_type'> & { account_type?: AccountType };
@@ -40,12 +40,19 @@ export async function getSupportedAssets(): Promise<string[]> {
 
 /**
  * POST /wallet/deposit/claim — submit an on-chain deposit proof (txid
- * required, screenshot optional). 201 → { id, status, auto_verified }:
- * status is 'pending' for manual review, or 'approved' (with
- * auto_verified=true) when the on-chain Alchemy verification passed
- * immediately. 409 → duplicate txid, 400 → { error }.
+ * required, screenshot optional, network optional — defaults to
+ * 'eth-mainnet' server-side). 201 → { id, status, auto_verified,
+ * verify_note, network }: status is 'pending' for manual review, or
+ * 'approved' (with auto_verified=true) when the on-chain Alchemy
+ * verification passed immediately. 409 → duplicate txid, 400 → { error }.
  */
-export async function submitDepositClaim(req: DepositClaimReq): Promise<{ id: string; status: string; auto_verified?: boolean }> {
+export async function submitDepositClaim(req: DepositClaimReq): Promise<{
+  id: string;
+  status: string;
+  auto_verified?: boolean;
+  verify_note?: string;
+  network?: DepositNetwork;
+}> {
   const res = await api.post('/wallet/deposit/claim', req);
   return res.data;
 }

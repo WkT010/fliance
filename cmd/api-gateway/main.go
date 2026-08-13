@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -236,6 +237,15 @@ func main() {
 	// target exists before any balance is credited.
 	walletH.SetUserLookup(userStore)
 	walletH.SetAuditLogger(auditLog)
+	// Persist generated deposit addresses on the user's spot wallet row
+	// (wallets.address): the claim auto-verifier resolves the recipient it
+	// requires from exactly this column, so without this wiring every claim
+	// would fall back to manual review.
+	if walletStore != nil {
+		if as, ok := walletStore.(api.DepositAddressStore); ok {
+			walletH.SetDepositAddressStore(as)
+		}
+	}
 
 	priceH := api.NewPriceHandler(cfg.AlchemyAPIKey, cfg.BinanceRESTURLs)
 	// Source chain: Binance WS cache -> Binance REST poller -> AMM pool feed.
@@ -335,14 +345,29 @@ func main() {
 	// Manual deposit claims: users file txid + optional screenshot, admins
 	// review; approval credits the spot wallet atomically with the status
 	// change. Without Postgres the endpoints degrade to 503. When an Alchemy
-	// key is configured, ETH/USDT/USDC claims are additionally verified
-	// on-chain at submission time and auto-approved on a full match; every
-	// other case falls back to the manual queue.
+	// key is configured, ETH/USDT/USDC claims on the supported EVM networks
+	// are additionally verified on-chain at submission time and auto-approved
+	// on a FULL match (recipient = the claimant's own platform deposit
+	// address, >= MinConfirmations confirmations, amount + asset match);
+	// every other case falls back to the manual queue — claims are never
+	// auto-rejected.
 	dcH := api.NewDepositClaimHandler(claimStore, "")
 	dcH.SetAuditLogger(auditLog)
+	if walletStore != nil {
+		dcH.SetDepositAddressLookup(walletDepositAddressLookup{store: walletStore})
+	}
 	if cfg.AlchemyAPIKey != "" {
-		dcH.SetDepositVerifier(wallet.NewDepositVerifier(cfg.AlchemyEthURL, 25*time.Second))
-		slog.Info("deposit auto-verification enabled", "chain", "ethereum-mainnet", "assets", "ETH/USDT/USDC")
+		dcH.SetDepositVerifier(wallet.NewMultiChainDepositVerifier(map[string]string{
+			wallet.NetworkEthMainnet:      cfg.AlchemyEthURL,
+			wallet.NetworkPolygonMainnet:  cfg.AlchemyPolygonURL,
+			wallet.NetworkArbitrumMainnet: cfg.AlchemyArbitrumURL,
+			wallet.NetworkOptimismMainnet: cfg.AlchemyOptimismURL,
+			wallet.NetworkBaseMainnet:     cfg.AlchemyBaseURL,
+		}, 25*time.Second))
+		slog.Info("deposit auto-verification enabled",
+			"networks", strings.Join(wallet.SupportedNetworks(), ","),
+			"assets", "ETH/USDT/USDC",
+			"min_confirmations", wallet.MinConfirmations())
 	} else {
 		slog.Info("deposit auto-verification disabled (ALCHEMY_API_KEY not set); claims go to manual review")
 	}
@@ -598,6 +623,24 @@ func defaultPairRisk(pair string) *risk.PairConfig {
 		MarketOrdersEnabled: true,
 		TradingEnabled:      true,
 	}
+}
+
+// walletDepositAddressLookup adapts the wallet store to the claim handler's
+// DepositAddressLookup contract: the spot-account deposit address assigned to
+// the user for one asset (wallets.address). A missing wallet row simply
+// means "no deposit address yet" and must keep the claim pending — it is
+// never an approval signal.
+type walletDepositAddressLookup struct{ store wallet.WalletStore }
+
+func (l walletDepositAddressLookup) DepositAddressFor(userID, asset string) (string, error) {
+	w, err := l.store.GetWallet(userID, asset) // spot account
+	if errors.Is(err, wallet.ErrWalletNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return w.Address, nil
 }
 
 // ammSeedSpec defines the seed liquidity for a market. token0 is the base

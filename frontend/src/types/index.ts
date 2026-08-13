@@ -176,6 +176,14 @@ export interface KycStatusResponse {
 
 export type DepositClaimStatus = 'pending' | 'approved' | 'rejected';
 
+/** On-chain network of a deposit claim (wire format, backend enum). */
+export type DepositNetwork =
+  | 'eth-mainnet'
+  | 'polygon-mainnet'
+  | 'arbitrum-mainnet'
+  | 'optimism-mainnet'
+  | 'base-mainnet';
+
 /** User-side deposit claim (GET /wallet/deposit/claims). */
 export interface DepositClaim {
   id: string;
@@ -186,6 +194,8 @@ export interface DepositClaim {
   txid: string;
   status: DepositClaimStatus;
   reject_reason: string;
+  /** On-chain network; omitted on legacy rows (treated as eth-mainnet). */
+  network?: DepositNetwork;
   /** Unix nanoseconds. */
   created_at: number;
   reviewed_at?: number;
@@ -205,6 +215,8 @@ export interface DepositClaimReq {
   txid: string;
   /** Optional data URL (jpg/png, ≤5 MB). */
   screenshot?: string;
+  /** On-chain network; defaults to 'eth-mainnet' server-side when omitted. */
+  network?: DepositNetwork;
 }
 
 // ── Operator price adjustment ──

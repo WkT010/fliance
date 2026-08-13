@@ -67,6 +67,9 @@ func (m *alchemyMock) server() *httptest.Server {
 
 const goodTxID = "0x000000000000000000000000000000000000000000000000000000000000abcd"
 
+// depositAddr is the claimant's platform deposit address used across tests.
+const depositAddr = "0x2222222222222222222222222222222222222222"
+
 // okReceipt builds a successful receipt at block 0x10 with optional logs.
 func okReceipt(logs ...map[string]any) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{"status": "0x1", "blockNumber": "0x10", "logs": logs})
@@ -98,6 +101,8 @@ func transferLog(contract, to, valueHex string) map[string]any {
 	}
 }
 
+// newTestVerifier builds an eth-mainnet-only verifier against one mock.
+// head 0x1c over receipt block 0x10 → 13 confirmations (above the floor).
 func newTestVerifier(t *testing.T, m *alchemyMock) *DepositVerifier {
 	t.Helper()
 	srv := m.server()
@@ -110,16 +115,15 @@ func newTestVerifier(t *testing.T, m *alchemyMock) *DepositVerifier {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestVerifyDepositERC20Match(t *testing.T) {
-	to := "0x2222222222222222222222222222222222222222"
-	// 1000 USDT (6 decimals) = 10^9 = 0x3b9aca00.
+	// 1000 USDT (6 decimals) = 10^9 = 0x3b9aca00, sent to the deposit addr.
 	m := &alchemyMock{
-		receipt: okReceipt(transferLog(erc20ContractUSDT, to, "3b9aca00")),
-		head:    "0x15",
-		tx:      ethTx(to, "0x0"),
+		receipt: okReceipt(transferLog(erc20Contract(networkTokens, NetworkEthMainnet, "USDT"), depositAddr, "3b9aca00")),
+		head:    "0x1c",
+		tx:      ethTx(depositAddr, "0x0"),
 	}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "USDT", goodTxID, big.NewFloat(900))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDT", goodTxID, big.NewFloat(900), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -129,26 +133,47 @@ func TestVerifyDepositERC20Match(t *testing.T) {
 	if res.MatchedAmount == nil || res.MatchedAmount.Cmp(big.NewFloat(1000)) != 0 {
 		t.Errorf("matched amount = %v, want 1000", res.MatchedAmount)
 	}
-	// block 0x10, head 0x15 → 6 confirmations.
-	if res.Confirmations != 6 {
-		t.Errorf("confirmations = %d, want 6", res.Confirmations)
+	// block 0x10, head 0x1c → 13 confirmations.
+	if res.Confirmations != 13 {
+		t.Errorf("confirmations = %d, want 13", res.Confirmations)
 	}
-	if !strings.Contains(res.Note, "recipient address NOT checked") {
-		t.Errorf("note = %q, must flag the skipped address check", res.Note)
+	if !strings.Contains(res.Note, "deposit address") {
+		t.Errorf("note = %q, must mention the recipient binding", res.Note)
+	}
+}
+
+// TestVerifyDepositAddressMatchCaseInsensitive: the on-chain recipient is
+// lowercase while the platform address uses mixed EIP-55 casing — they must
+// still match (case never matters for funds attribution).
+func TestVerifyDepositAddressMatchCaseInsensitive(t *testing.T) {
+	mixedCase := "0x2222222222222222222222222222222222222222"
+	// 2.5 ETH = 0x22b1c8c1227a0000 sent to the LOWERCASE form.
+	m := &alchemyMock{
+		receipt: okReceipt(),
+		head:    "0x1c",
+		tx:      ethTx(strings.ToLower(mixedCase), "0x22b1c8c1227a0000"),
+	}
+	v := newTestVerifier(t, m)
+
+	res, err := v.VerifyDeposit(context.Background(), "", "eth", goodTxID, big.NewFloat(2), strings.ToUpper(mixedCase))
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("result = %+v, want OK (case-insensitive address match, default network)", res)
 	}
 }
 
 func TestVerifyDepositNativeETH(t *testing.T) {
-	to := "0x2222222222222222222222222222222222222222"
 	// 2.5 ETH = 2500000000000000000 wei = 0x22b1c8c1227a0000.
 	m := &alchemyMock{
 		receipt: okReceipt(),
-		head:    "0x11",
-		tx:      ethTx(to, "0x22b1c8c1227a0000"),
+		head:    "0x1c",
+		tx:      ethTx(depositAddr, "0x22b1c8c1227a0000"),
 	}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "eth", goodTxID, big.NewFloat(2))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "eth", goodTxID, big.NewFloat(2), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -161,16 +186,15 @@ func TestVerifyDepositNativeETH(t *testing.T) {
 }
 
 func TestVerifyDepositNativeETHInsufficient(t *testing.T) {
-	to := "0x2222222222222222222222222222222222222222"
 	// 0.5 ETH = 500000000000000000 wei = 0x6f05b59d3b20000.
 	m := &alchemyMock{
 		receipt: okReceipt(),
-		head:    "0x11",
-		tx:      ethTx(to, "0x6f05b59d3b20000"),
+		head:    "0x1c",
+		tx:      ethTx(depositAddr, "0x6f05b59d3b20000"),
 	}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "ETH", goodTxID, big.NewFloat(5))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "ETH", goodTxID, big.NewFloat(5), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -183,16 +207,15 @@ func TestVerifyDepositNativeETHInsufficient(t *testing.T) {
 }
 
 func TestVerifyDepositInsufficientAmount(t *testing.T) {
-	to := "0x2222222222222222222222222222222222222222"
 	// 100 USDT = 10^8 = 0x5f5e100.
 	m := &alchemyMock{
-		receipt: okReceipt(transferLog(erc20ContractUSDT, to, "5f5e100")),
-		head:    "0x11",
-		tx:      ethTx(to, "0x0"),
+		receipt: okReceipt(transferLog(erc20Contract(networkTokens, NetworkEthMainnet, "USDT"), depositAddr, "5f5e100")),
+		head:    "0x1c",
+		tx:      ethTx(depositAddr, "0x0"),
 	}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "USDT", goodTxID, big.NewFloat(900))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDT", goodTxID, big.NewFloat(900), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -208,12 +231,12 @@ func TestVerifyDepositNoMatchingTransfer(t *testing.T) {
 	// Receipt carries no token Transfer log at all.
 	m := &alchemyMock{
 		receipt: okReceipt(),
-		head:    "0x11",
-		tx:      ethTx("0x2222222222222222222222222222222222222222", "0x0"),
+		head:    "0x1c",
+		tx:      ethTx(depositAddr, "0x0"),
 	}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "USDT", goodTxID, big.NewFloat(1))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDT", goodTxID, big.NewFloat(1), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -228,11 +251,11 @@ func TestVerifyDepositNoMatchingTransfer(t *testing.T) {
 func TestVerifyDepositReceiptFailed(t *testing.T) {
 	m := &alchemyMock{
 		receipt: json.RawMessage(`{"status":"0x0","blockNumber":"0x10"}`),
-		head:    "0x11",
+		head:    "0x1c",
 	}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "USDT", goodTxID, big.NewFloat(1))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDT", goodTxID, big.NewFloat(1), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -252,10 +275,10 @@ func TestVerifyDepositReceiptFailed(t *testing.T) {
 }
 
 func TestVerifyDepositTxNotFound(t *testing.T) {
-	m := &alchemyMock{receipt: json.RawMessage(`null`), head: "0x11"}
+	m := &alchemyMock{receipt: json.RawMessage(`null`), head: "0x1c"}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "USDC", goodTxID, big.NewFloat(1))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDC", goodTxID, big.NewFloat(1), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -269,16 +292,15 @@ func TestVerifyDepositTxNotFound(t *testing.T) {
 
 func TestVerifyDepositWrongTokenContract(t *testing.T) {
 	// A USDC transfer cannot satisfy a USDT claim (and vice versa).
-	to := "0x2222222222222222222222222222222222222222"
 	// 5000 USDC = 5*10^9 = 0x12a05f200.
 	m := &alchemyMock{
-		receipt: okReceipt(transferLog(erc20ContractUSDC, to, "12a05f200")),
-		head:    "0x11",
-		tx:      ethTx(to, "0x0"),
+		receipt: okReceipt(transferLog(erc20Contract(networkTokens, NetworkEthMainnet, "USDC"), depositAddr, "12a05f200")),
+		head:    "0x1c",
+		tx:      ethTx(depositAddr, "0x0"),
 	}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "USDT", goodTxID, big.NewFloat(10))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDT", goodTxID, big.NewFloat(10), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -287,46 +309,221 @@ func TestVerifyDepositWrongTokenContract(t *testing.T) {
 	}
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// security invariants (T52): mandatory recipient binding, confirmation floor,
+// network whitelist, multi-chain routing
+// ─────────────────────────────────────────────────────────────────────────────
+
 func TestVerifyDepositDepositAddressEnforced(t *testing.T) {
 	// 5 ETH = 5000000000000000000 wei = 0x4563918244f40000, sent to the
-	// wrong address.
+	// WRONG address — must never approve even though amount and confirmations
+	// are fine.
 	m := &alchemyMock{
 		receipt: okReceipt(),
-		head:    "0x11",
+		head:    "0x1c",
 		tx:      ethTx("0x9999999999999999999999999999999999999999", "0x4563918244f40000"),
 	}
 	v := newTestVerifier(t, m)
-	v.DepositAddress = "0x2222222222222222222222222222222222222222"
 
-	res, err := v.VerifyDeposit(context.Background(), "ETH", goodTxID, big.NewFloat(1))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "ETH", goodTxID, big.NewFloat(1), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 	if res.OK {
 		t.Fatalf("result = %+v, want NOT OK (wrong destination)", res)
 	}
-	if !strings.Contains(res.Note, "does not match the platform deposit address") {
+	if !strings.Contains(res.Note, "does not match the user's platform deposit address") {
 		t.Errorf("note = %q, want destination mismatch", res.Note)
 	}
 }
 
 func TestVerifyDepositERC20DestinationEnforced(t *testing.T) {
-	// Large USDT transfer, but to an address that is not the platform's.
+	// Large USDT transfer, but to an address that is not the claimant's.
 	// 10000 USDT = 10^10 = 0x2540be400.
 	m := &alchemyMock{
-		receipt: okReceipt(transferLog(erc20ContractUSDT, "0x9999999999999999999999999999999999999999", "2540be400")),
-		head:    "0x11",
+		receipt: okReceipt(transferLog(erc20Contract(networkTokens, NetworkEthMainnet, "USDT"), "0x9999999999999999999999999999999999999999", "2540be400")),
+		head:    "0x1c",
 		tx:      ethTx("0x3333333333333333333333333333333333333333", "0x0"),
 	}
 	v := newTestVerifier(t, m)
-	v.DepositAddress = "0x2222222222222222222222222222222222222222"
 
-	res, err := v.VerifyDeposit(context.Background(), "USDT", goodTxID, big.NewFloat(1))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDT", goodTxID, big.NewFloat(1), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
 	if res.OK {
 		t.Fatalf("result = %+v, want NOT OK (wrong ERC-20 recipient)", res)
+	}
+	if !strings.Contains(res.Note, "does not match the user's platform deposit address") {
+		t.Errorf("note = %q, want destination mismatch", res.Note)
+	}
+}
+
+// TestVerifyDepositNoDepositAddressRefused: without the claimant's platform
+// deposit address the verifier must refuse — this closes the pre-T52 hole
+// where any amount-matching mainnet transfer could be claimed.
+func TestVerifyDepositNoDepositAddressRefused(t *testing.T) {
+	m := &alchemyMock{receipt: okReceipt(), head: "0x1c", tx: ethTx(depositAddr, "0x4563918244f40000")}
+	v := newTestVerifier(t, m)
+
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "ETH", goodTxID, big.NewFloat(1), "")
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.OK {
+		t.Fatalf("result = %+v, want NOT OK (empty deposit address)", res)
+	}
+	if !strings.Contains(res.Note, "no platform deposit address") {
+		t.Errorf("note = %q, want missing-address reason", res.Note)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.methods) != 0 {
+		t.Errorf("RPC calls = %v, want none without a deposit address", m.methods)
+	}
+}
+
+// TestVerifyDepositInsufficientConfirmations: below the floor → pending
+// (definitive negative), and the note records the current count.
+func TestVerifyDepositInsufficientConfirmations(t *testing.T) {
+	// block 0x10, head 0x11 → 2 confirmations < 12.
+	m := &alchemyMock{
+		receipt: okReceipt(),
+		head:    "0x11",
+		tx:      ethTx(depositAddr, "0x4563918244f40000"),
+	}
+	v := newTestVerifier(t, m)
+
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "ETH", goodTxID, big.NewFloat(1), depositAddr)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.OK {
+		t.Fatalf("result = %+v, want NOT OK (only 2 confirmations)", res)
+	}
+	if res.Confirmations != 2 {
+		t.Errorf("confirmations = %d, want 2", res.Confirmations)
+	}
+	if !strings.Contains(res.Note, "insufficient confirmations") || !strings.Contains(res.Note, "2") || !strings.Contains(res.Note, "12") {
+		t.Errorf("note = %q, want confirmation floor reason with counts", res.Note)
+	}
+}
+
+// TestVerifyDepositUnknownNetworkRefused: networks outside the whitelist are
+// a definitive negative and must not trigger any RPC traffic.
+func TestVerifyDepositUnknownNetworkRefused(t *testing.T) {
+	m := &alchemyMock{}
+	v := newTestVerifier(t, m)
+
+	res, err := v.VerifyDeposit(context.Background(), "bsc-mainnet", "USDT", goodTxID, big.NewFloat(1), depositAddr)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.OK {
+		t.Fatalf("result = %+v, want NOT OK (unknown network)", res)
+	}
+	if !strings.Contains(res.Note, "not supported for auto-verification") {
+		t.Errorf("note = %q, want unsupported-network reason", res.Note)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.methods) != 0 {
+		t.Errorf("RPC calls = %v, want none for unknown networks", m.methods)
+	}
+}
+
+// TestVerifyDepositMultiChainRouting: a polygon-mainnet claim is answered by
+// the polygon endpoint using POLYGON's USDT contract, while the eth endpoint
+// stays untouched — and the Ethereum USDT contract must NOT match on polygon.
+func TestVerifyDepositMultiChainRouting(t *testing.T) {
+	polyUSDT := erc20Contract(networkTokens, NetworkPolygonMainnet, "USDT")
+	ethUSDT := erc20Contract(networkTokens, NetworkEthMainnet, "USDT")
+
+	// 1000 USDT on polygon, to the deposit address.
+	polyMock := &alchemyMock{
+		receipt: okReceipt(transferLog(polyUSDT, depositAddr, "3b9aca00")),
+		head:    "0x1c",
+		tx:      ethTx(depositAddr, "0x0"),
+	}
+	ethMock := &alchemyMock{receipt: json.RawMessage(`null`), head: "0x1c"}
+	polySrv, ethSrv := polyMock.server(), ethMock.server()
+	t.Cleanup(polySrv.Close)
+	t.Cleanup(ethSrv.Close)
+
+	v := NewMultiChainDepositVerifier(map[string]string{
+		NetworkEthMainnet:     ethSrv.URL,
+		NetworkPolygonMainnet: polySrv.URL,
+	}, 5*time.Second)
+
+	res, err := v.VerifyDeposit(context.Background(), "polygon-mainnet", "USDT", goodTxID, big.NewFloat(900), depositAddr)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("result = %+v, want OK on polygon-mainnet", res)
+	}
+	if res.Network != NetworkPolygonMainnet {
+		t.Errorf("result network = %q, want polygon-mainnet", res.Network)
+	}
+	polyMock.mu.Lock()
+	polyCalls := len(polyMock.methods)
+	polyMock.mu.Unlock()
+	ethMock.mu.Lock()
+	ethCalls := len(ethMock.methods)
+	ethMock.mu.Unlock()
+	if polyCalls == 0 {
+		t.Error("polygon endpoint never called")
+	}
+	if ethCalls != 0 {
+		t.Errorf("eth endpoint called %d times, want 0 for a polygon claim", ethCalls)
+	}
+
+	// Same claim but the receipt only carries the ETHEREUM USDT contract:
+	// that contract is meaningless on polygon → must not approve.
+	polyMock.mu.Lock()
+	polyMock.receipt = okReceipt(transferLog(ethUSDT, depositAddr, "3b9aca00"))
+	polyMock.methods = nil
+	polyMock.mu.Unlock()
+
+	res, err = v.VerifyDeposit(context.Background(), "polygon-mainnet", "USDT", goodTxID, big.NewFloat(900), depositAddr)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.OK {
+		t.Fatalf("result = %+v, want NOT OK (ethereum USDT contract on polygon)", res)
+	}
+}
+
+// TestVerifyDepositBaseUSDTUnverifiable: Base has no canonical USDT, so the
+// combination falls back to manual review instead of erroring.
+func TestVerifyDepositBaseUSDTUnverifiable(t *testing.T) {
+	m := &alchemyMock{receipt: okReceipt(), head: "0x1c"}
+	srv := m.server()
+	t.Cleanup(srv.Close)
+	v := NewMultiChainDepositVerifier(map[string]string{NetworkBaseMainnet: srv.URL}, 5*time.Second)
+
+	res, err := v.VerifyDeposit(context.Background(), "base-mainnet", "USDT", goodTxID, big.NewFloat(1), depositAddr)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if res.OK {
+		t.Fatalf("result = %+v, want NOT OK (no USDT on Base)", res)
+	}
+	if !strings.Contains(res.Note, "no canonical contract") {
+		t.Errorf("note = %q, want no-contract reason", res.Note)
+	}
+}
+
+// TestVerifyDepositMinConfirmationsEnvOverride: DEPOSIT_MIN_CONFIRMATIONS
+// tunes the floor (values < 1 are ignored).
+func TestVerifyDepositMinConfirmationsEnvOverride(t *testing.T) {
+	t.Setenv(EnvDepositMinConfirmations, "3")
+	if got := MinConfirmations(); got != 3 {
+		t.Errorf("MinConfirmations() = %d, want 3", got)
+	}
+	t.Setenv(EnvDepositMinConfirmations, "0")
+	if got := MinConfirmations(); got != DefaultMinConfirmations {
+		t.Errorf("MinConfirmations() = %d, want default %d for invalid override", got, DefaultMinConfirmations)
 	}
 }
 
@@ -334,7 +531,7 @@ func TestVerifyDepositUnverifiableAsset(t *testing.T) {
 	m := &alchemyMock{}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "BTC", goodTxID, big.NewFloat(1))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "BTC", goodTxID, big.NewFloat(1), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -352,7 +549,7 @@ func TestVerifyDepositMalformedTxID(t *testing.T) {
 	m := &alchemyMock{}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "ETH", "not-a-hash", big.NewFloat(1))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "ETH", "not-a-hash", big.NewFloat(1), depositAddr)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -370,7 +567,7 @@ func TestVerifyDepositRPCErrorIsNotApproval(t *testing.T) {
 	m := &alchemyMock{rpcError: true}
 	v := newTestVerifier(t, m)
 
-	res, err := v.VerifyDeposit(context.Background(), "USDT", goodTxID, big.NewFloat(1))
+	res, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDT", goodTxID, big.NewFloat(1), depositAddr)
 	if err == nil {
 		t.Fatalf("result = %+v, want error (infra failure → cannot verify)", res)
 	}
@@ -383,7 +580,7 @@ func TestVerifyDepositHTTPFailureIsNotApproval(t *testing.T) {
 	m := &alchemyMock{status: http.StatusInternalServerError}
 	v := newTestVerifier(t, m)
 
-	_, err := v.VerifyDeposit(context.Background(), "USDT", goodTxID, big.NewFloat(1))
+	_, err := v.VerifyDeposit(context.Background(), "eth-mainnet", "USDT", goodTxID, big.NewFloat(1), depositAddr)
 	if err == nil {
 		t.Fatal("want error on HTTP 500, got nil")
 	}
@@ -398,4 +595,33 @@ func TestIsAutoVerifiableAsset(t *testing.T) {
 			t.Errorf("IsAutoVerifiableAsset(%q) = %v, want %v", asset, got, want)
 		}
 	}
+}
+
+func TestNetworkWhitelist(t *testing.T) {
+	for network, want := range map[string]bool{
+		NetworkEthMainnet: true, NetworkPolygonMainnet: true,
+		NetworkArbitrumMainnet: true, NetworkOptimismMainnet: true,
+		NetworkBaseMainnet: true,
+		"bsc-mainnet":      false, "eth-sepolia": false, "": false, "ETH-MAINNET": false,
+	} {
+		if got := IsValidNetwork(network); got != want {
+			t.Errorf("IsValidNetwork(%q) = %v, want %v", network, got, want)
+		}
+	}
+	if got := NormalizeNetwork("  Polygon-Mainnet "); got != NetworkPolygonMainnet {
+		t.Errorf("NormalizeNetwork = %q, want polygon-mainnet", got)
+	}
+	if got := NormalizeNetwork(""); got != DefaultNetwork {
+		t.Errorf("NormalizeNetwork(\"\") = %q, want %q", got, DefaultNetwork)
+	}
+}
+
+// erc20Contract is a test helper pulling the first canonical contract for
+// asset on network out of the production table (fails the test when absent).
+func erc20Contract(table map[string]map[string]tokenSpec, network, asset string) string {
+	spec, ok := table[network][asset]
+	if !ok || len(spec.contracts) == 0 {
+		panic("test: no contract for " + network + "/" + asset)
+	}
+	return spec.contracts[0]
 }
