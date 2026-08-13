@@ -80,9 +80,12 @@ export function TrustSection() {
           </p>
         </div>
 
-        <div className="mt-12 grid gap-px overflow-hidden rounded-lg border border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {items.map((it) => (
-            <div key={it.titleKey} className="bg-bg2 p-6 transition-colors hover:bg-container lg:p-8">
+            <div
+              key={it.titleKey}
+              className="rounded-lg border border-line bg-bg2 p-6 transition-all duration-300 hover:border-cta/50 hover:bg-container lg:p-8"
+            >
               <div className="flex h-10 w-10 items-center justify-center rounded bg-cta/10 text-cta">
                 {it.icon}
               </div>

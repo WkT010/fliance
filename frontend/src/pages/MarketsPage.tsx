@@ -94,7 +94,7 @@ export function MarketsPage() {
                   <tr key={tk.pair} className="border-b border-nexa-800/50 transition-colors hover:bg-nexa-800/30">
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-accent/30 to-amber-700/30 text-xs font-bold text-accent">
+                        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-accent/30 to-cta-deep/30 text-xs font-bold text-accent">
                           {tk.pair.split('/')[0].slice(0, 1)}
                         </span>
                         <span className="font-medium text-nexa-100">{tk.pair}</span>

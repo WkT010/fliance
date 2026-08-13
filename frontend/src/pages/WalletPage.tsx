@@ -226,7 +226,7 @@ export function WalletPage() {
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-accent/30 to-amber-700/30 text-xs font-bold text-accent">
+                          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-accent/30 to-cta-deep/30 text-xs font-bold text-accent">
                             {b.asset.slice(0, 1)}
                           </span>
                           <span className="font-medium">{b.asset}</span>

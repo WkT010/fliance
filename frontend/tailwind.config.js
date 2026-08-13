@@ -17,10 +17,13 @@ export default {
         pri: '#EAECEF', // primary text
         sec: '#929AA5', // secondary text
         third: '#707A8A', // tertiary text
-        cta: '#FCD535', // CTA button background
-        brand: '#F0B90B', // brand yellow / badges
-        gain: '#2EBD85', // up / buy
-        loss: '#F6465D', // down / sell
+        cta: '#14B8A6', // CTA button background (teal)
+        'cta-bright': '#2DD4BF', // brighter teal for dark-surface accents
+        'cta-deep': '#0D9488', // teal hover state
+        brand: '#2DD4BF', // brand teal / badges
+        'brand-soft': 'rgba(45, 212, 191, 0.12)', // translucent brand tint
+        gain: '#2EBD85', // up / buy (semantic — unchanged)
+        loss: '#F6465D', // down / sell (semantic — unchanged)
         'gain-bg': 'rgba(46, 189, 133, 0.1)',
         'loss-bg': 'rgba(246, 70, 93, 0.1)',
         // ── Legacy palette remapped onto the token ramp so existing pages
@@ -40,7 +43,7 @@ export default {
         },
         up: '#2EBD85',
         down: '#F6465D',
-        accent: '#FCD535',
+        accent: '#2DD4BF',
       },
       fontFamily: {
         sans: ['IBM Plex Sans', 'Inter', 'system-ui', 'sans-serif'],

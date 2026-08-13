@@ -3,7 +3,7 @@ export const COIN_COLORS: Record<string, string> = {
   BTC: '#F7931A',
   ETH: '#627EEA',
   SOL: '#9945FF',
-  BNB: '#F0B90B',
+  BNB: '#2DD4BF',
   ADA: '#2A6AFF',
   USDT: '#26A17B',
 };

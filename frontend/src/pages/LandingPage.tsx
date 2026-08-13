@@ -5,12 +5,14 @@ import { TrustSection } from '@/components/landing/TrustSection';
 import { FaqSection } from '@/components/landing/FaqSection';
 import { BottomCta } from '@/components/landing/BottomCta';
 import { LandingFooter } from '@/components/landing/LandingFooter';
+import { Reveal } from '@/components/landing/Reveal';
 import { useLandingMarket } from '@/components/landing/useLandingMarket';
 
 /**
- * Fliance public landing page — Binance-style dark design system.
+ * Fliance public landing page — dark design system with teal brand tokens.
  * Section rhythm: Hero (#202630) → Markets (#202630) → Security (#181A20)
- * → FAQ (#202630) → CTA band (#FCD535) → Footer (#0B0E11).
+ * → FAQ (#202630) → CTA band (#14B8A6) → Footer (#0B0E11).
+ * Below-the-fold sections enter with a one-shot scroll reveal.
  */
 export function LandingPage() {
   const market = useLandingMarket();
@@ -20,10 +22,18 @@ export function LandingPage() {
       <Header />
       <main>
         <Hero market={market} />
-        <MarketTabs market={market} />
-        <TrustSection />
-        <FaqSection />
-        <BottomCta />
+        <Reveal>
+          <MarketTabs market={market} />
+        </Reveal>
+        <Reveal>
+          <TrustSection />
+        </Reveal>
+        <Reveal>
+          <FaqSection />
+        </Reveal>
+        <Reveal>
+          <BottomCta />
+        </Reveal>
       </main>
       <LandingFooter />
     </div>

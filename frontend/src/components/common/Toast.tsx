@@ -57,9 +57,9 @@ const STYLES: Record<ToastType, { ring: string; icon: string; bar: string; bg: s
     bg: 'bg-nexa-900/95',
   },
   warning: {
-    ring: 'ring-amber-400/40',
-    icon: 'text-amber-400 bg-amber-400/15',
-    bar: 'bg-amber-400',
+    ring: 'ring-cta/40',
+    icon: 'text-cta bg-cta/15',
+    bar: 'bg-cta',
     bg: 'bg-nexa-900/95',
   },
 };

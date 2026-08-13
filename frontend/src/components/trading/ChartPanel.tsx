@@ -36,7 +36,7 @@ interface IndicatorDef {
 }
 
 const MAIN_INDICATORS: IndicatorDef[] = [
-  { id: 'sma7', label: 'MA7', fn: (d) => sma(d, 7), color: '#f59e0b' },
+  { id: 'sma7', label: 'MA7', fn: (d) => sma(d, 7), color: '#38BDF8' },
   { id: 'sma25', label: 'MA25', fn: (d) => sma(d, 25), color: '#3b82f6' },
   { id: 'sma99', label: 'MA99', fn: (d) => sma(d, 99), color: '#a855f7' },
   { id: 'ema12', label: 'EMA12', fn: (d) => ema(d, 12), color: '#22c55e' },
@@ -188,7 +188,7 @@ export function ChartPanel({ pair }: { pair: string }) {
         let histogram: ISeriesApi<'Histogram'> | null = null;
 
         if (p.id === 'rsi') {
-          series.push(subChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'RSI' }));
+          series.push(subChart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'RSI' }));
           subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 70 }, { time: 9999999999 as Time, value: 70 },
           ]);
@@ -197,16 +197,16 @@ export function ChartPanel({ pair }: { pair: string }) {
           ]);
         } else if (p.id === 'macd') {
           series.push(subChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'MACD' }));
-          series.push(subChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'Signal' }));
+          series.push(subChart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'Signal' }));
           histogram = subChart.addHistogramSeries({ color: '#22c55e', priceLineVisible: false, priceScaleId: 'left' });
           histogram.priceScale().applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
         } else if (p.id === 'kdj') {
           series.push(subChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'K' }));
-          series.push(subChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'D' }));
+          series.push(subChart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'D' }));
           series.push(subChart.addLineSeries({ color: '#ef4444', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'J' }));
         } else if (p.id === 'stochastic') {
           series.push(subChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'K' }));
-          series.push(subChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'D' }));
+          series.push(subChart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'D' }));
           subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 80 }, { time: 9999999999 as Time, value: 80 },
           ]);
@@ -234,7 +234,7 @@ export function ChartPanel({ pair }: { pair: string }) {
         } else if (p.id === 'obv') {
           series.push(subChart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'OBV' }));
         } else if (p.id === 'mfi') {
-          series.push(subChart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'MFI' }));
+          series.push(subChart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: true, title: 'MFI' }));
           subChart.addLineSeries({ color: '#374151', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData([
             { time: 0 as Time, value: 80 }, { time: 9999999999 as Time, value: 80 },
           ]);
@@ -369,7 +369,7 @@ export function ChartPanel({ pair }: { pair: string }) {
 
       if (showVolumeMa) {
         const vma = volumeSma(rawCandles, 20);
-        const vmaSeries = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+        const vmaSeries = chart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
         vmaSeries.priceScale().applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
         vmaSeries.setData(vma.map((p) => ({ time: p.time as Time, value: p.value })) as LineData<Time>[]);
         volumeMaSeriesRef.current = vmaSeries;
@@ -405,7 +405,7 @@ export function ChartPanel({ pair }: { pair: string }) {
 
     if (showIchimoku) {
       const ic = ichimoku(rawCandles);
-      const tenkan = chart.addLineSeries({ color: '#f59e0b', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Tenkan' });
+      const tenkan = chart.addLineSeries({ color: '#38BDF8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Tenkan' });
       const kijun = chart.addLineSeries({ color: '#3b82f6', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Kijun' });
       const senkouA = chart.addLineSeries({ color: '#22c55e', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Senkou A' });
       const senkouB = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'Senkou B' });
@@ -421,7 +421,7 @@ export function ChartPanel({ pair }: { pair: string }) {
       let low = rawCandles[0].low;
       rawCandles.forEach((c) => { if (c.high > high) high = c.high; if (c.low < low) low = c.low; });
       const fibs = fibonacciLevels(high, low);
-      const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
+      const colors = ['#ef4444', '#f97316', '#2DD4BF', '#22c55e', '#3b82f6', '#a855f7', '#ec4899'];
       fibs.forEach((f, i) => {
         const series = chart.addLineSeries({ color: colors[i % colors.length], lineWidth: 1, priceLineVisible: false, lastValueVisible: false, lineStyle: LineStyle.Dashed, title: `Fib ${Math.round(f.level * 1000) / 10}%` });
         series.setData([{ time: rawCandles[0].time as Time, value: f.price }, { time: rawCandles[rawCandles.length - 1].time as Time, value: f.price }]);

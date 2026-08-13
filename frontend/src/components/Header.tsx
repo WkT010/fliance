@@ -120,9 +120,7 @@ export function Header() {
     <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-line bg-bg1/95 px-4 backdrop-blur-md">
       <div className="flex items-center gap-6">
         <Link to="/" className="flex items-center gap-2">
-          <span className="flex h-7 w-7 items-center justify-center rounded bg-cta text-sm font-bold text-bg1">
-            F
-          </span>
+          <img src="/fliance-logo.png" alt="Fliance" className="h-7 w-7 rounded" />
           <span className="text-lg font-semibold tracking-wide text-pri">
             Fliance<span className="ml-1 text-xs font-medium text-third">梵响</span>
           </span>
@@ -181,7 +179,7 @@ export function Header() {
             </button>
             <button
               onClick={() => navigate('/register')}
-              className="hidden rounded bg-cta px-4 py-1.5 text-sm font-semibold text-bg1 transition-colors hover:bg-brand sm:inline-flex"
+              className="hidden rounded bg-cta px-4 py-1.5 text-sm font-semibold text-bg1 transition-colors hover:bg-cta-deep sm:inline-flex"
             >
               {t('auth.register')}
             </button>

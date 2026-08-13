@@ -107,9 +107,9 @@ export function DepthChart({ pair, compact }: { pair: string; compact?: boolean 
       ctx.stroke();
     }
     const midX = xPx(midP);
-    ctx.strokeStyle = '#f0b90b'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = '#2DD4BF'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
     ctx.beginPath(); ctx.moveTo(midX, mt); ctx.lineTo(midX, h - mb); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = '#f0b90b'; ctx.font = '11px JetBrains Mono, monospace'; ctx.textAlign = 'center';
+    ctx.fillStyle = '#2DD4BF'; ctx.font = '11px JetBrains Mono, monospace'; ctx.textAlign = 'center';
     ctx.fillText(formatPrice(midP, 2), midX, mt - 4);
     ctx.fillStyle = '#8b97a8'; ctx.font = '11px Inter, sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(t('trading.price'), w / 2, h - 2);

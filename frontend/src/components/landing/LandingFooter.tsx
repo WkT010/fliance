@@ -21,9 +21,7 @@ export function LandingFooter() {
           {/* Brand */}
           <div className="max-w-xs">
             <div className="flex items-center gap-2">
-              <span className="flex h-8 w-8 items-center justify-center rounded bg-cta text-sm font-bold text-bg1">
-                F
-              </span>
+              <img src="/fliance-logo.png" alt="Fliance" className="h-8 w-8 rounded" />
               <span className="text-xl font-semibold text-pri">
                 Fliance<span className="ml-1.5 text-xs font-medium text-third">梵响</span>
               </span>

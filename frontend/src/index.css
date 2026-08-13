@@ -62,10 +62,57 @@ body {
     animation: fadeIn 280ms ease-out both;
   }
   .animate-shimmer {
-    background: linear-gradient(90deg, transparent, rgba(240, 185, 11, 0.08), transparent);
+    background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.08), transparent);
     background-size: 200% 100%;
     animation: shimmer 2.2s ease-in-out infinite;
   }
+}
+
+/* ---------- MetaMask-style ambient motion (transform/opacity only) ---------- */
+
+/* Floating hero gradient blobs */
+.hero-blob {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  filter: blur(60px);
+  animation: blobDrift 16s ease-in-out infinite alternate;
+}
+.hero-blob-2 { animation-duration: 20s; animation-delay: -7s; }
+.hero-blob-3 { animation-duration: 14s; animation-delay: -3s; }
+
+@keyframes blobDrift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(50px, -35px, 0) scale(1.14); }
+  100% { transform: translate3d(-35px, 28px, 0) scale(0.94); }
+}
+
+/* Slow-drifting fine grid at the hero base (echo / "梵响" motif) */
+.hero-grid {
+  position: absolute;
+  inset: -48px;
+  pointer-events: none;
+  opacity: 0.08;
+  background-image:
+    linear-gradient(rgba(45, 212, 191, 0.5) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(45, 212, 191, 0.5) 1px, transparent 1px);
+  background-size: 48px 48px;
+  animation: gridDrift 18s linear infinite;
+}
+@keyframes gridDrift {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(48px, 48px, 0); }
+}
+
+/* Scroll reveal: IntersectionObserver toggles .reveal-visible once */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.reveal-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 @keyframes fadeIn {
@@ -102,7 +149,14 @@ body {
   .animate-in,
   .animate-fade-in,
   .animate-pulse-soft,
-  .animate-shimmer {
+  .animate-shimmer,
+  .hero-blob,
+  .hero-grid {
     animation: none !important;
+  }
+  .reveal {
+    opacity: 1 !important;
+    transform: none !important;
+    transition: none !important;
   }
 }
