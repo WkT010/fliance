@@ -14,11 +14,18 @@ type PGWalletStore struct{ db *sql.DB }
 func NewPGWalletStore(db *sql.DB) *PGWalletStore { return &PGWalletStore{db: db} }
 
 func (s *PGWalletStore) GetWallet(userID, asset string) (*wallet.Wallet, error) {
+	return s.GetWalletForAccount(userID, asset, wallet.AccountSpot)
+}
+
+// GetWalletForAccount returns the wallet row for one account type
+// (spot/futures/funding). An empty accountType resolves to spot.
+func (s *PGWalletStore) GetWalletForAccount(userID, asset, accountType string) (*wallet.Wallet, error) {
+	accountType = wallet.NormalizeAccountType(accountType)
 	w := &wallet.Wallet{Balance: new(big.Float), Locked: new(big.Float)}
 	var b, l string
 	row := s.db.QueryRow(
-		`SELECT id,user_id,asset,balance,locked,COALESCE(address,''),created_at,updated_at FROM wallets WHERE user_id=$1 AND asset=$2`, userID, asset)
-	if err := row.Scan(&w.ID, &w.UserID, &w.Asset, &b, &l, &w.Address, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		`SELECT id,user_id,asset,balance,locked,COALESCE(address,''),created_at,updated_at,account_type FROM wallets WHERE user_id=$1 AND asset=$2 AND account_type=$3`, userID, asset, accountType)
+	if err := row.Scan(&w.ID, &w.UserID, &w.Asset, &b, &l, &w.Address, &w.CreatedAt, &w.UpdatedAt, &w.AccountType); err != nil {
 		return nil, fmt.Errorf("get wallet: %w", err)
 	}
 	w.Balance.Parse(b, 10)
@@ -28,7 +35,7 @@ func (s *PGWalletStore) GetWallet(userID, asset string) (*wallet.Wallet, error) 
 
 func (s *PGWalletStore) GetWallets(userID string) ([]*wallet.Wallet, error) {
 	rows, err := s.db.Query(
-		`SELECT id,user_id,asset,balance,locked,COALESCE(address,''),created_at,updated_at FROM wallets WHERE user_id=$1`, userID)
+		`SELECT id,user_id,asset,balance,locked,COALESCE(address,''),created_at,updated_at,account_type FROM wallets WHERE user_id=$1`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +44,7 @@ func (s *PGWalletStore) GetWallets(userID string) ([]*wallet.Wallet, error) {
 	for rows.Next() {
 		w := &wallet.Wallet{Balance: new(big.Float), Locked: new(big.Float)}
 		var b, l string
-		if err := rows.Scan(&w.ID, &w.UserID, &w.Asset, &b, &l, &w.Address, &w.CreatedAt, &w.UpdatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.UserID, &w.Asset, &b, &l, &w.Address, &w.CreatedAt, &w.UpdatedAt, &w.AccountType); err != nil {
 			return nil, err
 		}
 		w.Balance.Parse(b, 10)
@@ -58,9 +65,9 @@ func (s *PGWalletStore) SaveWallet(w *wallet.Wallet) error {
 		w.Locked = big.NewFloat(0)
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO wallets (id,user_id,asset,balance,locked,address,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-		 ON CONFLICT (user_id, asset) DO NOTHING`,
-		w.ID, w.UserID, w.Asset, w.Balance.Text('f', 18), w.Locked.Text('f', 18), w.Address, w.CreatedAt, w.UpdatedAt)
+		`INSERT INTO wallets (id,user_id,asset,balance,locked,address,created_at,updated_at,account_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		 ON CONFLICT (user_id, asset, account_type) DO NOTHING`,
+		w.ID, w.UserID, w.Asset, w.Balance.Text('f', 18), w.Locked.Text('f', 18), w.Address, w.CreatedAt, w.UpdatedAt, wallet.NormalizeAccountType(w.AccountType))
 	return err
 }
 
@@ -84,8 +91,20 @@ func (s *PGWalletStore) UnlockBalance(id string, amt *big.Float) error {
 // (balance - locked >= amt) and increments locked by amt, all within a single
 // row update guarded by a WHERE clause. This closes the TOCTOU window that a
 // separate SELECT-then-UPDATE would create. The wallet row is upserted on first
-// use so users can place orders before any wallet row exists.
+// use so users can place orders before any wallet row exists. Operates on the
+// spot account; derivatives use ReserveForAccount.
 func (s *PGWalletStore) ReserveForOrder(userID, asset string, amt *big.Float) (*wallet.Wallet, error) {
+	return s.ReserveForAccount(userID, asset, wallet.AccountSpot, amt)
+}
+
+// ReserveForAccount is ReserveForOrder scoped to one account type
+// (spot/futures/funding). The wallet row is upserted on first use, so the
+// futures account gets a row the first time margin is locked.
+func (s *PGWalletStore) ReserveForAccount(userID, asset, accountType string, amt *big.Float) (*wallet.Wallet, error) {
+	accountType = wallet.NormalizeAccountType(accountType)
+	if !wallet.ValidAccountType(accountType) {
+		return nil, fmt.Errorf("reserve: %w: %s", wallet.ErrInvalidAccount, accountType)
+	}
 	if amt == nil || amt.Sign() <= 0 {
 		return nil, wallet.ErrNegativeAmount
 	}
@@ -101,15 +120,15 @@ func (s *PGWalletStore) ReserveForOrder(userID, asset string, amt *big.Float) (*
 	defer tx.Rollback()
 	wid := "wal_" + nowText() + randSuffix()
 	if _, err := tx.Exec(
-		`INSERT INTO wallets (id,user_id,asset,balance,locked,created_at,updated_at)
-		 VALUES($1,$2,$3,0,0,$4,$4)
-		 ON CONFLICT (user_id, asset) DO NOTHING`, wid, userID, asset, now); err != nil {
+		`INSERT INTO wallets (id,user_id,asset,balance,locked,created_at,updated_at,account_type)
+		 VALUES($1,$2,$3,0,0,$4,$4,$5)
+		 ON CONFLICT (user_id, asset, account_type) DO NOTHING`, wid, userID, asset, now, accountType); err != nil {
 		return nil, fmt.Errorf("upsert wallet: %w", err)
 	}
 	res, err := tx.Exec(
 		`UPDATE wallets SET locked = locked + $1, updated_at = $2
-		 WHERE user_id=$3 AND asset=$4 AND (balance - locked) >= $1`,
-		amtStr, now, userID, asset)
+		 WHERE user_id=$3 AND asset=$4 AND account_type=$5 AND (balance - locked) >= $1`,
+		amtStr, now, userID, asset, accountType)
 	if err != nil {
 		return nil, fmt.Errorf("reserve: %w", err)
 	}
@@ -120,7 +139,7 @@ func (s *PGWalletStore) ReserveForOrder(userID, asset string, amt *big.Float) (*
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
-	return s.GetWallet(userID, asset)
+	return s.GetWalletForAccount(userID, asset, accountType)
 }
 
 // ReserveWithDailyLimit atomically reserves withdrawal funds AND accrues the
@@ -147,15 +166,15 @@ func (s *PGWalletStore) ReserveWithDailyLimit(userID, asset string, amount, usdt
 	defer tx.Rollback()
 	wid := "wal_" + nowText() + randSuffix()
 	if _, err := tx.Exec(
-		`INSERT INTO wallets (id,user_id,asset,balance,locked,created_at,updated_at)
-		 VALUES($1,$2,$3,0,0,$4,$4)
-		 ON CONFLICT (user_id, asset) DO NOTHING`, wid, userID, asset, now); err != nil {
+		`INSERT INTO wallets (id,user_id,asset,balance,locked,created_at,updated_at,account_type)
+		 VALUES($1,$2,$3,0,0,$4,$4,'spot')
+		 ON CONFLICT (user_id, asset, account_type) DO NOTHING`, wid, userID, asset, now); err != nil {
 		return nil, fmt.Errorf("upsert wallet: %w", err)
 	}
 	amtStr := amount.Text('f', 18)
 	res, err := tx.Exec(
 		`UPDATE wallets SET locked = locked + $1, updated_at = $2
-		 WHERE user_id=$3 AND asset=$4 AND (balance - locked) >= $1`,
+		 WHERE user_id=$3 AND asset=$4 AND account_type='spot' AND (balance - locked) >= $1`,
 		amtStr, now, userID, asset)
 	if err != nil {
 		return nil, fmt.Errorf("reserve: %w", err)
@@ -224,21 +243,23 @@ func (s *PGWalletStore) Settle(ops []wallet.SettleOp, txns []*wallet.Transaction
 	// the UPDATE would match 0 rows and the credit side of the settle would
 	// still commit, allowing the AMM engine to "mint" tokens for free.
 	for _, op := range ops {
+		acct := wallet.NormalizeAccountType(op.AccountType)
 		wid := "wal_" + nowText() + randSuffix()
 		if _, err := tx.Exec(
-			`INSERT INTO wallets (id,user_id,asset,balance,locked,created_at,updated_at)
-			 VALUES($1,$2,$3,0,0,$4,$4)
-			 ON CONFLICT (user_id, asset) DO NOTHING`, wid, op.UserID, op.Asset, now); err != nil {
-			return fmt.Errorf("upsert wallet %s/%s: %w", op.UserID, op.Asset, err)
+			`INSERT INTO wallets (id,user_id,asset,balance,locked,created_at,updated_at,account_type)
+			 VALUES($1,$2,$3,0,0,$4,$4,$5)
+			 ON CONFLICT (user_id, asset, account_type) DO NOTHING`, wid, op.UserID, op.Asset, now, acct); err != nil {
+			return fmt.Errorf("upsert wallet %s/%s/%s: %w", op.UserID, op.Asset, acct, err)
 		}
 	}
 	for _, op := range ops {
+		acct := wallet.NormalizeAccountType(op.AccountType)
 		if op.Unlock != nil && op.Unlock.Sign() != 0 {
 			if _, err := tx.Exec(
 				`UPDATE wallets SET locked = locked - $1, updated_at = $2
-				 WHERE user_id=$3 AND asset=$4 AND locked >= $1`,
-				op.Unlock.Text('f', 18), now, op.UserID, op.Asset); err != nil {
-				return fmt.Errorf("unlock %s/%s: %w", op.UserID, op.Asset, err)
+				 WHERE user_id=$3 AND asset=$4 AND account_type=$5 AND locked >= $1`,
+				op.Unlock.Text('f', 18), now, op.UserID, op.Asset, acct); err != nil {
+				return fmt.Errorf("unlock %s/%s/%s: %w", op.UserID, op.Asset, acct, err)
 			}
 		}
 		if op.Delta != nil && op.Delta.Sign() != 0 {
@@ -249,20 +270,20 @@ func (s *PGWalletStore) Settle(ops []wallet.SettleOp, txns []*wallet.Transaction
 			if op.Delta.Sign() < 0 {
 				res, err := tx.Exec(
 					`UPDATE wallets SET balance = balance + $1, updated_at = $2
-					 WHERE user_id=$3 AND asset=$4 AND (balance - locked) >= $5`,
-					op.Delta.Text('f', 18), now, op.UserID, op.Asset, new(big.Float).Neg(op.Delta).Text('f', 18))
+					 WHERE user_id=$3 AND asset=$4 AND account_type=$5 AND (balance - locked) >= $6`,
+					op.Delta.Text('f', 18), now, op.UserID, op.Asset, acct, new(big.Float).Neg(op.Delta).Text('f', 18))
 				if err != nil {
-					return fmt.Errorf("delta %s/%s: %w", op.UserID, op.Asset, err)
+					return fmt.Errorf("delta %s/%s/%s: %w", op.UserID, op.Asset, acct, err)
 				}
 				if n, _ := res.RowsAffected(); n == 0 {
-					return fmt.Errorf("insufficient balance for %s %s: %w", op.UserID, op.Asset, wallet.ErrInsufficientBalance)
+					return fmt.Errorf("insufficient balance for %s %s %s: %w", op.UserID, op.Asset, acct, wallet.ErrInsufficientBalance)
 				}
 			} else {
 				if _, err := tx.Exec(
 					`UPDATE wallets SET balance = balance + $1, updated_at = $2
-					 WHERE user_id=$3 AND asset=$4`,
-					op.Delta.Text('f', 18), now, op.UserID, op.Asset); err != nil {
-					return fmt.Errorf("delta %s/%s: %w", op.UserID, op.Asset, err)
+					 WHERE user_id=$3 AND asset=$4 AND account_type=$5`,
+					op.Delta.Text('f', 18), now, op.UserID, op.Asset, acct); err != nil {
+					return fmt.Errorf("delta %s/%s/%s: %w", op.UserID, op.Asset, acct, err)
 				}
 			}
 		}
@@ -275,8 +296,8 @@ func (s *PGWalletStore) Settle(ops []wallet.SettleOp, txns []*wallet.Transaction
 		wid := t.WalletID
 		if wid == "" {
 			if err := tx.QueryRow(
-				`SELECT id FROM wallets WHERE user_id=$1 AND asset=$2`,
-				t.UserID, t.Asset).Scan(&wid); err != nil {
+				`SELECT id FROM wallets WHERE user_id=$1 AND asset=$2 AND account_type=$3`,
+				t.UserID, t.Asset, wallet.NormalizeAccountType(t.AccountType)).Scan(&wid); err != nil {
 				return fmt.Errorf("resolve wallet for tx %s: %w", t.ID, err)
 			}
 		}

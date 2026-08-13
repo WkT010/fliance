@@ -19,7 +19,7 @@ import (
 // all ops or returns an error without mutating anything.
 type memWalletStore struct {
 	mu        sync.Mutex
-	wallets   map[string]*Wallet // key: userID/asset
+	wallets   map[string]*Wallet // key: userID/asset/accountType
 	byID      map[string]*Wallet
 	txs       map[string]*Transaction
 	settleLog [][]SettleOp // recorded Settle batches, for assertions
@@ -36,33 +36,52 @@ func newMemWalletStore() *memWalletStore {
 	}
 }
 
+func memKey(userID, asset, accountType string) string {
+	return userID + "/" + asset + "/" + NormalizeAccountType(accountType)
+}
+
 func (m *memWalletStore) seed(userID, asset string, balance float64) *Wallet {
+	return m.seedAccount(userID, asset, AccountSpot, balance)
+}
+
+func (m *memWalletStore) seedAccount(userID, asset, accountType string, balance float64) *Wallet {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UnixNano()
+	acct := NormalizeAccountType(accountType)
 	w := &Wallet{
-		ID:        fmt.Sprintf("wal_%s_%s", userID, asset),
-		UserID:    userID,
-		Asset:     asset,
-		Balance:   big.NewFloat(balance),
-		Locked:    big.NewFloat(0),
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          fmt.Sprintf("wal_%s_%s_%s", userID, asset, acct),
+		UserID:      userID,
+		Asset:       asset,
+		AccountType: acct,
+		Balance:     big.NewFloat(balance),
+		Locked:      big.NewFloat(0),
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
-	m.wallets[userID+"/"+asset] = w
+	m.wallets[memKey(userID, asset, acct)] = w
 	m.byID[w.ID] = w
 	return w
 }
 
 func (m *memWalletStore) wallet(userID, asset string) (*Wallet, bool) {
-	w, ok := m.wallets[userID+"/"+asset]
+	w, ok := m.wallets[memKey(userID, asset, AccountSpot)]
+	return w, ok
+}
+
+func (m *memWalletStore) walletForAccount(userID, asset, accountType string) (*Wallet, bool) {
+	w, ok := m.wallets[memKey(userID, asset, accountType)]
 	return w, ok
 }
 
 func (m *memWalletStore) GetWallet(userID, asset string) (*Wallet, error) {
+	return m.GetWalletForAccount(userID, asset, AccountSpot)
+}
+
+func (m *memWalletStore) GetWalletForAccount(userID, asset, accountType string) (*Wallet, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	w, ok := m.wallet(userID, asset)
+	w, ok := m.walletForAccount(userID, asset, accountType)
 	if !ok {
 		return nil, ErrWalletNotFound
 	}
@@ -84,7 +103,8 @@ func (m *memWalletStore) GetWallets(userID string) ([]*Wallet, error) {
 func (m *memWalletStore) SaveWallet(w *Wallet) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.wallets[w.UserID+"/"+w.Asset] = w
+	w.AccountType = NormalizeAccountType(w.AccountType)
+	m.wallets[memKey(w.UserID, w.Asset, w.AccountType)] = w
 	m.byID[w.ID] = w
 	return nil
 }
@@ -175,9 +195,16 @@ func (m *memWalletStore) ListTxByStatus(status TxStatus, limit, offset int) ([]*
 }
 
 func (m *memWalletStore) ReserveForOrder(userID, asset string, amt *big.Float) (*Wallet, error) {
+	return m.ReserveForAccount(userID, asset, AccountSpot, amt)
+}
+
+func (m *memWalletStore) ReserveForAccount(userID, asset, accountType string, amt *big.Float) (*Wallet, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	w, ok := m.wallet(userID, asset)
+	if amt == nil || amt.Sign() <= 0 {
+		return nil, ErrNegativeAmount
+	}
+	w, ok := m.walletForAccount(userID, asset, accountType)
 	if !ok {
 		return nil, ErrWalletNotFound
 	}
@@ -195,22 +222,67 @@ func (m *memWalletStore) Settle(ops []SettleOp, txns []*Transaction) error {
 	if m.settleErr != nil {
 		return m.settleErr
 	}
-	for _, op := range ops {
-		w, ok := m.wallet(op.UserID, op.Asset)
+	// Resolve (and auto-create) every wallet row this batch touches. Credit
+	// legs (e.g. the buyer's base asset) may target wallets that do not exist
+	// yet; auto-create them like the real store's upsert behaviour.
+	var created []string
+	get := func(userID, asset, accountType string) *Wallet {
+		key := memKey(userID, asset, accountType)
+		w, ok := m.wallets[key]
 		if !ok {
-			// Credit legs (e.g. the buyer's base asset) may target wallets
-			// that do not exist yet; auto-create them like the real store's
-			// upsert behaviour.
-			w = &Wallet{ID: fmt.Sprintf("wal_%s_%s", op.UserID, op.Asset), UserID: op.UserID, Asset: op.Asset, Balance: big.NewFloat(0), Locked: big.NewFloat(0)}
-			m.wallets[op.UserID+"/"+op.Asset] = w
+			acct := NormalizeAccountType(accountType)
+			w = &Wallet{ID: fmt.Sprintf("wal_%s_%s_%s", userID, asset, acct), UserID: userID, Asset: asset, AccountType: acct, Balance: big.NewFloat(0), Locked: big.NewFloat(0)}
+			m.wallets[key] = w
 			m.byID[w.ID] = w
+			created = append(created, key)
 		}
-		if op.Unlock != nil {
-			w.Locked = new(big.Float).Sub(w.Locked, op.Unlock)
+		return w
+	}
+	// rollbackCreated removes wallet rows this batch auto-created, mirroring
+	// the Postgres transaction rollback of the pre-upserts.
+	rollbackCreated := func() {
+		for _, key := range created {
+			if w, ok := m.wallets[key]; ok {
+				delete(m.byID, w.ID)
+				delete(m.wallets, key)
+			}
 		}
-		if op.Delta != nil {
-			w.Balance = new(big.Float).Add(w.Balance, op.Delta)
+	}
+	// Dry-run on copies first: any failing op (e.g. a debit below the
+	// available balance) aborts the whole batch without mutating state,
+	// mirroring the Postgres transaction rollback.
+	type sim struct{ bal, lock *big.Float }
+	state := make(map[string]*sim)
+	row := func(key string, w *Wallet) *sim {
+		s, ok := state[key]
+		if !ok {
+			s = &sim{bal: new(big.Float).Copy(w.Balance), lock: new(big.Float).Copy(w.Locked)}
+			state[key] = s
 		}
+		return s
+	}
+	for _, op := range ops {
+		key := memKey(op.UserID, op.Asset, op.AccountType)
+		s := row(key, get(op.UserID, op.Asset, op.AccountType))
+		if op.Unlock != nil && op.Unlock.Sign() != 0 {
+			s.lock.Sub(s.lock, op.Unlock)
+		}
+		if op.Delta != nil && op.Delta.Sign() != 0 {
+			if op.Delta.Sign() < 0 {
+				need := new(big.Float).Neg(op.Delta)
+				if new(big.Float).Sub(s.bal, s.lock).Cmp(need) < 0 {
+					rollbackCreated()
+					return fmt.Errorf("insufficient balance for %s %s: %w", op.UserID, op.Asset, ErrInsufficientBalance)
+				}
+			}
+			s.bal.Add(s.bal, op.Delta)
+		}
+	}
+	// Commit the simulation back to the wallet rows.
+	for key, s := range state {
+		w := m.wallets[key]
+		w.Balance = s.bal
+		w.Locked = s.lock
 	}
 	for _, tx := range txns {
 		m.txs[tx.ID] = tx
@@ -314,12 +386,12 @@ func TestSettleFillIdempotent(t *testing.T) {
 
 	// taker: -200.2 USDT (notional + taker fee), +2 BTC
 	// maker: -2 BTC, +199.9 USDT (notional - maker fee)
-	assertNear(t, store.wallets["taker/USDT"].Balance, 799.8, "taker USDT balance")
-	assertNear(t, store.wallets["taker/USDT"].Locked, 0, "taker USDT locked")
-	assertNear(t, store.wallets["taker/BTC"].Balance, 2, "taker BTC balance")
-	assertNear(t, store.wallets["maker/BTC"].Balance, 8, "maker BTC balance")
-	assertNear(t, store.wallets["maker/BTC"].Locked, 0, "maker BTC locked")
-	assertNear(t, store.wallets["maker/USDT"].Balance, 199.9, "maker USDT balance")
+	assertNear(t, store.wallets["taker/USDT/spot"].Balance, 799.8, "taker USDT balance")
+	assertNear(t, store.wallets["taker/USDT/spot"].Locked, 0, "taker USDT locked")
+	assertNear(t, store.wallets["taker/BTC/spot"].Balance, 2, "taker BTC balance")
+	assertNear(t, store.wallets["maker/BTC/spot"].Balance, 8, "maker BTC balance")
+	assertNear(t, store.wallets["maker/BTC/spot"].Locked, 0, "maker BTC locked")
+	assertNear(t, store.wallets["maker/USDT/spot"].Balance, 199.9, "maker USDT balance")
 }
 
 // TestSettleFillFeeDeduction verifies maker/taker fee math on both legs.
@@ -358,19 +430,19 @@ func TestSettleFillTakerSell(t *testing.T) {
 		t.Fatalf("settle: %v", err)
 	}
 	// maker (buyer) debited 200 + makerFee(0.1) = 200.1
-	assertNear(t, store.wallets["maker/USDT"].Balance, 799.9, "maker (buyer) USDT")
-	assertNear(t, store.wallets["maker/BTC"].Balance, 2, "maker BTC credit")
+	assertNear(t, store.wallets["maker/USDT/spot"].Balance, 799.9, "maker (buyer) USDT")
+	assertNear(t, store.wallets["maker/BTC/spot"].Balance, 2, "maker BTC credit")
 	// taker (seller) credited 200 - takerFee(0.2) = 199.8
-	assertNear(t, store.wallets["taker/USDT"].Balance, 199.8, "taker (seller) USDT")
-	assertNear(t, store.wallets["taker/BTC"].Balance, 8, "taker BTC debit")
-	assertNear(t, store.wallets["taker/BTC"].Locked, 0, "taker BTC locked")
+	assertNear(t, store.wallets["taker/USDT/spot"].Balance, 199.8, "taker (seller) USDT")
+	assertNear(t, store.wallets["taker/BTC/spot"].Balance, 8, "taker BTC debit")
+	assertNear(t, store.wallets["taker/BTC/spot"].Locked, 0, "taker BTC locked")
 	// The buyer reserved at the taker rate but filled as maker: the leftover
 	// fee buffer stays locked until the order is released/completed.
 	if err := svc.ReleaseOrder("oM", "maker"); err != nil {
 		t.Fatalf("release maker: %v", err)
 	}
-	assertNear(t, store.wallets["maker/USDT"].Locked, 0, "maker USDT locked after release")
-	assertNear(t, store.wallets["maker/USDT"].Balance, 799.9, "maker USDT balance after release")
+	assertNear(t, store.wallets["maker/USDT/spot"].Locked, 0, "maker USDT locked after release")
+	assertNear(t, store.wallets["maker/USDT/spot"].Balance, 799.9, "maker USDT balance after release")
 }
 
 // TestReserveAndReleaseOrder covers reservation boundaries.
@@ -384,14 +456,14 @@ func TestReserveAndReleaseOrder(t *testing.T) {
 	if err := svc.ReserveOrder("ord1", "u", "BTC/USDT", 1, 0, big.NewFloat(100), big.NewFloat(2)); err != nil {
 		t.Fatalf("reserve: %v", err)
 	}
-	assertNear(t, store.wallets["u/USDT"].Locked, 200.2, "limit buy locked")
+	assertNear(t, store.wallets["u/USDT/spot"].Locked, 200.2, "limit buy locked")
 
 	// Release on cancel unlocks the full remaining reservation.
 	if err := svc.ReleaseOrder("ord1", "u"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	assertNear(t, store.wallets["u/USDT"].Locked, 0, "locked after release")
-	assertNear(t, store.wallets["u/USDT"].Balance, 500, "balance unchanged by release")
+	assertNear(t, store.wallets["u/USDT/spot"].Locked, 0, "locked after release")
+	assertNear(t, store.wallets["u/USDT/spot"].Balance, 500, "balance unchanged by release")
 
 	// Second release is a safe no-op.
 	if err := svc.ReleaseOrder("ord1", "u"); err != nil {
@@ -407,7 +479,7 @@ func TestReserveAndReleaseOrder(t *testing.T) {
 	if err := svc.ReserveOrder("ord3", "u", "BTC/USDT", 1, 1, nil, big.NewFloat(2)); err != nil {
 		t.Fatalf("market buy reserve: %v", err)
 	}
-	assertNear(t, store.wallets["u/USDT"].Locked, 0, "market buy locks nothing")
+	assertNear(t, store.wallets["u/USDT/spot"].Locked, 0, "market buy locks nothing")
 	if err := svc.ReleaseOrder("ord3", "u"); err != nil {
 		t.Fatalf("market buy release: %v", err)
 	}
@@ -416,7 +488,7 @@ func TestReserveAndReleaseOrder(t *testing.T) {
 	if err := svc.ReserveOrder("ord4", "u", "BTC/USDT", -1, 0, big.NewFloat(100), big.NewFloat(3)); err != nil {
 		t.Fatalf("sell reserve: %v", err)
 	}
-	assertNear(t, store.wallets["u/BTC"].Locked, 3, "sell locks base qty")
+	assertNear(t, store.wallets["u/BTC/spot"].Locked, 3, "sell locks base qty")
 
 	// Oversell is rejected.
 	if err := svc.ReserveOrder("ord5", "u", "BTC/USDT", -1, 0, big.NewFloat(100), big.NewFloat(0.5)); !errors.Is(err, ErrInsufficientBalance) {
@@ -450,7 +522,7 @@ func TestSettleFillFailureRestoresReservations(t *testing.T) {
 	if err := svc.ReleaseOrder("oT", "taker"); err != nil {
 		t.Fatalf("release after failed settle: %v", err)
 	}
-	assertNear(t, store.wallets["taker/USDT"].Locked, 0, "taker locked restored+released")
+	assertNear(t, store.wallets["taker/USDT/spot"].Locked, 0, "taker locked restored+released")
 
 	// The fillID must NOT be marked processed: a retry succeeds.
 	if err := svc.SettleFill("fill-x", "BTC/USDT", 1, "oT", "oM", "taker", "maker", big.NewFloat(100), big.NewFloat(2)); err != nil {
@@ -543,13 +615,13 @@ func TestWithdrawRejectsMalformedAddress(t *testing.T) {
 			t.Errorf("Withdraw(%q) = %v, want ErrInvalidAddress", addr, err)
 		}
 	}
-	assertNear(t, store.wallets["u/BTC"].Locked, 0, "nothing locked after rejected withdrawals")
+	assertNear(t, store.wallets["u/BTC/spot"].Locked, 0, "nothing locked after rejected withdrawals")
 
 	// A structurally valid address passes the format gate.
 	if err := svc.Withdraw("u", "BTC", "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", big.NewFloat(1)); err != nil {
 		t.Fatalf("valid address rejected: %v", err)
 	}
-	assertNear(t, store.wallets["u/BTC"].Locked, 1, "withdrawal locked funds")
+	assertNear(t, store.wallets["u/BTC/spot"].Locked, 1, "withdrawal locked funds")
 }
 
 // TestRequestWithdrawalValidatesAddress: the full withdrawal workflow rejects

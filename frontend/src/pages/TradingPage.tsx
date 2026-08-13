@@ -35,7 +35,10 @@ export function TradingPage() {
   }, []);
 
   const maxNotional = useMemo(() => {
-    const usdt = balances.find((b) => b.asset === 'USDT');
+    // Spot trading spends the spot account's USDT; fall back to any USDT row.
+    const usdt =
+      balances.find((b) => b.asset === 'USDT' && b.account_type === 'spot') ||
+      balances.find((b) => b.asset === 'USDT');
     return usdt ? Number(usdt.available) || 0 : 10000;
   }, [balances]);
 

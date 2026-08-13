@@ -39,6 +39,9 @@ type WalletService interface {
 	// reservation under orderID so ReleaseOrder/SettleFill can unwind it.
 	// Market buys are not pre-locked (price unknown) and settle on fill.
 	ReserveOrder(orderID, userID, pair string, side int, orderType int, price, qty *big.Float) error
+	// Transfer atomically moves amount of asset between two of the user's
+	// internal accounts (spot/futures/funding).
+	Transfer(userID, from, to, asset string, amount *big.Float) error
 }
 
 // DepositUserLookup resolves users by ID so the admin deposit endpoint can
@@ -251,6 +254,63 @@ func (h *WalletHandler) Withdraw(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "pending", "asset": r.Asset, "amount": r.Amount, "address": r.Address})
 }
 
+// Transfer moves funds between the user's internal accounts
+// (spot / futures / funding). Both legs settle atomically in one database
+// transaction and never count against the withdrawal daily limit.
+// POST /api/v2/wallet/transfer  {"from":"spot","to":"futures","asset":"USDT","amount":"100"}
+func (h *WalletHandler) Transfer(c *gin.Context) {
+	uid, _ := c.Get("user_id")
+	userID, _ := uid.(string)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+		return
+	}
+	var r struct {
+		From   string `json:"from" binding:"required"`
+		To     string `json:"to" binding:"required"`
+		Asset  string `json:"asset" binding:"required"`
+		Amount string `json:"amount" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&r); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from, to, asset and amount required"})
+		return
+	}
+	details := gin.H{"from": r.From, "to": r.To, "asset": r.Asset, "amount": r.Amount}
+	if !wallet.ValidAccountType(r.From) || !wallet.ValidAccountType(r.To) {
+		h.audit.Log(c, "wallet.transfer", "wallet", userID, details, wallet.ErrInvalidAccount)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account"})
+		return
+	}
+	if r.From == r.To {
+		h.audit.Log(c, "wallet.transfer", "wallet", userID, details, wallet.ErrSameAccountTransfer)
+		c.JSON(http.StatusBadRequest, gin.H{"error": wallet.ErrSameAccountTransfer.Error()})
+		return
+	}
+	amt := new(big.Float)
+	if _, _, err := amt.Parse(r.Amount, 10); err != nil || amt.Sign() <= 0 {
+		h.audit.Log(c, "wallet.transfer", "wallet", userID, details, wallet.ErrNegativeAmount)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount"})
+		return
+	}
+	r.Asset = strings.TrimSpace(strings.ToUpper(r.Asset))
+	err := h.svc.Transfer(userID, r.From, r.To, r.Asset, amt)
+	h.audit.Log(c, "wallet.transfer", "wallet", userID, details, err)
+	if err != nil {
+		switch {
+		case errors.Is(err, wallet.ErrInsufficientBalance):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "insufficient balance"})
+		case errors.Is(err, wallet.ErrUnsupportedAsset):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported asset"})
+		case errors.Is(err, wallet.ErrNegativeAmount), errors.Is(err, wallet.ErrInvalidAccount), errors.Is(err, wallet.ErrSameAccountTransfer):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "transfer failed"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 // ListTransactions returns the user's transaction history.
 // GET /api/v2/wallet/transactions?limit=50&offset=0
 func (h *WalletHandler) ListTransactions(c *gin.Context) {
@@ -311,15 +371,16 @@ func (h *WalletHandler) ListSupportedAssets(c *gin.Context) {
 
 func walletToJSON(w *wallet.Wallet) gin.H {
 	return gin.H{
-		"id":         w.ID,
-		"user_id":    w.UserID,
-		"asset":      w.Asset,
-		"address":    w.Address,
-		"balance":    safeFloatStr(w.Balance),
-		"locked":     safeFloatStr(w.Locked),
-		"available":  safeFloatStr(new(big.Float).Sub(w.Balance, w.Locked)),
-		"created_at": w.CreatedAt,
-		"updated_at": w.UpdatedAt,
+		"id":           w.ID,
+		"user_id":      w.UserID,
+		"asset":        w.Asset,
+		"address":      w.Address,
+		"balance":      safeFloatStr(w.Balance),
+		"locked":       safeFloatStr(w.Locked),
+		"available":    safeFloatStr(new(big.Float).Sub(w.Balance, w.Locked)),
+		"account_type": wallet.NormalizeAccountType(w.AccountType),
+		"created_at":   w.CreatedAt,
+		"updated_at":   w.UpdatedAt,
 	}
 }
 

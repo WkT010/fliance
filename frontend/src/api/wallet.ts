@@ -1,9 +1,15 @@
 import { api } from './client';
-import type { Balance, Transaction, WithdrawReq } from '@/types';
+import type { AccountType, Balance, Transaction, WithdrawReq } from '@/types';
+
+/** Balance row as the wire format may omit account_type on older builds. */
+type RawBalance = Omit<Balance, 'account_type'> & { account_type?: AccountType };
 
 export async function getBalances(): Promise<Balance[]> {
-  const res = await api.get<{ balances: Balance[] }>('/wallet/balances');
-  return res.data.balances || [];
+  const res = await api.get<RawBalance[] | { balances: RawBalance[] }>('/wallet/balances');
+  // The v2 endpoint returns a bare array; older builds wrapped it in { balances }.
+  const rows = Array.isArray(res.data) ? res.data : res.data?.balances || [];
+  // Same asset appears once per sub-account; default missing account_type to spot.
+  return rows.map((b) => ({ ...b, account_type: b.account_type ?? 'spot' }));
 }
 
 export async function getTransactions(): Promise<Transaction[]> {
@@ -30,4 +36,15 @@ export async function getDepositAddress(asset: string): Promise<{ address: strin
 export async function getSupportedAssets(): Promise<string[]> {
   const res = await api.get<{ assets: string[] }>('/wallet/assets');
   return res.data.assets || [];
+}
+
+/** Internal transfer between sub-accounts. 400 → { error } (e.g. "insufficient balance"). */
+export async function transfer(
+  from: AccountType,
+  to: AccountType,
+  asset: string,
+  amount: string
+): Promise<{ ok: boolean }> {
+  const res = await api.post<{ ok: boolean }>('/wallet/transfer', { from, to, asset, amount });
+  return res.data;
 }

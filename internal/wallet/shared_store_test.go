@@ -140,7 +140,7 @@ func TestReservationCrossInstanceRelease(t *testing.T) {
 	if err := a.ReserveOrder("ord-ha", "taker", "BTC/USDT", 1, 0, big.NewFloat(100), big.NewFloat(2)); err != nil {
 		t.Fatalf("reserve on A: %v", err)
 	}
-	assertNear(t, store.wallets["taker/USDT"].Locked, 200.2, "locked after reserve")
+	assertNear(t, store.wallets["taker/USDT/spot"].Locked, 200.2, "locked after reserve")
 	// L2 holds the reservation record.
 	if _, err := rs.Get(context.Background(), sharedResPrefix+"ord-ha"); err != nil {
 		t.Fatalf("L2 reservation missing: %v", err)
@@ -150,7 +150,7 @@ func TestReservationCrossInstanceRelease(t *testing.T) {
 	if err := b.ReleaseOrder("ord-ha", "taker"); err != nil {
 		t.Fatalf("release on B: %v", err)
 	}
-	assertNear(t, store.wallets["taker/USDT"].Locked, 0, "locked after cross-instance release")
+	assertNear(t, store.wallets["taker/USDT/spot"].Locked, 0, "locked after cross-instance release")
 	if _, err := rs.Get(context.Background(), sharedResPrefix+"ord-ha"); !errors.Is(err, ErrSharedKeyMissing) {
 		t.Fatalf("L2 reservation not removed after release: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestSettleFillWritesReservationsThrough(t *testing.T) {
 		t.Fatalf("settle batches = %d, want 2", len(store.settleLog))
 	}
 	// Cross-instance hydration worked: seller locked base fully released.
-	assertNear(t, store.wallets["maker/BTC"].Locked, 0, "seller locked after cross-instance fills")
+	assertNear(t, store.wallets["maker/BTC/spot"].Locked, 0, "seller locked after cross-instance fills")
 }
 
 // TestSettleFillFailureReleasesL2Claim: when the DB rejects a settlement, the

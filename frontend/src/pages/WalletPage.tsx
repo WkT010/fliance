@@ -11,6 +11,7 @@ import { Select } from '@/components/common/Select';
 import { StatCard } from '@/components/common/StatCard';
 import { EmptyState } from '@/components/common/EmptyState';
 import { getBalances, getTransactions, withdraw, getDepositAddress, getSupportedAssets } from '@/api/wallet';
+import { TransferModal, ACCOUNT_TYPES } from '@/components/common/TransferModal';
 import { getKycStatus } from '@/api/kyc';
 import { getTickers } from '@/api/market';
 import { useFetch } from '@/hooks/useFetch';
@@ -18,7 +19,7 @@ import { usePolling } from '@/hooks/usePolling';
 import { formatUsd, formatQty, formatDate, changeColorClass, cls } from '@/utils/format';
 import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { toast } from '@/store/toastStore';
-import type { Ticker } from '@/types';
+import type { AccountType, Ticker } from '@/types';
 
 // Stablecoins that are always treated as 1 USD for valuation.
 const STABLECOINS = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FRAX']);
@@ -100,6 +101,10 @@ export function WalletPage() {
     if (assets.length && !assets.includes(asset)) setAsset(assets[0]);
   }, [assets, asset]);
 
+  // Active sub-account tab (spot / futures / funding) + transfer modal state.
+  const [account, setAccount] = useState<AccountType>('spot');
+  const [transferOpen, setTransferOpen] = useState(false);
+
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
 
@@ -110,9 +115,25 @@ export function WalletPage() {
   const [txStatus, setTxStatus] = useState<'all' | 'pending' | 'completed' | 'failed'>('all');
 
   const selectedBalance = useMemo(
-    () => (balances || []).find((b) => b.asset === asset),
+    () => (balances || []).find((b) => b.asset === asset && b.account_type === 'spot'),
     [balances, asset]
   );
+
+  // Rows of the active sub-account.
+  const accountBalances = useMemo(
+    () => (balances || []).filter((b) => b.account_type === account),
+    [balances, account]
+  );
+
+  // Estimated USD value per sub-account (shown on each tab).
+  const accountValues = useMemo(() => {
+    const out: Record<AccountType, number> = { spot: 0, futures: 0, funding: 0 };
+    for (const b of balances || []) {
+      const v = valueUsd(b, tickers);
+      if (v !== null) out[b.account_type] += v;
+    }
+    return out;
+  }, [balances, tickers]);
 
   // Total estimated portfolio value, valued against USD using best-effort pricing.
   const totalValueUsd = useMemo(() => {
@@ -192,8 +213,45 @@ export function WalletPage() {
           />
         </div>
 
+        {/* Account tabs (spot / futures / funding) + transfer entry */}
+        <div className="lg:col-span-3 flex flex-col gap-3 sm:flex-row sm:items-stretch">
+          <div className="flex flex-1 gap-1 rounded-xl border border-nexa-700/70 bg-nexa-800/60 p-1.5 shadow-lg shadow-black/20">
+            {ACCOUNT_TYPES.map((acct) => (
+              <button
+                key={acct}
+                type="button"
+                onClick={() => setAccount(acct)}
+                className={cls(
+                  'flex-1 rounded-lg px-3 py-2 text-left transition-all',
+                  account === acct
+                    ? 'bg-nexa-900/85 ring-1 ring-cta/40'
+                    : 'hover:bg-nexa-800/80'
+                )}
+              >
+                <div className={cls('text-sm font-semibold', account === acct ? 'text-cta-bright' : 'text-nexa-300')}>
+                  {t(`transfer.account.${acct}`)}
+                </div>
+                <div className="mt-0.5 font-mono text-xs tabular-nums text-nexa-400">
+                  {formatUsd(accountValues[acct].toString(), 2)}
+                </div>
+              </button>
+            ))}
+          </div>
+          <Button
+            onClick={() => setTransferOpen(true)}
+            className="sm:self-stretch"
+            icon={
+              <svg viewBox="0 0 24 24" fill="none" className="h-4 w-4">
+                <path d="M4 7h13m0 0l-3-3m3 3l-3 3M20 17H7m0 0l3-3m-3 3l3 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            }
+          >
+            {t('transfer.title')}
+          </Button>
+        </div>
+
         {/* Asset overview */}
-        <Card className="lg:col-span-2" title={t('wallet.assetOverview')}>
+        <Card className="lg:col-span-2" title={`${t('wallet.assetOverview')} · ${t(`transfer.account.${account}`)}`}>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead className="text-nexa-400">
@@ -206,7 +264,7 @@ export function WalletPage() {
                 </tr>
               </thead>
               <tbody>
-                {(balances || []).length === 0 && (
+                {accountBalances.length === 0 && (
                   <tr>
                     <td colSpan={5}>
                       <EmptyState
@@ -217,7 +275,7 @@ export function WalletPage() {
                     </td>
                   </tr>
                 )}
-                {(balances || []).map((b) => {
+                {accountBalances.map((b) => {
                   const usd = valueUsd(b, tickers);
                   return (
                     <tr
@@ -413,6 +471,15 @@ export function WalletPage() {
           </div>
         </Card>
       </div>
+
+      {/* Internal transfer between sub-accounts */}
+      <TransferModal
+        open={transferOpen}
+        onClose={() => setTransferOpen(false)}
+        balances={balances || []}
+        initialFrom={account}
+        onSuccess={() => refetchBalances()}
+      />
     </Layout>
   );
 }

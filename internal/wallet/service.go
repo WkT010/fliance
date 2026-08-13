@@ -25,6 +25,12 @@ var (
 	// ErrDailyLimitExceeded is returned when a withdrawal would push the
 	// user's USDT-equivalent daily usage past the KYC-tier limit.
 	ErrDailyLimitExceeded = errors.New("daily withdrawal limit exceeded")
+	// ErrInvalidAccount is returned when a transfer references an account
+	// type outside {spot, futures, funding}.
+	ErrInvalidAccount = errors.New("invalid account")
+	// ErrSameAccountTransfer is returned when a transfer's source and
+	// destination accounts are identical.
+	ErrSameAccountTransfer = errors.New("source and destination accounts must differ")
 )
 
 const (
@@ -66,8 +72,15 @@ type WalletStore interface {
 	// ReserveForOrder atomically checks that the wallet has enough available
 	// (balance - locked) balance and locks amt. Returns ErrInsufficientBalance
 	// if not. This closes the TOCTOU window between the availability check and
-	// the lock.
+	// the lock. Operates on the spot account.
 	ReserveForOrder(userID, asset string, amt *big.Float) (*Wallet, error)
+	// GetWalletForAccount returns the wallet row for one account type
+	// (spot/futures/funding).
+	GetWalletForAccount(userID, asset, accountType string) (*Wallet, error)
+	// ReserveForAccount is ReserveForOrder scoped to one account type; the
+	// wallet row is created on first use so futures margin can be locked
+	// before the user ever touched that account.
+	ReserveForAccount(userID, asset, accountType string, amt *big.Float) (*Wallet, error)
 	// Settle applies a set of atomic (unlock + balance delta + optional lock)
 	// operations across multiple wallets in a single database transaction, and
 	// records the provided ledger entries. Either all operations succeed or
@@ -76,11 +89,14 @@ type WalletStore interface {
 }
 
 // SettleOp describes one atomic wallet mutation performed as part of a trade
-// settlement or order release. Exactly one wallet (identified by UserID+Asset)
-// is touched per op.
+// settlement or order release. Exactly one wallet (identified by
+// UserID+Asset+AccountType) is touched per op.
 type SettleOp struct {
 	UserID string
 	Asset  string
+	// AccountType selects the account (spot/futures/funding). Empty means
+	// the spot account, keeping pre-account-dimension callers unchanged.
+	AccountType string
 	// Unlock, if non-nil, is subtracted from the wallet's locked amount.
 	Unlock *big.Float
 	// Delta is a signed change to the wallet's balance (negative = debit,
@@ -252,6 +268,23 @@ func (s *Service) GetBalance(userID, asset string) (*Wallet, error) {
 		return nil, ErrWalletNotFound
 	}
 	w, err := s.store.GetWallet(userID, asset)
+	if err != nil {
+		return nil, fmt.Errorf("get wallet: %w", err)
+	}
+	return w, nil
+}
+
+// GetBalanceForAccount returns the user's wallet for an asset inside one
+// account (spot/futures/funding). An empty accountType resolves to spot.
+func (s *Service) GetBalanceForAccount(userID, asset, accountType string) (*Wallet, error) {
+	if s.store == nil {
+		return nil, ErrWalletNotFound
+	}
+	accountType = NormalizeAccountType(accountType)
+	if !ValidAccountType(accountType) {
+		return nil, ErrInvalidAccount
+	}
+	w, err := s.store.GetWalletForAccount(userID, asset, accountType)
 	if err != nil {
 		return nil, fmt.Errorf("get wallet: %w", err)
 	}
@@ -721,6 +754,62 @@ func (s *Service) ReserveForOrder(userID, asset string, amt *big.Float) (*Wallet
 		return nil, ErrNegativeAmount
 	}
 	return s.store.ReserveForOrder(userID, asset, amt)
+}
+
+// ReserveForAccount is ReserveForOrder scoped to one account
+// (spot/futures/funding). Used by the futures engine to lock margin inside
+// the futures account instead of the spot wallet.
+func (s *Service) ReserveForAccount(userID, asset, accountType string, amt *big.Float) (*Wallet, error) {
+	accountType = NormalizeAccountType(accountType)
+	if !ValidAccountType(accountType) {
+		return nil, ErrInvalidAccount
+	}
+	if s.store == nil {
+		return &Wallet{UserID: userID, Asset: asset, AccountType: accountType, Balance: big.NewFloat(0), Locked: big.NewFloat(0)}, nil
+	}
+	if amt == nil || amt.Sign() <= 0 {
+		return nil, ErrNegativeAmount
+	}
+	return s.store.ReserveForAccount(userID, asset, accountType, amt)
+}
+
+// Transfer atomically moves amount of asset between two of the user's
+// internal accounts (spot / futures / funding). Both legs run inside one
+// Settle transaction: the source account is debited and the destination
+// credited, and one type=Transfer ledger entry is written per leg (debit
+// negative, credit positive). Transfers never touch the withdrawal daily
+// limit meter. Returns ErrInvalidAccount, ErrSameAccountTransfer,
+// ErrNegativeAmount, ErrUnsupportedAsset or ErrInsufficientBalance.
+func (s *Service) Transfer(userID, from, to, asset string, amount *big.Float) error {
+	if s.store == nil {
+		return ErrWalletNotFound
+	}
+	if !ValidAccountType(from) || !ValidAccountType(to) {
+		return fmt.Errorf("%w: %s -> %s", ErrInvalidAccount, from, to)
+	}
+	if from == to {
+		return ErrSameAccountTransfer
+	}
+	if strings.TrimSpace(asset) == "" {
+		return fmt.Errorf("%w: empty asset", ErrUnsupportedAsset)
+	}
+	if amount == nil || amount.Sign() <= 0 {
+		return ErrNegativeAmount
+	}
+	now := time.Now().UnixNano()
+	debit := new(big.Float).Neg(amount)
+	credit := new(big.Float).Copy(amount)
+	ops := []SettleOp{
+		// Debit first: on insufficient balance the whole batch rolls back
+		// before the credit leg could commit anywhere.
+		{UserID: userID, Asset: asset, AccountType: from, Delta: debit},
+		{UserID: userID, Asset: asset, AccountType: to, Delta: credit},
+	}
+	txns := []*Transaction{
+		{ID: "tf_" + uuid.NewString(), UserID: userID, Asset: asset, AccountType: from, Type: Transfer, Amount: new(big.Float).Copy(debit), Fee: big.NewFloat(0), Status: Completed, CreatedAt: now},
+		{ID: "tf_" + uuid.NewString(), UserID: userID, Asset: asset, AccountType: to, Type: Transfer, Amount: credit, Fee: big.NewFloat(0), Status: Completed, CreatedAt: now},
+	}
+	return s.store.Settle(ops, txns)
 }
 
 // Settle applies a batch of atomic wallet operations (unlock + balance delta)

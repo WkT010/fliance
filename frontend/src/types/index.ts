@@ -25,8 +25,10 @@ export interface PlaceOrderReq {
   quantity: string; time_in_force?: 'gtc' | 'ioc' | 'fok'; client_order_id?: string;
   tp_price?: string; sl_price?: string;
 }
+/** Sub-accounts a user's balances are split across (v2 wallet). */
+export type AccountType = 'spot' | 'futures' | 'funding';
 /** Mirrors the wallet handler JSON: balance = total, available = balance − locked. */
-export interface Balance { asset: string; available: string; locked: string; balance: string; }
+export interface Balance { asset: string; available: string; locked: string; balance: string; account_type: AccountType; }
 export interface APIKey { id: string; name: string; key?: string; created_at: number; }
 
 export interface FillMessage {

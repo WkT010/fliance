@@ -218,6 +218,29 @@
     "kycWithdrawNotice": "未认证用户日提币限额为 1,000 USDT，完成认证后提升至 50,000 USDT。",
     "kycVerifiedNote": "已完成实名认证，每日提币限额：50,000 USDT。"
   },
+  "transfer": {
+    "title": "划转",
+    "from": "来源账户",
+    "to": "目标账户",
+    "asset": "资产",
+    "amount": "数量",
+    "all": "全部",
+    "available": "可用",
+    "confirm": "确认划转",
+    "swap": "交换来源与目标账户",
+    "sameAccount": "来源与目标账户不能相同",
+    "noAssets": "该账户暂无可划转的资产",
+    "hint": "内部账户间划转即时到账，不收取手续费。",
+    "success": "划转成功",
+    "failed": "划转失败",
+    "insufficientBalance": "余额不足",
+    "invalidAmount": "请输入有效的划转数量",
+    "account": {
+      "spot": "现货账户",
+      "futures": "合约账户",
+      "funding": "资金账户"
+    }
+  },
   "futures": {
     "title": "永续合约",
     "account": "合约账户",

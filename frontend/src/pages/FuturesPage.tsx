@@ -7,6 +7,9 @@ import { OrderbookPanel } from '@/components/trading/OrderbookPanel';
 import { RecentTrades } from '@/components/trading/RecentTrades';
 import { useMarket } from '@/hooks/useMarket';
 import { usePolling } from '@/hooks/usePolling';
+import { useFetch } from '@/hooks/useFetch';
+import { getBalances } from '@/api/wallet';
+import { TransferModal } from '@/components/common/TransferModal';
 import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { Select } from '@/components/common/Select';
 import { Button } from '@/components/common/Button';
@@ -82,6 +85,10 @@ export function FuturesPage() {
   const [closingId, setClosingId] = useState<string | null>(null);
   const [fundingHistory, setFundingHistory] = useState<{ time: number; funding_rate: string; mark_price: string }[]>([]);
   const [countdown, setCountdown] = useState('--:--');
+  const [transferOpen, setTransferOpen] = useState(false);
+
+  // Sub-account balances: the futures account's USDT row backs the available margin.
+  const { data: walletBalances, refetch: refetchWalletBalances } = useFetch(getBalances, []);
 
   useMarket(pair);
 
@@ -118,6 +125,7 @@ export function FuturesPage() {
 
   usePolling(loadData, 3000, [pair]);
   usePolling(loadFundingHistory, 10000, [pair]);
+  usePolling(() => { refetchWalletBalances(); }, 5000);
 
   useEffect(() => {
     if (!markPrice?.next_funding) return;
@@ -143,12 +151,18 @@ export function FuturesPage() {
     return entry * (1 + 1 / leverage);
   }, [mark, qtyNum, leverage, side, orderType, price]);
 
-  // Available USDT balance from the futures account summary.
+  // Available USDT margin: read from the futures account's USDT row (v2
+  // wallet). Falls back to the futures account summary when the balance
+  // rows haven't loaded yet.
   const availableUSDT = useMemo(() => {
+    const row = (walletBalances || []).find(
+      (b) => b.account_type === 'futures' && b.asset === 'USDT'
+    );
+    if (row) return Math.max(0, Number(row.available) || 0);
     const bal = parseFloat(accountSummary?.wallet_balance || '0');
     const locked = parseFloat(accountSummary?.wallet_locked || '0');
     return Math.max(0, bal - locked);
-  }, [accountSummary?.wallet_balance, accountSummary?.wallet_locked]);
+  }, [walletBalances, accountSummary?.wallet_balance, accountSummary?.wallet_locked]);
 
   // Max entry quantity given available quote balance and current leverage/price.
   const maxQty = useMemo(() => {
@@ -399,7 +413,21 @@ export function FuturesPage() {
               />
             </div>
 
-            <Card title={t('futures.order')}>
+            <Card
+              title={t('futures.order')}
+              extra={
+                <button
+                  type="button"
+                  onClick={() => setTransferOpen(true)}
+                  className="flex items-center gap-1 rounded-md border border-cta/40 bg-cta/10 px-2 py-1 text-xs font-semibold text-cta-bright transition-colors hover:bg-cta/20"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" className="h-3 w-3">
+                    <path d="M4 7h13m0 0l-3-3m3 3l-3 3M20 17H7m0 0l3-3m-3 3l3 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  {t('transfer.title')}
+                </button>
+              }
+            >
               <form onSubmit={handleSubmit} className="space-y-3 p-3">
                 <div className="flex gap-1 rounded-lg bg-nexa-900/80 p-1">
                   <button
@@ -782,6 +810,17 @@ export function FuturesPage() {
           </div>
         </div>
       </div>
+
+      {/* Quick transfer: spot → futures (USDT) */}
+      <TransferModal
+        open={transferOpen}
+        onClose={() => setTransferOpen(false)}
+        balances={walletBalances || []}
+        initialFrom="spot"
+        initialTo="futures"
+        initialAsset="USDT"
+        onSuccess={() => { refetchWalletBalances(); loadData(); }}
+      />
     </Layout>
   );
 }

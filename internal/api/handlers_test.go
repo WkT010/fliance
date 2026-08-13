@@ -176,6 +176,9 @@ func (f *fakeWalletService) ReserveForOrder(userID, asset string, amount *big.Fl
 func (f *fakeWalletService) ReserveOrder(orderID, userID, pair string, side int, orderType int, price, qty *big.Float) error {
 	return nil
 }
+func (f *fakeWalletService) Transfer(userID, from, to, asset string, amount *big.Float) error {
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // test server

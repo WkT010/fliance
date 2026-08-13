@@ -218,6 +218,29 @@
     "kycWithdrawNotice": "Unverified accounts are limited to 1,000 USDT in daily withdrawals. Verify your identity to raise the limit to 50,000 USDT.",
     "kycVerifiedNote": "Identity verified — your daily withdrawal limit is 50,000 USDT."
   },
+  "transfer": {
+    "title": "Transfer",
+    "from": "From Account",
+    "to": "To Account",
+    "asset": "Asset",
+    "amount": "Amount",
+    "all": "Max",
+    "available": "Available",
+    "confirm": "Confirm Transfer",
+    "swap": "Swap accounts",
+    "sameAccount": "Source and destination accounts must differ",
+    "noAssets": "This account holds no transferable assets",
+    "hint": "Internal transfers settle instantly and are free of charge.",
+    "success": "Transfer successful",
+    "failed": "Transfer failed",
+    "insufficientBalance": "Insufficient balance",
+    "invalidAmount": "Please enter a valid transfer amount",
+    "account": {
+      "spot": "Spot Account",
+      "futures": "Futures Account",
+      "funding": "Funding Account"
+    }
+  },
   "futures": {
     "title": "Perpetual Futures",
     "account": "Futures Account",

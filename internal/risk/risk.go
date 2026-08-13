@@ -214,7 +214,7 @@ func (e *Engine) checkQuantityPrecision(req matching.OrderRequest, cfg *PairConf
 		return errors.New("quantity must be positive")
 	}
 	mod := new(big.Float).Quo(q, cfg.LotSize)
-	if !isIntegral(mod) {
+	if !nearIntegral(mod) {
 		return fmt.Errorf("quantity must be a multiple of lot size %s", cfg.LotSize.Text('f', -1))
 	}
 	if cfg.MaxQty != nil && cfg.MaxQty.Sign() > 0 && q.Cmp(cfg.MaxQty) > 0 {
@@ -231,7 +231,7 @@ func (e *Engine) checkPricePrecision(req matching.OrderRequest, cfg *PairConfig)
 		return nil
 	}
 	mod := new(big.Float).Quo(req.Price, cfg.TickSize)
-	if !isIntegral(mod) {
+	if !nearIntegral(mod) {
 		return fmt.Errorf("price must be a multiple of tick size %s", cfg.TickSize.Text('f', -1))
 	}
 	return nil
@@ -429,6 +429,34 @@ func isIntegral(f *big.Float) bool {
 	}
 	i, acc := f.Int(nil)
 	return acc == big.Exact && new(big.Float).SetInt(i).Cmp(f) == 0
+}
+
+// nearIntegral reports whether f is an integer up to binary-representation
+// noise. Lot/tick sizes such as 0.0001 cannot be represented exactly in
+// binary floating point, so an exact integrality test on q/lot rejects every
+// well-formed quantity (e.g. 1 BTC at lot 0.0001 divides to
+// 9999.99999999999952...). A true violation is at least half a lot away
+// from an integer (relative distance ~5e-1), so a 1e-9 relative tolerance
+// cleanly separates rounding noise from real misalignment.
+func nearIntegral(f *big.Float) bool {
+	if f == nil {
+		return false
+	}
+	if isIntegral(f) {
+		return true
+	}
+	i, _ := f.Int(nil)
+	frac := new(big.Float).Sub(f, new(big.Float).SetInt(i))
+	frac.Abs(frac)
+	// f may sit just below the nearest integer (e.g. 99.99999999999999),
+	// in which case Int truncates downward and frac ≈ 1; measure the
+	// distance to the closest integer instead.
+	if frac.Cmp(big.NewFloat(0.5)) > 0 {
+		frac.Sub(big.NewFloat(1), frac)
+	}
+	tol := new(big.Float).Quo(f, big.NewFloat(1e9))
+	tol.Abs(tol)
+	return frac.Cmp(tol) <= 0
 }
 
 func newBigFloatCopy(f *big.Float) *big.Float {

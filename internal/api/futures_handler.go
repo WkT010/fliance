@@ -323,7 +323,7 @@ func (h *FuturesHandler) OpenPosition(c *gin.Context) {
 	existing := h.netPosition(userID, r.Pair)
 	if existing != nil && existing.Side == side {
 		if h.wallet != nil {
-			if _, err := h.wallet.ReserveForOrder(userID, quote, margin); err != nil {
+			if _, err := h.wallet.ReserveForAccount(userID, quote, wallet.AccountFutures, margin); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin reservation failed: %v", err)})
 				return
 			}
@@ -354,7 +354,7 @@ func (h *FuturesHandler) OpenPosition(c *gin.Context) {
 	}
 
 	if h.wallet != nil {
-		if _, err := h.wallet.ReserveForOrder(userID, quote, margin); err != nil {
+		if _, err := h.wallet.ReserveForAccount(userID, quote, wallet.AccountFutures, margin); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin reservation failed: %v", err)})
 			return
 		}
@@ -429,10 +429,10 @@ func (h *FuturesHandler) closePosition(pos *FuturesPosition, mark *big.Float) er
 
 	if h.wallet != nil {
 		quote := quoteAsset(pos.Pair)
-		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, Unlock: pos.Margin, Delta: pnl}
+		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, AccountType: wallet.AccountFutures, Unlock: pos.Margin, Delta: pnl}
 		now := time.Now().UnixNano()
 		txns := []*wallet.Transaction{
-			{ID: "fpnl_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, Type: wallet.FuturesPnl, Amount: new(big.Float).Copy(pnl), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
+			{ID: "fpnl_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, AccountType: wallet.AccountFutures, Type: wallet.FuturesPnl, Amount: new(big.Float).Copy(pnl), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
 		}
 		if err := h.wallet.Settle([]wallet.SettleOp{op}, txns); err != nil {
 			return err
@@ -492,10 +492,10 @@ func (h *FuturesHandler) ClosePositionPartial(c *gin.Context) {
 	closedPnL := new(big.Float).Mul(totalPnL, ratio)
 	if h.wallet != nil {
 		quote := quoteAsset(pos.Pair)
-		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, Unlock: closedMargin, Delta: closedPnL}
+		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, AccountType: wallet.AccountFutures, Unlock: closedMargin, Delta: closedPnL}
 		now := time.Now().UnixNano()
 		txns := []*wallet.Transaction{
-			{ID: "fpnl_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, Type: wallet.FuturesPnl, Amount: new(big.Float).Copy(closedPnL), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
+			{ID: "fpnl_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, AccountType: wallet.AccountFutures, Type: wallet.FuturesPnl, Amount: new(big.Float).Copy(closedPnL), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
 		}
 		if err := h.wallet.Settle([]wallet.SettleOp{op}, txns); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("partial close settlement failed: %v", err)})
@@ -545,7 +545,7 @@ func (h *FuturesHandler) AddMargin(c *gin.Context) {
 	}
 	quote := quoteAsset(pos.Pair)
 	if h.wallet != nil {
-		op := wallet.SettleOp{UserID: userID, Asset: quote, Delta: new(big.Float).Neg(amt)}
+		op := wallet.SettleOp{UserID: userID, Asset: quote, AccountType: wallet.AccountFutures, Delta: new(big.Float).Neg(amt)}
 		if err := h.wallet.Settle([]wallet.SettleOp{op}, nil); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin transfer failed: %v", err)})
 			return
@@ -605,7 +605,7 @@ func (h *FuturesHandler) ReduceMargin(c *gin.Context) {
 	}
 	quote := quoteAsset(pos.Pair)
 	if h.wallet != nil {
-		op := wallet.SettleOp{UserID: userID, Asset: quote, Delta: amt}
+		op := wallet.SettleOp{UserID: userID, Asset: quote, AccountType: wallet.AccountFutures, Delta: amt}
 		if err := h.wallet.Settle([]wallet.SettleOp{op}, nil); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin transfer failed: %v", err)})
 			return
@@ -658,10 +658,10 @@ func (h *FuturesHandler) LiquidatePosition(c *gin.Context) {
 	pos.UpdatedAt = time.Now().UnixNano()
 	if h.wallet != nil {
 		quote := quoteAsset(pos.Pair)
-		op := wallet.SettleOp{UserID: userID, Asset: quote, Unlock: pos.Margin, Delta: new(big.Float).Neg(pos.Margin)}
+		op := wallet.SettleOp{UserID: userID, Asset: quote, AccountType: wallet.AccountFutures, Unlock: pos.Margin, Delta: new(big.Float).Neg(pos.Margin)}
 		now := time.Now().UnixNano()
 		txns := []*wallet.Transaction{
-			{ID: "fliq_" + uuid.NewString(), UserID: userID, Asset: quote, Type: wallet.FuturesLiquidation, Amount: new(big.Float).Copy(pos.Margin), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
+			{ID: "fliq_" + uuid.NewString(), UserID: userID, Asset: quote, AccountType: wallet.AccountFutures, Type: wallet.FuturesLiquidation, Amount: new(big.Float).Copy(pos.Margin), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
 		}
 		if err := h.wallet.Settle([]wallet.SettleOp{op}, txns); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("liquidation settlement failed: %v", err)})
@@ -699,7 +699,7 @@ func (h *FuturesHandler) AccountSummary(c *gin.Context) {
 	quoteBalance := "0"
 	lockedBalance := "0"
 	if h.wallet != nil {
-		if w, err := h.wallet.GetBalance(userID, "USDT"); err == nil && w != nil {
+		if w, err := h.wallet.GetBalanceForAccount(userID, "USDT", wallet.AccountFutures); err == nil && w != nil {
 			quoteBalance = w.Balance.String()
 			lockedBalance = w.Locked.String()
 		}
@@ -733,10 +733,10 @@ func (h *FuturesHandler) CheckLiquidations() {
 			pos.UpdatedAt = time.Now().UnixNano()
 			if h.wallet != nil {
 				quote := quoteAsset(pos.Pair)
-				op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, Unlock: pos.Margin, Delta: new(big.Float).Neg(pos.Margin)}
+				op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, AccountType: wallet.AccountFutures, Unlock: pos.Margin, Delta: new(big.Float).Neg(pos.Margin)}
 				now := time.Now().UnixNano()
 				txns := []*wallet.Transaction{
-					{ID: "fliq_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, Type: wallet.FuturesLiquidation, Amount: new(big.Float).Copy(pos.Margin), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
+					{ID: "fliq_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, AccountType: wallet.AccountFutures, Type: wallet.FuturesLiquidation, Amount: new(big.Float).Copy(pos.Margin), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
 				}
 				_ = h.wallet.Settle([]wallet.SettleOp{op}, txns)
 			}
@@ -854,7 +854,7 @@ func (h *FuturesHandler) CreateOrder(c *gin.Context) {
 		existing := h.netPosition(userID, r.Pair)
 		if existing != nil && existing.Side == side {
 			if h.wallet != nil {
-				if _, err := h.wallet.ReserveForOrder(userID, quote, margin); err != nil {
+				if _, err := h.wallet.ReserveForAccount(userID, quote, wallet.AccountFutures, margin); err != nil {
 					c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin reservation failed: %v", err)})
 					return
 				}
@@ -874,7 +874,7 @@ func (h *FuturesHandler) CreateOrder(c *gin.Context) {
 			}
 		}
 		if h.wallet != nil {
-			if _, err := h.wallet.ReserveForOrder(userID, quote, margin); err != nil {
+			if _, err := h.wallet.ReserveForAccount(userID, quote, wallet.AccountFutures, margin); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("margin reservation failed: %v", err)})
 				return
 			}
@@ -983,7 +983,7 @@ func (h *FuturesHandler) ProcessOrders() {
 		existing := h.netPosition(o.UserID, o.Pair)
 		if existing != nil && existing.Side == side {
 			if h.wallet != nil {
-				if _, err := h.wallet.ReserveForOrder(o.UserID, quote, margin); err != nil {
+				if _, err := h.wallet.ReserveForAccount(o.UserID, quote, wallet.AccountFutures, margin); err != nil {
 					_ = h.store.UpdateOrderStatus(o.ID, "cancelled")
 					continue
 				}
@@ -1002,7 +1002,7 @@ func (h *FuturesHandler) ProcessOrders() {
 			}
 		}
 		if h.wallet != nil {
-			if _, err := h.wallet.ReserveForOrder(o.UserID, quote, margin); err != nil {
+			if _, err := h.wallet.ReserveForAccount(o.UserID, quote, wallet.AccountFutures, margin); err != nil {
 				_ = h.store.UpdateOrderStatus(o.ID, "cancelled")
 				continue
 			}
@@ -1085,9 +1085,9 @@ func (h *FuturesHandler) ApplyFunding() {
 		funding := new(big.Float).Mul(notional, rate)
 		funding.Mul(funding, sideSign)
 		quote := quoteAsset(pos.Pair)
-		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, Delta: funding}
+		op := wallet.SettleOp{UserID: pos.UserID, Asset: quote, AccountType: wallet.AccountFutures, Delta: funding}
 		txns := []*wallet.Transaction{
-			{ID: "ffund_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, Type: wallet.FuturesFunding, Amount: new(big.Float).Copy(funding), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
+			{ID: "ffund_" + uuid.NewString(), UserID: pos.UserID, Asset: quote, AccountType: wallet.AccountFutures, Type: wallet.FuturesFunding, Amount: new(big.Float).Copy(funding), Fee: big.NewFloat(0), Status: wallet.Completed, CreatedAt: now},
 		}
 		if err := h.wallet.Settle([]wallet.SettleOp{op}, txns); err != nil {
 			continue
@@ -1203,7 +1203,7 @@ func (h *FuturesHandler) isLiquidated(pos *FuturesPosition, mark *big.Float) boo
 	remaining := new(big.Float).Add(pos.Margin, pnl)
 	if pos.MarginMode == "cross" && h.wallet != nil {
 		quote := quoteAsset(pos.Pair)
-		if w, err := h.wallet.GetBalance(pos.UserID, quote); err == nil && w != nil {
+		if w, err := h.wallet.GetBalanceForAccount(pos.UserID, quote, wallet.AccountFutures); err == nil && w != nil {
 			available := new(big.Float).Sub(w.Balance, w.Locked)
 			// For cross margin the locked amount of this position is already
 			// part of w.Locked, so add it back to avoid double counting.

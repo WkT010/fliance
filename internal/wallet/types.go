@@ -90,10 +90,40 @@ func (s TxStatus) String() string {
 	}
 }
 
+// Account types for multi-account wallets. Every user holds one wallet row
+// per (asset, account_type): spot for trading/deposits/withdrawals, futures
+// for derivatives margin, funding for the internal funding account.
+const (
+	AccountSpot    = "spot"
+	AccountFutures = "futures"
+	AccountFunding = "funding"
+)
+
+// ValidAccountType reports whether s is a known account type.
+func ValidAccountType(s string) bool {
+	switch s {
+	case AccountSpot, AccountFutures, AccountFunding:
+		return true
+	}
+	return false
+}
+
+// NormalizeAccountType maps the empty string to the spot account so code
+// paths that predate the account dimension keep working unchanged.
+func NormalizeAccountType(s string) string {
+	if s == "" {
+		return AccountSpot
+	}
+	return s
+}
+
 type Wallet struct {
 	ID, UserID, Asset, Address string
-	Balance, Locked            *big.Float
-	CreatedAt, UpdatedAt       int64
+	// AccountType is the account dimension of this wallet row
+	// (spot/futures/funding). Empty means the spot account.
+	AccountType              string
+	Balance, Locked          *big.Float
+	CreatedAt, UpdatedAt     int64
 }
 
 type Transaction struct {
@@ -104,6 +134,10 @@ type Transaction struct {
 	Confirmations                       int
 	CreatedAt                           int64
 	ToAddress                           string // withdrawal destination
+	// AccountType identifies which account's wallet row this entry belongs
+	// to. In-memory only (used to resolve wallet_id on persistence); the
+	// transactions table carries no account_type column.
+	AccountType string
 	// ColdRef is the cold-signer reference ID for withdrawals routed through
 	// the cold wallet flow (status cold_signing / cold_signed). In-memory
 	// only; persistence is a store-layer concern (see internal/store).

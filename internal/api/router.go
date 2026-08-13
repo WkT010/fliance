@@ -154,6 +154,7 @@ func (r *Router) Setup() *gin.Engine {
 	// clients get an actionable response instead of a 404.
 	api.POST("/wallet/deposit", r.walletH.DepositGone)
 	prot.POST("/wallet/withdraw", r.walletH.Withdraw)
+	prot.POST("/wallet/transfer", r.walletH.Transfer)
 	prot.GET("/wallet/transactions", r.walletH.ListTransactions)
 	prot.GET("/wallet/assets", r.walletH.ListSupportedAssets)
 
