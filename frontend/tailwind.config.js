@@ -44,6 +44,7 @@ export default {
         up: '#2EBD85',
         down: '#F6465D',
         accent: '#2DD4BF',
+        warning: '#F0B90B',
       },
       fontFamily: {
         sans: ['IBM Plex Sans', 'Inter', 'system-ui', 'sans-serif'],

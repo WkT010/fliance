@@ -47,6 +47,43 @@ type WithdrawalLimit struct {
 	WindowHours int
 }
 
+// PriceGetter resolves a pair's market price. BestPrice is implemented by the
+// api.PriceHandler; the withdrawal flow uses it to fold every asset into a
+// USDT-equivalent amount for the KYC-tier daily limit.
+type PriceGetter interface {
+	BestPrice(pair string) (*big.Float, string, error)
+}
+
+// KycLevelLookup returns a user's KYC verification level.
+type KycLevelLookup interface {
+	KycLevel(userID string) (int, error)
+}
+
+// PlatformLimitLoader loads the KYC-tier daily limits (platform_limits).
+type PlatformLimitLoader interface {
+	LoadPlatformLimits() (map[int]*big.Float, error)
+}
+
+// dailyLimitStore is the optional store capability for atomic fund-reservation
+// plus daily-usage accounting. Stores without it (e.g. the in-memory test
+// store) fall back to the legacy two-step path.
+type dailyLimitStore interface {
+	ReserveWithDailyLimit(userID, asset string, amount, usdtEquiv, limit *big.Float) (*Wallet, error)
+	ReleaseDailyUsage(userID, asset string, usdtEquiv *big.Float) error
+}
+
+// defaultDailyLimitUSDT applies when no platform_limits row matches the
+// user's KYC level (including a missing table/level 0 row).
+const defaultDailyLimitUSDT = 1000
+
+// stableAssets count 1:1 towards the USDT-equivalent daily meter.
+var stableAssets = map[string]bool{"USDT": true, "USDC": true, "DAI": true, "BUSD": true, "TUSD": true}
+
+type kycCacheEntry struct {
+	level   int
+	expires time.Time
+}
+
 // WithdrawalService adds production-grade withdrawal controls on top of the
 // wallet Service: address whitelisting, manual review thresholds, daily limits
 // and a state-machine lifecycle.
@@ -76,6 +113,16 @@ type WithdrawalService struct {
 	// coldFeeStrategies maps asset -> fee strategy hint embedded in the
 	// unsigned tx description (the offline signer applies its own limits).
 	coldFeeStrategies map[string]string
+
+	// KYC-tiered daily withdrawal limits. priceGetter folds assets into
+	// USDT-equivalent; kycLookup resolves the user's tier (cached 60s,
+	// invalidated on admin review); platformLimits is the tier table loaded
+	// at boot and reloadable after admin changes.
+	priceGetter    PriceGetter
+	kycLookup      KycLevelLookup
+	limitLoader    PlatformLimitLoader
+	platformLimits map[int]*big.Float
+	kycCache       map[string]kycCacheEntry
 }
 
 // NewWithdrawalService wraps a wallet Service.
@@ -87,7 +134,62 @@ func NewWithdrawalService(svc *Service) *WithdrawalService {
 		dailyWithdrawn:    make(map[string]*big.Float),
 		reviewThreshold:   big.NewFloat(10000), // quote-units; override in prod
 		coldFeeStrategies: map[string]string{"BTC": "satvbyte=auto", "ETH": "eip1559", "POLYGON": "eip1559"},
+		platformLimits:    make(map[int]*big.Float),
+		kycCache:          make(map[string]kycCacheEntry),
 	}
+}
+
+// SetPriceGetter wires the market-price source used to fold withdrawal
+// amounts into USDT-equivalent for the daily limit. When unset, withdrawals
+// fall back to the legacy per-user in-memory limit path.
+func (ws *WithdrawalService) SetPriceGetter(pg PriceGetter) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.priceGetter = pg
+}
+
+// SetKycLevelLookup wires the user KYC-level lookup (cached for 60s).
+func (ws *WithdrawalService) SetKycLevelLookup(l KycLevelLookup) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.kycLookup = l
+}
+
+// SetPlatformLimitLoader wires the platform_limits loader without loading.
+func (ws *WithdrawalService) SetPlatformLimitLoader(l PlatformLimitLoader) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.limitLoader = l
+}
+
+// ReloadPlatformLimits refreshes the in-memory KYC-tier limit table from the
+// store (boot-time and after admin changes).
+func (ws *WithdrawalService) ReloadPlatformLimits() error {
+	ws.mu.RLock()
+	loader := ws.limitLoader
+	ws.mu.RUnlock()
+	if loader == nil {
+		return nil
+	}
+	limits, err := loader.LoadPlatformLimits()
+	if err != nil {
+		return err
+	}
+	if limits == nil {
+		limits = make(map[int]*big.Float)
+	}
+	ws.mu.Lock()
+	ws.platformLimits = limits
+	ws.mu.Unlock()
+	return nil
+}
+
+// InvalidateKycLevelCache drops one user's cached KYC level (called when an
+// admin approves a KYC submission so the new tier applies immediately).
+func (ws *WithdrawalService) InvalidateKycLevelCache(userID string) {
+	ws.mu.Lock()
+	delete(ws.kycCache, userID)
+	ws.mu.Unlock()
 }
 
 // SetColdSigner enables hot/cold wallet separation. Withdrawals whose amount
@@ -193,13 +295,41 @@ func (ws *WithdrawalService) RequestWithdrawal(userID, asset, address string, am
 	if !ws.IsWhitelisted(userID, asset, address) {
 		return nil, errors.New("withdrawal address not whitelisted")
 	}
-	if err := ws.checkDailyLimit(userID, asset, amount); err != nil {
-		return nil, err
-	}
 
-	w, err := ws.store.ReserveForOrder(userID, asset, amount)
-	if err != nil {
-		return nil, err
+	// Fund reservation + daily-limit accounting. When the store supports it
+	// and a price source is wired, both happen in ONE transaction against the
+	// USDT-equivalent amount and the user's KYC-tier limit (no TOCTOU).
+	// Otherwise the legacy in-memory limit path applies.
+	var usdtEq *big.Float
+	atomicUsage := false
+	ds, dsOK := ws.store.(dailyLimitStore)
+	ws.mu.RLock()
+	pg := ws.priceGetter
+	ws.mu.RUnlock()
+	var w *Wallet
+	if dsOK && pg != nil {
+		limit := ws.resolveDailyLimitUSDT(userID, asset)
+		eq, err := ws.usdtEquivalent(asset, amount)
+		if err != nil {
+			// Fail-closed: without a trustworthy price we cannot compare
+			// against the USDT limit, so refuse the withdrawal.
+			return nil, fmt.Errorf("withdrawal refused, price unavailable (fail-closed): %w", err)
+		}
+		w, err = ds.ReserveWithDailyLimit(userID, asset, amount, eq, limit)
+		if err != nil {
+			return nil, err
+		}
+		usdtEq = eq
+		atomicUsage = true
+	} else {
+		if err := ws.checkDailyLimit(userID, asset, amount); err != nil {
+			return nil, err
+		}
+		var err error
+		w, err = ws.store.ReserveForOrder(userID, asset, amount)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	status := WithdrawalPending
@@ -222,9 +352,16 @@ func (ws *WithdrawalService) RequestWithdrawal(userID, asset, address string, am
 	if err := ws.store.SaveTx(tx); err != nil {
 		// Release the reservation if we cannot record the tx.
 		_ = ws.store.Settle([]SettleOp{{UserID: userID, Asset: asset, Unlock: amount}}, nil)
+		if atomicUsage && usdtEq != nil {
+			if rErr := ds.ReleaseDailyUsage(userID, asset, usdtEq); rErr != nil {
+				slog.Warn("withdrawal daily-usage release failed", "user_id", userID, "asset", asset, "err", rErr)
+			}
+		}
 		return nil, fmt.Errorf("save withdrawal: %w", err)
 	}
-	ws.recordDailyWithdrawn(userID, asset, amount)
+	if !atomicUsage {
+		ws.recordDailyWithdrawn(userID, asset, amount)
+	}
 	return tx, nil
 }
 
@@ -251,6 +388,8 @@ func (ws *WithdrawalService) RejectWithdrawal(txID string) error {
 	if err := ws.store.Settle([]SettleOp{{UserID: tx.UserID, Asset: tx.Asset, Unlock: tx.Amount}}, nil); err != nil {
 		return fmt.Errorf("release withdrawal funds: %w", err)
 	}
+	// Credit the daily-usage meter back (best effort; the meter resets daily).
+	ws.releaseDailyUsageBestEffort(tx.UserID, tx.Asset, tx.Amount)
 	return ws.updateWithdrawalStatus(txID, WithdrawalRejected)
 }
 
@@ -473,7 +612,11 @@ func (ws *WithdrawalService) AdvanceColdWithdrawal(txID string) error {
 				return err
 			}
 			// Release reserved funds: the cold signer will never broadcast.
-			return ws.store.Settle([]SettleOp{{UserID: tx.UserID, Asset: tx.Asset, Unlock: tx.Amount}}, nil)
+			if err := ws.store.Settle([]SettleOp{{UserID: tx.UserID, Asset: tx.Asset, Unlock: tx.Amount}}, nil); err != nil {
+				return err
+			}
+			ws.releaseDailyUsageBestEffort(tx.UserID, tx.Asset, tx.Amount)
+			return nil
 		case ColdSignedOk:
 			tx.Status = WithdrawalColdSigned
 			return ws.store.SaveTx(tx)
@@ -585,6 +728,100 @@ func (ws *WithdrawalService) confThreshold(asset string) int {
 
 func (ws *WithdrawalService) updateWithdrawalStatus(txID string, status TxStatus) error {
 	return ws.store.UpdateTxStatus(txID, status)
+}
+
+// resolveDailyLimitUSDT returns the effective daily limit (USDT-equivalent)
+// for a user/asset: a personal override registered via SetLimit wins, then
+// the user's KYC tier from platform_limits, then the level-0 row, then the
+// built-in fallback.
+func (ws *WithdrawalService) resolveDailyLimitUSDT(userID, asset string) *big.Float {
+	ws.mu.RLock()
+	if l, ok := ws.limits[userID+":"+asset]; ok && l != nil && l.DailyLimit != nil && l.DailyLimit.Sign() > 0 {
+		lim := new(big.Float).Copy(l.DailyLimit)
+		ws.mu.RUnlock()
+		return lim
+	}
+	limits := ws.platformLimits
+	ws.mu.RUnlock()
+	level := ws.kycLevelCached(userID)
+	if l, ok := limits[level]; ok && l != nil && l.Sign() > 0 {
+		return new(big.Float).Copy(l)
+	}
+	if l, ok := limits[0]; ok && l != nil && l.Sign() > 0 {
+		return new(big.Float).Copy(l)
+	}
+	return big.NewFloat(defaultDailyLimitUSDT)
+}
+
+// kycLevelCached resolves the user's KYC level with a 60s TTL cache. Lookup
+// errors fail safe to level 0 (the most conservative tier).
+func (ws *WithdrawalService) kycLevelCached(userID string) int {
+	ws.mu.RLock()
+	lookup := ws.kycLookup
+	if e, ok := ws.kycCache[userID]; ok && time.Now().Before(e.expires) {
+		ws.mu.RUnlock()
+		return e.level
+	}
+	ws.mu.RUnlock()
+	level := 0
+	if lookup != nil {
+		if l, err := lookup.KycLevel(userID); err == nil {
+			level = l
+		} else {
+			slog.Debug("kyc level lookup failed; assuming level 0", "user_id", userID, "err", err)
+		}
+	}
+	ws.mu.Lock()
+	ws.kycCache[userID] = kycCacheEntry{level: level, expires: time.Now().Add(60 * time.Second)}
+	ws.mu.Unlock()
+	return level
+}
+
+// usdtEquivalent folds an asset amount into USDT. Stablecoins count 1:1; any
+// other asset is priced via the injected PriceGetter and errors propagate so
+// the caller can fail closed.
+func (ws *WithdrawalService) usdtEquivalent(asset string, amount *big.Float) (*big.Float, error) {
+	up := strings.ToUpper(asset)
+	if stableAssets[up] {
+		return new(big.Float).Copy(amount), nil
+	}
+	ws.mu.RLock()
+	pg := ws.priceGetter
+	ws.mu.RUnlock()
+	if pg == nil {
+		return nil, errors.New("no price source configured")
+	}
+	price, _, err := pg.BestPrice(up + "/USDT")
+	if err != nil || price == nil || price.Sign() <= 0 {
+		return nil, fmt.Errorf("no %s price available", up)
+	}
+	return new(big.Float).Mul(amount, price), nil
+}
+
+// releaseDailyUsageBestEffort credits the daily meter back after a rejected
+// or permanently failed withdrawal. The release amount is re-derived from
+// the current market price (an acceptable approximation; the meter resets
+// every UTC day). When no price is available the release is skipped and the
+// meter stays slightly overstated — the safe direction.
+func (ws *WithdrawalService) releaseDailyUsageBestEffort(userID, asset string, amount *big.Float) {
+	ds, ok := ws.store.(dailyLimitStore)
+	if !ok {
+		return
+	}
+	ws.mu.RLock()
+	pg := ws.priceGetter
+	ws.mu.RUnlock()
+	if pg == nil {
+		return
+	}
+	eq, err := ws.usdtEquivalent(asset, amount)
+	if err != nil {
+		slog.Warn("withdrawal daily-usage release skipped: price unavailable", "user_id", userID, "asset", asset, "err", err)
+		return
+	}
+	if err := ds.ReleaseDailyUsage(userID, asset, eq); err != nil {
+		slog.Warn("withdrawal daily-usage release failed", "user_id", userID, "asset", asset, "err", err)
+	}
 }
 
 func (ws *WithdrawalService) checkDailyLimit(userID, asset string, amount *big.Float) error {

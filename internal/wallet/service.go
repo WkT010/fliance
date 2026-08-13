@@ -22,6 +22,9 @@ var (
 	ErrUnsupportedAsset    = errors.New("unsupported asset")
 	ErrInvalidPair         = errors.New("invalid trading pair")
 	ErrDuplicateTx         = errors.New("duplicate transaction")
+	// ErrDailyLimitExceeded is returned when a withdrawal would push the
+	// user's USDT-equivalent daily usage past the KYC-tier limit.
+	ErrDailyLimitExceeded = errors.New("daily withdrawal limit exceeded")
 )
 
 const (

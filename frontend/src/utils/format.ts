@@ -8,8 +8,8 @@
  *  - formatQty    : shorter variant for quantities (defaults to 6 dp).
  *  - formatUsd    : always shows 2 dp, with a $ sign and K/M/B suffix for
  *                   large values so a $10M balance is readable.
- *  - formatTime   : HH:MM:SS in 24-hour clock, expects microseconds.
- *  - formatDate   : short locale date, expects microseconds.
+ *  - formatTime   : HH:MM:SS in 24-hour clock; auto-detects ms/µs/ns input.
+ *  - formatDate   : short locale date; auto-detects ms/µs/ns input.
  *  - formatPct    : percent with sign, used for 24h change etc.
  *  - changeColor  : green / red / neutral, 0 → neutral.
  *  - shortAddr    : collapses "0x1234…abcd" for display in tables.
@@ -72,11 +72,23 @@ export function formatUsd(value: string | number | undefined | null, decimals = 
   return `${sign}$${fmt(abs, decimals)}`;
 }
 
+/**
+ * Normalise a backend timestamp to milliseconds. Backends mix units (ms for
+ * some endpoints, µs and ns for others), so detect by magnitude instead of
+ * assuming one unit: ms values stay below 1e13 until ~2286, µs below 1e16
+ * for millennia, everything larger is ns.
+ */
+function toMillis(t: number): number {
+  if (t < 1e13) return t;        // already milliseconds
+  if (t < 1e16) return t / 1e3;  // microseconds
+  return t / 1e6;                // nanoseconds
+}
+
 export function formatTime(ts: number | string | undefined | null): string {
   if (ts === undefined || ts === null) return '--';
   const t = typeof ts === 'string' ? parseInt(ts, 10) : ts;
   if (Number.isNaN(t)) return '--';
-  const d = new Date(t / 1e6);
+  const d = new Date(toMillis(t));
   return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
@@ -84,7 +96,7 @@ export function formatDate(ts: number | string | undefined | null): string {
   if (ts === undefined || ts === null) return '--';
   const t = typeof ts === 'string' ? parseInt(ts, 10) : ts;
   if (Number.isNaN(t)) return '--';
-  const d = new Date(t / 1e6);
+  const d = new Date(toMillis(t));
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' });
 }
 

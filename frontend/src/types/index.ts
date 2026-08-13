@@ -25,7 +25,8 @@ export interface PlaceOrderReq {
   quantity: string; time_in_force?: 'gtc' | 'ioc' | 'fok'; client_order_id?: string;
   tp_price?: string; sl_price?: string;
 }
-export interface Balance { asset: string; available: string; locked: string; total: string; }
+/** Mirrors the wallet handler JSON: balance = total, available = balance − locked. */
+export interface Balance { asset: string; available: string; locked: string; balance: string; }
 export interface APIKey { id: string; name: string; key?: string; created_at: number; }
 
 export interface FillMessage {
@@ -134,4 +135,50 @@ export interface PairRiskConfig {
   pair: string;
   trading_enabled: boolean;
   market_orders_enabled: boolean;
+}
+
+// ── KYC identity verification ──
+
+export type KycStatus = 'pending' | 'approved' | 'rejected';
+
+/** Admin-side full submission record (GET /admin/kyc). */
+export interface KycSubmission {
+  id: string;
+  user_id: string;
+  full_name: string;
+  id_number: string;
+  /** Server-side document references (paths or data URLs). */
+  doc_front: string;
+  doc_back: string;
+  status: KycStatus;
+  reject_reason: string;
+  reviewer_id: string;
+  /** Unix nanoseconds. */
+  submitted_at: number;
+  reviewed_at: number;
+}
+
+/** User-side status (GET /kyc/status). */
+export interface KycStatusResponse {
+  kyc_level: number;
+  submission: {
+    id: string;
+    status: KycStatus;
+    reject_reason: string;
+    submitted_at: number;
+    reviewed_at: number;
+  } | null;
+}
+
+// ── Operator price adjustment ──
+
+export interface PriceAdjustConfig {
+  pair: string;
+  /** Decimal string in [0.1, 10], e.g. "1.02". */
+  multiplier: string;
+  /** Decimal string, e.g. "0". */
+  offset: string;
+  updated_by: string;
+  /** Unix nanoseconds; 0 = never adjusted. */
+  updated_at: number;
 }

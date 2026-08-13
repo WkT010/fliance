@@ -123,6 +123,87 @@ func (s *PGWalletStore) ReserveForOrder(userID, asset string, amt *big.Float) (*
 	return s.GetWallet(userID, asset)
 }
 
+// ReserveWithDailyLimit atomically reserves withdrawal funds AND accrues the
+// USDT-equivalent amount into the per-day usage meter, failing the whole
+// transaction when the accrual would breach the daily limit. Both mutations
+// happen in one transaction: the fund reservation mirrors ReserveForOrder's
+// conditional UPDATE, and the usage row is upserted with a WHERE clause so a
+// concurrent withdrawal cannot slip past the limit between a check and a
+// write (no TOCTOU window). Returns wallet.ErrInsufficientBalance or
+// wallet.ErrDailyLimitExceeded without committing either side.
+func (s *PGWalletStore) ReserveWithDailyLimit(userID, asset string, amount, usdtEquiv, limit *big.Float) (*wallet.Wallet, error) {
+	if amount == nil || amount.Sign() <= 0 {
+		return nil, wallet.ErrNegativeAmount
+	}
+	if usdtEquiv == nil || usdtEquiv.Sign() <= 0 {
+		return nil, fmt.Errorf("reserve with daily limit: %w", wallet.ErrNegativeAmount)
+	}
+	now := time.Now().UnixNano()
+	day := time.Now().UTC().Format("2006-01-02")
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback()
+	wid := "wal_" + nowText() + randSuffix()
+	if _, err := tx.Exec(
+		`INSERT INTO wallets (id,user_id,asset,balance,locked,created_at,updated_at)
+		 VALUES($1,$2,$3,0,0,$4,$4)
+		 ON CONFLICT (user_id, asset) DO NOTHING`, wid, userID, asset, now); err != nil {
+		return nil, fmt.Errorf("upsert wallet: %w", err)
+	}
+	amtStr := amount.Text('f', 18)
+	res, err := tx.Exec(
+		`UPDATE wallets SET locked = locked + $1, updated_at = $2
+		 WHERE user_id=$3 AND asset=$4 AND (balance - locked) >= $1`,
+		amtStr, now, userID, asset)
+	if err != nil {
+		return nil, fmt.Errorf("reserve: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, wallet.ErrInsufficientBalance
+	}
+	// Conditional usage accrual: BOTH branches carry the limit check. The
+	// INSERT side gates the first usage row of the day (a plain INSERT would
+	// bypass the limit entirely); the DO UPDATE's WHERE gates every later
+	// accrual. Rows that would breach the limit report zero affected rows.
+	// lib/pq passes the statement through verbatim; the syntax is standard
+	// PostgreSQL.
+	usageRes, err := tx.Exec(
+		`INSERT INTO withdrawal_daily_usage (user_id, asset, day, used)
+		 SELECT $1, $2, $3, $4::numeric
+		 WHERE $4::numeric <= $5::numeric
+		 ON CONFLICT (user_id, asset, day) DO UPDATE
+		 SET used = withdrawal_daily_usage.used + EXCLUDED.used
+		 WHERE withdrawal_daily_usage.used + EXCLUDED.used <= $5::numeric`,
+		userID, asset, day, usdtEquiv.Text('f', 18), limit.Text('f', 18))
+	if err != nil {
+		return nil, fmt.Errorf("daily usage: %w", err)
+	}
+	if n, _ := usageRes.RowsAffected(); n == 0 {
+		// Rollback releases the fund reservation as well.
+		return nil, wallet.ErrDailyLimitExceeded
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return s.GetWallet(userID, asset)
+}
+
+// ReleaseDailyUsage credits the per-day usage meter back (rejected or failed
+// withdrawals). It never drives the meter below zero.
+func (s *PGWalletStore) ReleaseDailyUsage(userID, asset string, usdtEquiv *big.Float) error {
+	if usdtEquiv == nil || usdtEquiv.Sign() <= 0 {
+		return nil
+	}
+	day := time.Now().UTC().Format("2006-01-02")
+	_, err := s.db.Exec(
+		`UPDATE withdrawal_daily_usage SET used = GREATEST(used - $1, 0)
+		 WHERE user_id=$2 AND asset=$3 AND day=$4`,
+		usdtEquiv.Text('f', 18), userID, asset, day)
+	return err
+}
+
 // Settle applies a batch of atomic wallet mutations inside a single database
 // transaction with row-level locking (SELECT ... FOR UPDATE), and records the
 // provided ledger entries. Either every op and every ledger write succeeds, or

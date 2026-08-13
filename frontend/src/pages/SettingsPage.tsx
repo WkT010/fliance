@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/common/Card';
@@ -6,6 +7,8 @@ import { Button } from '@/components/common/Button';
 import { Input } from '@/components/common/Input';
 import { Badge } from '@/components/common/Badge';
 import { changePassword } from '@/api/auth';
+import { getKycStatus } from '@/api/kyc';
+import { useFetch } from '@/hooks/useFetch';
 import { useAuthStore } from '@/store/authStore';
 import { toast } from '@/store/toastStore';
 import { shortAddr } from '@/utils/format';
@@ -13,6 +16,9 @@ import { shortAddr } from '@/utils/format';
 export function SettingsPage() {
   const { t } = useTranslation();
   const user = useAuthStore((s) => s.user);
+  const { data: kyc } = useFetch(getKycStatus, []);
+  const kycState = kyc?.submission?.status ?? null;
+  const kycVerified = kycState === 'approved' || (kyc?.kyc_level ?? 0) > 0;
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -62,6 +68,25 @@ export function SettingsPage() {
               <div>
                 <div className="text-xs uppercase tracking-wider text-nexa-500">{t('settings.userId')}</div>
                 <div className="mt-1 break-all font-mono text-xs text-nexa-400">{shortAddr(user?.id, 10, 6)}</div>
+              </div>
+              <div>
+                <div className="text-xs uppercase tracking-wider text-nexa-500">{t('settings.kycStatus')}</div>
+                <div className="mt-1 flex items-center gap-2">
+                  {kycVerified ? (
+                    <Badge color="up">{t('kyc.statusApproved')}</Badge>
+                  ) : kycState === 'pending' ? (
+                    <Badge color="warning">{t('kyc.statusPending')}</Badge>
+                  ) : kycState === 'rejected' ? (
+                    <Badge color="down">{t('kyc.statusRejected')}</Badge>
+                  ) : (
+                    <Badge>{t('settings.kycUnverified')}</Badge>
+                  )}
+                  {!kycVerified && (
+                    <Link to="/kyc" className="text-xs font-medium text-cta-bright hover:text-cta">
+                      {kycState === 'pending' ? t('settings.kycView') : t('kyc.verifyCta')}
+                    </Link>
+                  )}
+                </div>
               </div>
             </div>
           </Card>

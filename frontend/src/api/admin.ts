@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { WithdrawalReviewItem, AddressBookEntry, PairRiskConfig } from '@/types';
+import type { WithdrawalReviewItem, AddressBookEntry, PairRiskConfig, KycSubmission, PriceAdjustConfig } from '@/types';
 
 export async function listWithdrawals(status?: string): Promise<{ withdrawals: WithdrawalReviewItem[]; limit: number; offset: number }> {
   const params = status ? `?status=${encodeURIComponent(status)}` : '';
@@ -94,5 +94,47 @@ export async function stopAmmSimulator(): Promise<AmmSimulatorStatus> {
 
 export async function getAmmSimulatorStatus(): Promise<AmmSimulatorStatus> {
   const res = await api.get('/admin/amm/simulator');
+  return res.data;
+}
+
+// ── KYC review ──
+
+/** GET /admin/kyc — list submissions, optionally filtered by status. */
+export async function listKyc(status?: string): Promise<{ submissions: KycSubmission[]; limit: number; offset: number }> {
+  const params = status ? `?status=${encodeURIComponent(status)}&limit=100&offset=0` : '?limit=100&offset=0';
+  const res = await api.get(`/admin/kyc${params}`);
+  return res.data;
+}
+
+/** POST /admin/kyc/:id/review — approve or reject a pending submission. */
+export async function reviewKyc(id: string, action: 'approve' | 'reject', reason?: string): Promise<KycSubmission> {
+  const res = await api.post(`/admin/kyc/${id}/review`, { action, reason: reason || '' });
+  return res.data;
+}
+
+/**
+ * GET /admin/kyc/:id/documents?type=front|back — fetch the stored identity
+ * document image bytes and expose them as an object URL (the admin list only
+ * carries a filesystem path, which a browser cannot render).
+ */
+export async function fetchKycDoc(id: string, type: 'front' | 'back'): Promise<string> {
+  const res = await api.get(`/admin/kyc/${id}/documents`, {
+    params: { type },
+    responseType: 'blob',
+  });
+  return URL.createObjectURL(res.data as Blob);
+}
+
+// ── Operator price adjustments ──
+
+/** GET /admin/price-adjust/:pair — current multiplier/offset for a pair. */
+export async function getPriceAdjust(pair: string): Promise<PriceAdjustConfig> {
+  const res = await api.get(`/admin/price-adjust/${encodeURIComponent(pair)}`);
+  return res.data;
+}
+
+/** PUT /admin/price-adjust/:pair — set multiplier (0.1~10) and offset. */
+export async function setPriceAdjust(pair: string, multiplier: string, offset: string): Promise<PriceAdjustConfig> {
+  const res = await api.put(`/admin/price-adjust/${encodeURIComponent(pair)}`, { multiplier, offset });
   return res.data;
 }

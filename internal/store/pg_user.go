@@ -11,6 +11,27 @@ type PGUserStore struct{ db *sql.DB }
 
 func NewPGUserStore(db *sql.DB) *PGUserStore { return &PGUserStore{db: db} }
 
+// NextUID allocates the next numeric user ID from users_uid_seq (migration
+// 010). The caller scrambles the raw value before use.
+func (s *PGUserStore) NextUID() (int64, error) {
+	var v int64
+	err := s.db.QueryRow(`SELECT nextval('users_uid_seq')`).Scan(&v)
+	if err != nil {
+		return 0, fmt.Errorf("next uid: %w", err)
+	}
+	return v, nil
+}
+
+// KycLevel returns the user's KYC verification level (0 when unverified).
+func (s *PGUserStore) KycLevel(id string) (int, error) {
+	var level int
+	err := s.db.QueryRow(`SELECT kyc_level FROM users WHERE id=$1`, id).Scan(&level)
+	if err != nil {
+		return 0, fmt.Errorf("kyc level: %w", err)
+	}
+	return level, nil
+}
+
 func (s *PGUserStore) GetByEmail(email string) (*api.User, error) {
 	u := &api.User{}
 	err := s.db.QueryRow(

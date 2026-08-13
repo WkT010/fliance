@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -154,6 +155,12 @@ func TestSlowClientDroppedAndDisconnected(t *testing.T) {
 		}
 		h.BroadcastToRoom(room, msg)
 		sent++
+		if sent%64 == 0 {
+			// Yield so the hub's Run loop and the async unregister goroutine
+			// get a turn; otherwise the hot loop can starve them and the
+			// teardown never lands before the budget runs out.
+			runtime.Gosched()
+		}
 	}
 
 	st := h.Stats()

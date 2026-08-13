@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/store/authStore';
+import { getKycStatus } from '@/api/kyc';
 import { cls } from '@/utils/format';
 import { LANGS, setLanguage } from '@/i18n';
 
@@ -20,8 +21,27 @@ export function Header() {
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [kycVerified, setKycVerified] = useState<boolean | null>(null);
   const drawerRef = useRef<HTMLDivElement>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+
+  // Load the caller's KYC state once so the header can show a verify
+  // badge (unverified) or a verified mark (approved).
+  useEffect(() => {
+    if (!user) {
+      setKycVerified(null);
+      return;
+    }
+    let cancelled = false;
+    getKycStatus()
+      .then((s) => {
+        if (!cancelled) {
+          setKycVerified((s.kyc_level || 0) > 0 || s.submission?.status === 'approved');
+        }
+      })
+      .catch(() => { if (!cancelled) setKycVerified(null); });
+    return () => { cancelled = true; };
+  }, [user]);
 
   // Close the mobile drawer whenever the route changes.
   useEffect(() => {
@@ -129,6 +149,23 @@ export function Header() {
       </div>
       <div className="flex items-center gap-2 sm:gap-3">
         <div className="hidden sm:block">{langSwitcher}</div>
+        {user && kycVerified !== null && (
+          kycVerified ? (
+            <span className="hidden items-center gap-1 rounded border border-cta/30 bg-cta/10 px-2 py-1 text-xs font-medium text-cta sm:inline-flex">
+              <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5">
+                <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {t('kyc.verifiedBadge')}
+            </span>
+          ) : (
+            <Link
+              to="/kyc"
+              className="hidden items-center gap-1 rounded border border-cta/40 px-2 py-1 text-xs font-medium text-cta transition-colors hover:bg-cta/10 sm:inline-flex"
+            >
+              {t('kyc.verifyCta')}
+            </Link>
+          )
+        )}
         {user ? (
           <div ref={userMenuRef} className="relative">
             <button

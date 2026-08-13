@@ -44,6 +44,10 @@ type PriceHandler struct {
 	restCacheMu sync.Mutex
 	restDepth   map[string]depthCacheEntry
 	restTrades  map[string]tradesCacheEntry
+
+	// adj applies operator price adjustments (price_adjustments) to every
+	// ticker served to clients. Optional; nil means raw prices.
+	adj *market.PriceAdjuster
 }
 
 type depthCacheEntry struct {
@@ -81,11 +85,28 @@ func (h *PriceHandler) SetBinanceWS(ws *market.BinanceWSClient) {
 	h.binanceWS = ws
 }
 
-// SetStaleness overrides the freshness window (MARKET_DATA_STALENESS).
+// SetStaleness overrides the freshness window (MARKET_DATA_STALNESS).
 func (h *PriceHandler) SetStaleness(d time.Duration) {
 	if d > 0 {
 		h.staleness = d
 	}
+}
+
+// SetPriceAdjuster wires the operator price-adjustment layer. When set, every
+// ticker returned to clients (single-pair lookups and the 24h list) passes
+// through it; cached source tickers are never mutated.
+func (h *PriceHandler) SetPriceAdjuster(a *market.PriceAdjuster) {
+	h.adj = a
+}
+
+// adjusted returns the client-facing view of a cached ticker: a copy with
+// the pair's price adjustment applied, or the original pointer when there is
+// no adjustment.
+func (h *PriceHandler) adjusted(t *market.Ticker) *market.Ticker {
+	if h.adj == nil || t == nil {
+		return t
+	}
+	return h.adj.ApplyTicker(t)
 }
 
 func (h *PriceHandler) isFresh(unixMs int64) bool {
@@ -164,8 +185,15 @@ func (h *PriceHandler) restTicker(pair string) *market.Ticker {
 // bestTicker resolves a pair through the source chain:
 // Binance WS cache -> Binance REST poll cache -> AMM pool feed.
 // Each cached source is freshness-gated (MARKET_DATA_STALENESS); stale data
-// degrades to the next source instead of being served.
+// degrades to the next source instead of being served. The returned ticker
+// already carries any operator price adjustment (as a copy — the cache is
+// never mutated), so BestPrice inherits it automatically.
 func (h *PriceHandler) bestTicker(pair string) (*market.Ticker, string) {
+	t, source := h.rawBestTicker(pair)
+	return h.adjusted(t), source
+}
+
+func (h *PriceHandler) rawBestTicker(pair string) (*market.Ticker, string) {
 	if h.binanceWS != nil {
 		if t, _ := h.binanceWS.Ticker(pair); t != nil && t.Last != nil && t.Last.Sign() > 0 && h.isFresh(t.Timestamp) {
 			return t, "binance-ws"
@@ -324,6 +352,8 @@ func (h *PriceHandler) allTickers() []gin.H {
 	}
 	out := make([]gin.H, 0, len(merged))
 	for _, t := range merged {
+		// Adjusted COPY: the merged pointers belong to the source caches.
+		t = h.adjusted(t)
 		out = append(out, gin.H{
 			"pair":             t.Pair,
 			"last":             safeFloatStr(t.Last),

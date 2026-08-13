@@ -45,6 +45,8 @@ func main() {
 	var userStore api.UserStore
 	var apiKeyStore auth.APIKeyStore
 	var walletStore wallet.WalletStore
+	var kycStore api.KycStore
+	var limitLoader wallet.PlatformLimitLoader
 	if cfg.PostgresDSN != "" {
 		var err error
 		db, err = store.NewPG(cfg.PostgresDSN)
@@ -56,10 +58,13 @@ func main() {
 			pgUser := store.NewPGUserStore(db)
 			pgWallet := store.NewPGWalletStore(db)
 			pgAPIKey := store.NewPGAPIKeyStore(db)
+			pgKyc := store.NewPGKycStore(db)
 			orderStore = pgOrder
 			userStore = pgUser
 			walletStore = pgWallet
 			apiKeyStore = pgAPIKey
+			kycStore = pgKyc
+			limitLoader = pgKyc
 			slog.Info("postgres connected")
 		}
 	}
@@ -292,6 +297,39 @@ func main() {
 	adminH := api.NewAdminHandler(withdrawalSvc, riskEng, exchange)
 	adminH.SetAuditLogger(auditLog)
 
+	// ── KYC tiers, withdrawal limits and price adjustments ──
+	// Price adjustments are served to clients only; cached source tickers
+	// are never mutated.
+	priceAdj := market.NewPriceAdjuster(db)
+	if err := priceAdj.LoadAll(); err != nil {
+		slog.Warn("price adjustments load failed", "err", err)
+	}
+	priceH.SetPriceAdjuster(priceAdj)
+	adminH.SetPriceAdjuster(priceAdj)
+	// Withdrawal daily limits: fold amounts into USDT via the market price
+	// (fail-closed when unavailable) and resolve the user's KYC tier.
+	withdrawalSvc.SetPriceGetter(priceH)
+	if kl, ok := userStore.(wallet.KycLevelLookup); ok {
+		withdrawalSvc.SetKycLevelLookup(kl)
+	}
+	if limitLoader != nil {
+		withdrawalSvc.SetPlatformLimitLoader(limitLoader)
+		if err := withdrawalSvc.ReloadPlatformLimits(); err != nil {
+			slog.Warn("platform withdrawal limits load failed", "err", err)
+		} else {
+			slog.Info("platform withdrawal limits loaded")
+		}
+	}
+	// KYC review endpoints; approval invalidates the cached KYC level so the
+	// new tier applies immediately.
+	adminH.SetKycStore(kycStore, func(userID string) {
+		withdrawalSvc.InvalidateKycLevelCache(userID)
+	})
+	kycH := api.NewKycHandler(kycStore, "")
+	if kl, ok := userStore.(wallet.KycLevelLookup); ok {
+		kycH.SetKycLevelLookup(kl)
+	}
+
 	// ── Shared cache (Redis with in-memory fallback) ──
 	// Backs the login lockout counters, the JWT token blacklist and the WS
 	// connection rate limiter. When Redis is unreachable the gateway degrades
@@ -365,6 +403,7 @@ func main() {
 	router := api.NewRouter(orderH, authH, wsH, priceH, walletH, accountH, adminH, futuresH, ammH,
 		authH.AuthMiddleware(), api.APIKeyMiddleware(apiKeyStore), cfg, health)
 	router.SetCache(sharedCache)
+	router.SetKycHandler(kycH)
 	// Global per-IP HTTP rate limit. ENABLE_REDIS_RATE_LIMIT=true uses the
 	// distributed Redis limiter (only when Redis actually connected; a closed
 	// client would refuse every request); otherwise the in-memory limiter.

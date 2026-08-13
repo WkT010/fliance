@@ -3,7 +3,10 @@ package api
 import (
 	"math/big"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/WkT010/nexa-exchange/internal/audit"
 	"github.com/WkT010/nexa-exchange/internal/market"
@@ -58,6 +61,13 @@ type AdminHandler struct {
 	// Audit trail for admin actions. Optional: nil disables auditing (the
 	// logger's methods are nil-safe).
 	audit *audit.Logger
+
+	// KYC review (wired from cmd/api-gateway when Postgres is available).
+	kyc           KycStore
+	kycOnApproved func(userID string) // e.g. invalidate the withdrawal-limit cache
+
+	// Operator price-adjustment layer (nil = endpoint returns 503).
+	priceAdj *market.PriceAdjuster
 }
 
 // NewAdminHandler constructs an admin handler.
@@ -68,6 +78,16 @@ func NewAdminHandler(w WithdrawalManager, r RiskManager, ex ExchangeManager) *Ad
 // SetAuditLogger wires the asynchronous admin audit logger. Optional: without
 // it admin endpoints simply do not record audit entries.
 func (h *AdminHandler) SetAuditLogger(l *audit.Logger) { h.audit = l }
+
+// SetKycStore wires the KYC persistence + post-approval hook (used to
+// invalidate the withdrawal-service's cached KYC level for the user).
+func (h *AdminHandler) SetKycStore(s KycStore, onApproved func(userID string)) {
+	h.kyc = s
+	h.kycOnApproved = onApproved
+}
+
+// SetPriceAdjuster wires the operator price-adjustment layer.
+func (h *AdminHandler) SetPriceAdjuster(a *market.PriceAdjuster) { h.priceAdj = a }
 
 // ListWithdrawals returns withdrawals pending review or broadcast.
 // GET /api/v2/admin/withdrawals?status=&limit=100&offset=0
@@ -259,9 +279,13 @@ func (h *AdminHandler) SetDailyLimit(c *gin.Context) {
 }
 
 // GetPairRisk returns the current risk configuration for a pair.
-// GET /api/v2/admin/risk/pairs/:pair
+// GET /api/v2/admin/risk/pairs/*pair
 func (h *AdminHandler) GetPairRisk(c *gin.Context) {
-	pair := c.Param("pair")
+	pair := normalizePair(strings.TrimPrefix(c.Param("pair"), "/"))
+	if pair == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"})
+		return
+	}
 	cfg := h.risk.GetPairConfig(pair)
 	if cfg == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "pair risk config not found"})
@@ -282,9 +306,13 @@ func (h *AdminHandler) ListPairRisk(c *gin.Context) {
 }
 
 // UpdatePairRisk updates the risk configuration for a pair.
-// PUT /api/v2/admin/risk/pairs/:pair
+// PUT /api/v2/admin/risk/pairs/*pair
 func (h *AdminHandler) UpdatePairRisk(c *gin.Context) {
-	pair := c.Param("pair")
+	pair := normalizePair(strings.TrimPrefix(c.Param("pair"), "/"))
+	if pair == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"})
+		return
+	}
 	cfg := h.risk.GetPairConfig(pair)
 	if cfg == nil {
 		cfg = &risk.PairConfig{Pair: pair}
@@ -333,22 +361,31 @@ func (h *AdminHandler) UpdatePairRisk(c *gin.Context) {
 	c.JSON(http.StatusOK, pairRiskToJSON(cfg))
 }
 
-// PausePair suspends trading for a pair.
-// POST /api/v2/admin/pairs/:pair/pause
-func (h *AdminHandler) PausePair(c *gin.Context) {
-	pair := c.Param("pair")
-	h.setTradingEnabled(pair, false)
-	h.audit.Log(c, "admin.pair.pause", "pair", pair, nil, nil)
-	c.JSON(http.StatusOK, gin.H{"pair": pair, "trading_enabled": false})
-}
-
-// ResumePair re-enables trading for a pair.
-// POST /api/v2/admin/pairs/:pair/resume
-func (h *AdminHandler) ResumePair(c *gin.Context) {
-	pair := c.Param("pair")
-	h.setTradingEnabled(pair, true)
-	h.audit.Log(c, "admin.pair.resume", "pair", pair, nil, nil)
-	c.JSON(http.StatusOK, gin.H{"pair": pair, "trading_enabled": true})
+// PairControl dispatches POST /api/v2/admin/pairs/*pair where the catch-all
+// carries "<pair>/pause" or "<pair>/resume". The route uses a catch-all
+// because pairs may contain an encoded slash (BTC%2FUSDT decodes to two path
+// segments) and a catch-all cannot carry trailing child segments.
+func (h *AdminHandler) PairControl(c *gin.Context) {
+	p := strings.TrimPrefix(c.Param("pair"), "/")
+	var enabled bool
+	var event string
+	switch {
+	case strings.HasSuffix(p, "/pause"):
+		p, enabled, event = strings.TrimSuffix(p, "/pause"), false, "admin.pair.pause"
+	case strings.HasSuffix(p, "/resume"):
+		p, enabled, event = strings.TrimSuffix(p, "/resume"), true, "admin.pair.resume"
+	default:
+		c.JSON(http.StatusNotFound, gin.H{"error": "unknown pair action"})
+		return
+	}
+	pair := normalizePair(p)
+	if pair == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"})
+		return
+	}
+	h.setTradingEnabled(pair, enabled)
+	h.audit.Log(c, event, "pair", pair, nil, nil)
+	c.JSON(http.StatusOK, gin.H{"pair": pair, "trading_enabled": enabled})
 }
 
 func (h *AdminHandler) setTradingEnabled(pair string, enabled bool) {
@@ -497,4 +534,237 @@ func applyBigOpt(dst **big.Float, s string) {
 	if _, _, err := f.Parse(s, 10); err == nil {
 		*dst = f
 	}
+}
+
+// ── KYC review ──
+
+func kycSubmissionToJSON(s *KycSubmission) gin.H {
+	return gin.H{
+		"id":            s.ID,
+		"user_id":       s.UserID,
+		"full_name":     s.FullName,
+		"id_number":     s.IDNumber,
+		"doc_front":     s.DocFront,
+		"doc_back":      s.DocBack,
+		"status":        s.Status,
+		"reject_reason": s.RejectReason,
+		"reviewer_id":   s.ReviewerID,
+		"submitted_at":  s.SubmittedAt,
+		"reviewed_at":   s.ReviewedAt,
+	}
+}
+
+// ListKyc returns KYC submissions, optionally filtered by status.
+// GET /api/v2/admin/kyc?status=pending&limit=100&offset=0
+func (h *AdminHandler) ListKyc(c *gin.Context) {
+	if h.kyc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "kyc not available"})
+		return
+	}
+	status := c.Query("status")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+	subs, err := h.kyc.ListByStatus(status, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list kyc submissions", "detail": err.Error()})
+		return
+	}
+	out := make([]gin.H, len(subs))
+	for i, s := range subs {
+		out[i] = kycSubmissionToJSON(s)
+	}
+	c.JSON(http.StatusOK, gin.H{"submissions": out, "limit": limit, "offset": offset})
+}
+
+// ReviewKyc approves or rejects a pending KYC submission.
+// POST /api/v2/admin/kyc/:id/review { "action":"approve|reject", "reason":"..." }
+func (h *AdminHandler) ReviewKyc(c *gin.Context) {
+	if h.kyc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "kyc not available"})
+		return
+	}
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "submission id required"})
+		return
+	}
+	var r struct {
+		Action string `json:"action" binding:"required"`
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&r); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action required (approve|reject)"})
+		return
+	}
+	var action string
+	switch r.Action {
+	case "approve", "approved":
+		action = "approved"
+	case "reject", "rejected":
+		action = "rejected"
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "action must be approve or reject"})
+		return
+	}
+	reviewerID := c.GetString("user_id")
+	sub, err := h.kyc.Review(id, reviewerID, action, r.Reason)
+	h.audit.Log(c, "admin.kyc.review", "kyc", id, gin.H{
+		"action": action, "reason": r.Reason,
+	}, err)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if action == "approved" && h.kycOnApproved != nil {
+		h.kycOnApproved(sub.UserID)
+	}
+	c.JSON(http.StatusOK, kycSubmissionToJSON(sub))
+}
+
+// GetKycDocument serves one identity-document image of a submission so the
+// admin review UI can show the actual scan instead of a filesystem path.
+// GET /api/v2/admin/kyc/:id/documents?type=front|back
+// The path comes from the database (written by KycHandler.Submit), and only
+// .png/.jpg files are served.
+func (h *AdminHandler) GetKycDocument(c *gin.Context) {
+	if h.kyc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "kyc not available"})
+		return
+	}
+	id := c.Param("id")
+	sub, err := h.kyc.GetByID(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load kyc submission"})
+		return
+	}
+	if sub == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "submission not found"})
+		return
+	}
+	var docPath string
+	switch c.DefaultQuery("type", "front") {
+	case "front":
+		docPath = sub.DocFront
+	case "back":
+		docPath = sub.DocBack
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "type must be front or back"})
+		return
+	}
+	if docPath == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "document not stored"})
+		return
+	}
+	var contentType string
+	switch strings.ToLower(filepath.Ext(docPath)) {
+	case ".png":
+		contentType = "image/png"
+	case ".jpg", ".jpeg":
+		contentType = "image/jpeg"
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "unsupported document type"})
+		return
+	}
+	data, err := os.ReadFile(docPath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "document file missing"})
+		return
+	}
+	c.Header("Cache-Control", "private, max-age=300")
+	c.Data(http.StatusOK, contentType, data)
+}
+
+// ── Price adjustments ──
+
+func priceAdjToJSON(adj *market.PriceAdjustment) gin.H {
+	if adj == nil {
+		return gin.H{"multiplier": "1", "offset": "0"}
+	}
+	return gin.H{
+		"pair":       adj.Pair,
+		"multiplier": adj.Multiplier.Text('f', -1),
+		"offset":     adj.Offset.Text('f', -1),
+		"updated_by": adj.UpdatedBy,
+		"updated_at": adj.UpdatedAt,
+	}
+}
+
+// GetPriceAdjust returns the current price adjustment for a pair.
+// GET /api/v2/admin/price-adjust/*pair
+func (h *AdminHandler) GetPriceAdjust(c *gin.Context) {
+	if h.priceAdj == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "price adjustment not available"})
+		return
+	}
+	pair := strings.TrimPrefix(c.Param("pair"), "/")
+	if pair == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"})
+		return
+	}
+	out := priceAdjToJSON(h.priceAdj.Get(pair))
+	out["pair"] = pair
+	c.JSON(http.StatusOK, out)
+}
+
+// UpdatePriceAdjust sets the price adjustment for a pair. Multiplier must be
+// within [0.1, 10].
+// PUT /api/v2/admin/price-adjust/*pair { "multiplier":"1.02", "offset":"0" }
+func (h *AdminHandler) UpdatePriceAdjust(c *gin.Context) {
+	if h.priceAdj == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "price adjustment not available"})
+		return
+	}
+	pair := strings.TrimPrefix(c.Param("pair"), "/")
+	if pair == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair required"})
+		return
+	}
+	var r struct {
+		Multiplier string `json:"multiplier" binding:"required"`
+		Offset     string `json:"offset"`
+	}
+	if err := c.ShouldBindJSON(&r); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "multiplier required"})
+		return
+	}
+	mult, ok := new(big.Float).SetString(r.Multiplier)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid multiplier"})
+		return
+	}
+	lo, hi := big.NewFloat(0.1), big.NewFloat(10)
+	if mult.Cmp(lo) < 0 || mult.Cmp(hi) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "multiplier must be between 0.1 and 10"})
+		return
+	}
+	offset := big.NewFloat(0)
+	if r.Offset != "" {
+		o, ok := new(big.Float).SetString(r.Offset)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid offset"})
+			return
+		}
+		offset = o
+	}
+	adj := &market.PriceAdjustment{
+		Pair:       pair,
+		Multiplier: mult,
+		Offset:     offset,
+		UpdatedBy:  c.GetString("user_id"),
+	}
+	err := h.priceAdj.Upsert(adj)
+	h.audit.Log(c, "admin.price.adjust", "pair", pair, gin.H{
+		"multiplier": r.Multiplier, "offset": r.Offset,
+	}, err)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save price adjustment", "detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, priceAdjToJSON(h.priceAdj.Get(pair)))
 }

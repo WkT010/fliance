@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { Card } from '@/components/common/Card';
@@ -10,6 +11,7 @@ import { Select } from '@/components/common/Select';
 import { StatCard } from '@/components/common/StatCard';
 import { EmptyState } from '@/components/common/EmptyState';
 import { getBalances, getTransactions, withdraw, getDepositAddress, getSupportedAssets } from '@/api/wallet';
+import { getKycStatus } from '@/api/kyc';
 import { getTickers } from '@/api/market';
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
@@ -25,11 +27,11 @@ const STABLECOINS = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FRAX']);
  * Best-effort USD valuation of a balance row using the latest known ticker
  * prices.  Returns null when we have no price (we don't pretend to know).
  */
-function valueUsd(balance: { asset: string; total: string }, tickers: Ticker[]): number | null {
-  const amt = parseFloat(balance.total || '0');
+function valueUsd(row: { asset: string; balance: string }, tickers: Ticker[]): number | null {
+  const amt = parseFloat(row.balance || '0');
   if (!Number.isFinite(amt)) return null;
   if (amt === 0) return 0;
-  const a = balance.asset.toUpperCase();
+  const a = row.asset.toUpperCase();
   if (STABLECOINS.has(a)) return amt;
   // Direct quote against USDT
   const direct = tickers.find((t) => t.pair === `${a}/USDT` || t.pair === `${a}/USDC`);
@@ -79,6 +81,8 @@ export function WalletPage() {
   const { data: txs, refetch: refetchTxs } = useFetch(getTransactions, []);
   const { data: supportedAssets } = useFetch(getSupportedAssets, []);
   const { data: tickersData } = useFetch(getTickers, []);
+  const { data: kycStatus } = useFetch(getKycStatus, []);
+  const kycVerified = (kycStatus?.kyc_level || 0) > 0 || kycStatus?.submission?.status === 'approved';
   const tickers: Ticker[] = tickersData?.tickers || [];
 
   usePolling(() => { refetchBalances(); refetchTxs(); }, 5000);
@@ -234,7 +238,7 @@ export function WalletPage() {
                       </td>
                       <td className="px-4 py-3 font-mono">{formatQty(b.available, 8)}</td>
                       <td className="px-4 py-3 font-mono text-nexa-400">{formatQty(b.locked, 8)}</td>
-                      <td className="px-4 py-3 text-right font-mono">{formatQty(b.total, 8)}</td>
+                      <td className="px-4 py-3 text-right font-mono">{formatQty(b.balance, 8)}</td>
                       <td className="px-4 py-3 text-right font-mono text-nexa-300">
                         {usd === null ? '—' : formatUsd(usd.toString(), 2)}
                       </td>
@@ -298,6 +302,22 @@ export function WalletPage() {
                   label: t('wallet.withdraw'),
                   content: (
                     <form onSubmit={submitWithdraw} className="space-y-4 pt-2">
+                      {/* KYC withdrawal-limit notice */}
+                      {kycVerified ? (
+                        <div className="flex items-center gap-2 rounded-lg border border-up/25 bg-up/10 px-3 py-2 text-xs text-up">
+                          <svg viewBox="0 0 24 24" fill="none" className="h-3.5 w-3.5 flex-shrink-0">
+                            <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                          {t('wallet.kycVerifiedNote')}
+                        </div>
+                      ) : (
+                        <div className="rounded-lg border border-cta/30 bg-cta/10 px-3 py-2 text-xs text-cta">
+                          {t('wallet.kycWithdrawNotice')}
+                          <Link to="/kyc" className="ml-1 font-semibold underline underline-offset-2 hover:text-cta-bright">
+                            {t('kyc.verifyCta')}
+                          </Link>
+                        </div>
+                      )}
                       <Select label={t('wallet.asset')} value={asset} onChange={(e) => setAsset(e.target.value)}>
                         {assets.map((a) => <option key={a} value={a}>{a}</option>)}
                       </Select>

@@ -74,7 +74,9 @@ func (c *Client) closeSend() {
 	defer c.sendMu.Unlock()
 	if !c.closed {
 		c.closed = true
-		close(c.Send)
+		if c.Send != nil {
+			close(c.Send)
+		}
 	}
 }
 
@@ -85,7 +87,24 @@ func (c *Client) JoinRoom(room string) {
 }
 
 func (c *Client) ReadPump() {
-	defer func() { c.Hub.Unregister(c); c.Conn.Close() }()
+	// A bug in one connection must never take down the whole gateway: turn
+	// any panic into a logged teardown of this client only.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("ws read pump panic", "client_id", c.ID, "recover", r)
+		}
+	}()
+	defer func() {
+		if c.Hub != nil {
+			c.Hub.Unregister(c)
+		}
+		if c.Conn != nil {
+			c.Conn.Close()
+		}
+	}()
+	if c.Conn == nil {
+		return
+	}
 	c.Conn.SetReadLimit(maxMessageSize)
 	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.Conn.SetPongHandler(func(string) error { c.Conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
@@ -143,6 +162,16 @@ func (c *Client) ReadPump() {
 }
 
 func (c *Client) WritePump() {
+	// A panic on one connection (e.g. a write after the peer half-closed the
+	// socket) must tear down only this client, not the gateway process.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("ws write pump panic", "client_id", c.ID, "recover", r)
+		}
+	}()
+	if c.Conn == nil || c.Send == nil {
+		return
+	}
 	ticker := time.NewTicker(pingPeriod)
 	defer func() { ticker.Stop(); c.Conn.Close() }()
 	for {
@@ -153,14 +182,19 @@ func (c *Client) WritePump() {
 				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			w, _ := c.Conn.NextWriter(websocket.TextMessage)
+			w, err := c.Conn.NextWriter(websocket.TextMessage)
+			if err != nil || w == nil {
+				return
+			}
 			w.Write(msg)
 			n := len(c.Send)
 			for i := 0; i < n; i++ {
 				w.Write([]byte("\n"))
 				w.Write(<-c.Send)
 			}
-			w.Close()
+			if err := w.Close(); err != nil {
+				return
+			}
 		case <-ticker.C:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {

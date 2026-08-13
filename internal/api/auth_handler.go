@@ -19,6 +19,16 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// dummyLoginHash is compared against whenever a login targets an unknown
+// email, equalising response timing between "account does not exist" and
+// "wrong password" so an attacker cannot enumerate accounts through a timing
+// side channel. Generated once at boot with the same cost as real hashes.
+var dummyLoginHash []byte
+
+func init() {
+	dummyLoginHash, _ = bcrypt.GenerateFromPassword([]byte("anti-enumeration-dummy"), bcrypt.DefaultCost)
+}
+
 type User struct {
 	ID           string `json:"id"`
 	Email        string `json:"email"`
@@ -123,7 +133,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 	u, err := h.store.GetByEmail(r.Email)
-	if err != nil {
+	if err != nil || u == nil {
+		// Anti-enumeration: unknown emails still run one bcrypt comparison so
+		// response timing does not reveal whether the account exists. The
+		// error text and status code are identical to a wrong password.
+		_ = bcrypt.CompareHashAndPassword(dummyLoginHash, []byte(r.Password))
 		if h.recordFailure(r.Email) {
 			c.JSON(423, gin.H{"error": "account locked due to repeated failures", "retry_after_seconds": int(h.lockoutDuration.Seconds())})
 			return
@@ -224,18 +238,23 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "registration unavailable"})
 		return
 	}
-	if existing, _ := h.store.GetByEmail(r.Email); existing != nil {
-		c.JSON(409, gin.H{"error": "email already registered"})
-		return
-	}
+	// Hash FIRST so the "email already registered" and "new account" paths
+	// cost the same bcrypt work — otherwise response timing reveals whether
+	// an email is registered (enumeration side channel).
 	hash, err := bcrypt.GenerateFromPassword([]byte(r.Password), bcrypt.DefaultCost)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "internal error"})
 		return
 	}
-	idBytes := make([]byte, 8)
-	rand.Read(idBytes)
-	uid := fmt.Sprintf("usr_%s", hex.EncodeToString(idBytes))
+	if existing, _ := h.store.GetByEmail(r.Email); existing != nil {
+		c.JSON(409, gin.H{"error": "email already registered"})
+		return
+	}
+	// Numeric UID: allocate from users_uid_seq and scramble through the
+	// Feistel network so IDs are non-enumerable 9..11 digit numbers. Legacy
+	// usr_* IDs keep working unchanged; the fallback also covers deployments
+	// whose migration 010 has not been applied yet.
+	uid := h.allocateUID()
 	now := time.Now().UnixNano()
 	u := &User{ID: uid, Email: r.Email, PasswordHash: string(hash), Role: "user", CreatedAt: now, UpdatedAt: now}
 	if err := h.store.Create(u); err != nil {
@@ -254,6 +273,25 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		"access_token": accessToken,
 		"expires_in":   86400,
 	})
+}
+
+// uidAllocator is implemented by user stores backed by users_uid_seq.
+type uidAllocator interface{ NextUID() (int64, error) }
+
+// allocateUID returns a fresh user ID: a scrambled numeric UID when the
+// store supports the sequence, otherwise the legacy usr_<hex> form.
+func (h *AuthHandler) allocateUID() string {
+	if alloc, ok := h.store.(uidAllocator); ok {
+		if seq, err := alloc.NextUID(); err == nil {
+			if uid, err := ScrambleUID(seq); err == nil {
+				return uid
+			}
+		}
+		slog.Warn("numeric UID allocation failed; falling back to legacy id", "err", "sequence unavailable")
+	}
+	idBytes := make([]byte, 8)
+	rand.Read(idBytes)
+	return fmt.Sprintf("usr_%s", hex.EncodeToString(idBytes))
 }
 
 type refreshReq struct {

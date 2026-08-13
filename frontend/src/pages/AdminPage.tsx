@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { Tabs } from '@/components/common/Tabs';
@@ -9,14 +9,20 @@ import {
   listWithdrawals, approveWithdrawal, rejectWithdrawal,
   listPairRisk, updatePairRisk, setUserDailyLimit, adminDeposit,
   seedAmmPools, startAmmSimulator, stopAmmSimulator, getAmmSimulatorStatus,
+  listKyc, reviewKyc, fetchKycDoc, getPriceAdjust, setPriceAdjust,
   type AmmSimulatorStatus,
 } from '@/api/admin';
 import { getAmmPools } from '@/api/amm';
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
 import { formatPrice, formatDate, formatQty } from '@/utils/format';
+import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { toast } from '@/store/toastStore';
-import type { WithdrawalReviewItem, PairRiskConfig } from '@/types';
+import type { WithdrawalReviewItem, PairRiskConfig, KycSubmission, PriceAdjustConfig } from '@/types';
+
+/** Backend timestamps here are Unix nanoseconds; formatDate auto-detects ns. */
+const nanoDate = (ts?: number) => (ts ? formatDate(ts) : '--');
+const isImageUrl = (v?: string) => !!v && (v.startsWith('data:') || /^https?:\/\//.test(v));
 
 export function AdminPage() {
   const { t } = useTranslation();
@@ -121,6 +127,16 @@ export function AdminPage() {
               id: 'amm',
               label: t('admin.ammPools'),
               content: <AmmAdminPanel />,
+            },
+            {
+              id: 'kyc',
+              label: t('admin.kycReview'),
+              content: <KycReviewPanel />,
+            },
+            {
+              id: 'priceAdjust',
+              label: t('admin.priceAdjust'),
+              content: <PriceAdjustPanel />,
             },
           ]}
         />
@@ -274,6 +290,269 @@ function AmmAdminPanel() {
           </table>
         </div>
       </section>
+    </div>
+  );
+}
+
+// KycReviewPanel lists pending identity submissions and lets admins approve
+// or reject them. Reject requires a reason entered via a modal.
+function KycReviewPanel() {
+  const { t } = useTranslation();
+  const { data, refetch } = useFetch(() => listKyc('pending'), []);
+  usePolling(refetch, 10000);
+
+  const [busyId, setBusyId] = useState('');
+  const [rejecting, setRejecting] = useState<KycSubmission | null>(null);
+  const [reason, setReason] = useState('');
+  const [lightbox, setLightbox] = useState('');
+  const [docUrls, setDocUrls] = useState<Record<string, string>>({});
+
+  // Documents submitted from the web app arrive as filesystem paths on the
+  // gateway host; resolve them through the admin-only documents endpoint so
+  // the review table shows the actual scan (data: URLs render directly).
+  useEffect(() => {
+    const subs = data?.submissions || [];
+    let cancelled = false;
+    subs.forEach((s) => {
+      (['front', 'back'] as const).forEach((side) => {
+        const doc = side === 'front' ? s.doc_front : s.doc_back;
+        const key = `${s.id}:${side}`;
+        if (!doc || isImageUrl(doc) || docUrls[key]) return;
+        fetchKycDoc(s.id, side)
+          .then((url) => {
+            if (!cancelled) setDocUrls((prev) => (prev[key] ? prev : { ...prev, [key]: url }));
+          })
+          .catch(() => { /* path shown as fallback */ });
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  const act = async (id: string, action: 'approve' | 'reject', r?: string) => {
+    setBusyId(id);
+    try {
+      await reviewKyc(id, action, r);
+      toast.success(action === 'approve' ? t('admin.kycApproved') : t('admin.kycRejected'));
+      refetch();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : t('admin.kycActionFailed'));
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const docCell = (s: KycSubmission, side: 'front' | 'back') => {
+    const doc = side === 'front' ? s.doc_front : s.doc_back;
+    const src = isImageUrl(doc) ? doc : docUrls[`${s.id}:${side}`];
+    return src ? (
+      <img
+        src={src}
+        alt="doc"
+        className="h-10 w-14 cursor-zoom-in rounded border border-nexa-700 object-cover"
+        onClick={() => setLightbox(src)}
+      />
+    ) : (
+      <span className="break-all font-mono text-[10px] text-nexa-500">{(doc || '').slice(0, 28) || '--'}</span>
+    );
+  };
+
+  const rows = data?.submissions || [];
+
+  return (
+    <div className="space-y-4">
+      {rows.length === 0 && (
+        <div className="rounded border border-nexa-700 bg-nexa-900 p-6 text-center text-sm text-nexa-500">
+          {t('admin.kycEmpty')}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="overflow-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-nexa-400">
+              <tr>
+                <th className="py-2">{t('admin.userId')}</th>
+                <th className="py-2">{t('admin.kycName')}</th>
+                <th className="py-2">{t('admin.kycIdNumber')}</th>
+                <th className="py-2">{t('admin.kycDocs')}</th>
+                <th className="py-2">{t('kyc.submittedAt')}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((s) => (
+                <tr key={s.id} className="border-b border-nexa-700/50 align-top">
+                  <td className="py-2">{s.user_id}</td>
+                  <td className="py-2">{s.full_name}</td>
+                  <td className="py-2 font-mono text-xs">{s.id_number}</td>
+                  <td className="py-2">
+                    <div className="flex items-center gap-1.5">
+                      {docCell(s, 'front')}
+                      {docCell(s, 'back')}
+                    </div>
+                  </td>
+                  <td className="py-2 text-nexa-400">{nanoDate(s.submitted_at)}</td>
+                  <td className="py-2">
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="success" disabled={busyId === s.id} onClick={() => act(s.id, 'approve')}>
+                        {t('admin.approve')}
+                      </Button>
+                      <Button size="sm" variant="danger" disabled={busyId === s.id} onClick={() => { setRejecting(s); setReason(''); }}>
+                        {t('admin.reject')}
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Reject-reason modal */}
+      {rejecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setRejecting(null)}>
+          <div className="w-full max-w-md rounded-lg border border-nexa-700 bg-nexa-900 p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-3 text-sm font-medium text-nexa-100">{t('admin.kycRejectTitle')}</h3>
+            <Input label={t('admin.kycRejectReason')} value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setRejecting(null)}>{t('common.cancel')}</Button>
+              <Button
+                variant="danger"
+                disabled={!reason.trim()}
+                onClick={async () => {
+                  await act(rejecting.id, 'reject', reason.trim());
+                  setRejecting(null);
+                }}
+              >
+                {t('admin.reject')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Document lightbox */}
+      {lightbox && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" onClick={() => setLightbox('')}>
+          <img src={lightbox} alt="doc" className="max-h-full max-w-full rounded object-contain" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// PriceAdjustPanel lets operators tune the per-pair price multiplier/offset
+// used by the market feed. Changes propagate to futures mark price & settlement.
+function PriceAdjustPanel() {
+  const { t } = useTranslation();
+  const [configs, setConfigs] = useState<Record<string, PriceAdjustConfig>>({});
+  const [edits, setEdits] = useState<Record<string, { multiplier: string; offset: string }>>({});
+  const [saving, setSaving] = useState('');
+  const [loaded, setLoaded] = useState(false);
+
+  const load = async () => {
+    const results = await Promise.all(
+      SUPPORTED_PAIRS.map((p) => getPriceAdjust(p).catch(() => null))
+    );
+    const map: Record<string, PriceAdjustConfig> = {};
+    const em: Record<string, { multiplier: string; offset: string }> = {};
+    SUPPORTED_PAIRS.forEach((p, i) => {
+      const c = results[i] || { pair: p, multiplier: '1', offset: '0', updated_by: '', updated_at: 0 };
+      map[p] = c;
+      em[p] = { multiplier: c.multiplier, offset: c.offset };
+    });
+    setConfigs(map);
+    setEdits(em);
+    setLoaded(true);
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!loaded) {
+    return <div className="p-4 text-sm text-nexa-500">{t('common.loading')}</div>;
+  }
+
+  const save = async (pair: string) => {
+    const e = edits[pair];
+    const m = parseFloat(e.multiplier);
+    if (!isFinite(m) || m < 0.1 || m > 10) {
+      toast.error(t('admin.priceMultiplierRange'));
+      return;
+    }
+    if (!isFinite(parseFloat(e.offset || '0'))) {
+      toast.error(t('admin.priceOffsetInvalid'));
+      return;
+    }
+    setSaving(pair);
+    try {
+      const res = await setPriceAdjust(pair, e.multiplier, e.offset || '0');
+      setConfigs((prev) => ({ ...prev, [pair]: res }));
+      toast.success(t('admin.priceSaved'));
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      toast.error(msg || (err instanceof Error ? err.message : t('admin.priceSaveFailed')));
+    } finally {
+      setSaving('');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+        {t('admin.priceAdjustWarning')}
+      </div>
+      <div className="overflow-auto">
+        <table className="w-full text-left text-sm">
+          <thead className="text-nexa-400">
+            <tr>
+              <th className="py-2">{t('markets.pair')}</th>
+              <th className="py-2">{t('admin.multiplier')}</th>
+              <th className="py-2">{t('admin.offset')}</th>
+              <th className="py-2">{t('admin.updatedBy')}</th>
+              <th className="py-2">{t('admin.updatedAt')}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {SUPPORTED_PAIRS.map((pair) => {
+              const c = configs[pair];
+              const e = edits[pair];
+              return (
+                <tr key={pair} className="border-b border-nexa-700/50">
+                  <td className="py-2 font-medium text-nexa-100">{pair}</td>
+                  <td className="py-2">
+                    <input
+                      className="w-24 rounded border border-nexa-700 bg-nexa-950 px-2 py-1 font-mono text-sm text-nexa-100 outline-none focus:border-accent"
+                      value={e.multiplier}
+                      onChange={(ev) => setEdits((prev) => ({ ...prev, [pair]: { ...e, multiplier: ev.target.value } }))}
+                    />
+                  </td>
+                  <td className="py-2">
+                    <input
+                      className="w-24 rounded border border-nexa-700 bg-nexa-950 px-2 py-1 font-mono text-sm text-nexa-100 outline-none focus:border-accent"
+                      value={e.offset}
+                      onChange={(ev) => setEdits((prev) => ({ ...prev, [pair]: { ...e, offset: ev.target.value } }))}
+                    />
+                  </td>
+                  <td className="py-2 text-nexa-400">{c.updated_by || '--'}</td>
+                  <td className="py-2 text-nexa-400">{nanoDate(c.updated_at)}</td>
+                  <td className="py-2">
+                    <Button size="sm" variant="secondary" isLoading={saving === pair} onClick={() => save(pair)}>
+                      {t('common.save')}
+                    </Button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

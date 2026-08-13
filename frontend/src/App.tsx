@@ -6,6 +6,7 @@ import { AMMPage } from '@/pages/AMMPage';
 import { WalletPage } from '@/pages/WalletPage';
 import { AccountPage } from '@/pages/AccountPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { KycPage } from '@/pages/KycPage';
 import { AdminPage } from '@/pages/AdminPage';
 import { LegalPage } from '@/pages/LegalPage';
 import { PrivacyPolicyPage } from '@/pages/legal/PrivacyPolicyPage';
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="/futures" element={<ProtectedRoute><FuturesPage /></ProtectedRoute>} />
         <Route path="/amm" element={<ProtectedRoute><AMMPage /></ProtectedRoute>} />
         <Route path="/wallet" element={<ProtectedRoute><WalletPage /></ProtectedRoute>} />
+        <Route path="/kyc" element={<ProtectedRoute><KycPage /></ProtectedRoute>} />
         <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         <Route path="/admin" element={<ProtectedRoute admin><AdminPage /></ProtectedRoute>} />

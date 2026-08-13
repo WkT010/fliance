@@ -25,6 +25,7 @@ type Router struct {
 	adminH    *AdminHandler
 	futuresH  *FuturesHandler
 	ammH      *AmmHandler
+	kycH      *KycHandler
 	authMW    gin.HandlerFunc
 	apiKeyMW  gin.HandlerFunc
 	rateMW    gin.HandlerFunc
@@ -71,6 +72,10 @@ func NewRouter(
 
 func (r *Router) SetStaticDir(dir string) { r.staticDir = dir }
 
+// SetKycHandler wires the user-facing KYC endpoints. Optional: without it
+// the KYC routes stay unregistered.
+func (r *Router) SetKycHandler(h *KycHandler) { r.kycH = h }
+
 // SetRateLimiter wires the global per-IP HTTP rate limiter. Callers choose
 // between the in-memory RateLimiter and the distributed RedisRateLimiter
 // based on cfg.EnableRedisRateLimit; without it the gateway runs unlimited
@@ -99,8 +104,18 @@ func (r *Router) Setup() *gin.Engine {
 	originChecker := NewOriginChecker(r.config.CORSAllowOrigins)
 	r.engine.Use(CORSMiddlewareConfig(r.config.CORSAllowOrigins, r.config.CORSAllowCreds))
 
-	// Global request-body cap (default 1 MB); WebSocket upgrades exempt.
-	r.engine.Use(RequestBodyLimit(int64(r.config.MaxRequestBodyBytes)))
+	// Global request-body cap (default 1 MB); WebSocket upgrades exempt. The
+	// KYC document upload carries two base64 images (2x5MB -> ~14MB) and gets
+	// its own larger cap instead of being rejected by the global limit.
+	kycBodyCap := int64(16 << 20)
+	globalBodyCap := int64(r.config.MaxRequestBodyBytes)
+	r.engine.Use(func(c *gin.Context) {
+		if c.Request.URL.Path == "/api/v2/kyc/submit" {
+			RequestBodyLimit(kycBodyCap)(c)
+			return
+		}
+		RequestBodyLimit(globalBodyCap)(c)
+	})
 
 	// Wire the WS hardening knobs that live outside the constructors.
 	r.wh.SetOriginChecker(originChecker)
@@ -141,6 +156,12 @@ func (r *Router) Setup() *gin.Engine {
 	prot.POST("/wallet/withdraw", r.walletH.Withdraw)
 	prot.GET("/wallet/transactions", r.walletH.ListTransactions)
 	prot.GET("/wallet/assets", r.walletH.ListSupportedAssets)
+
+	// KYC identity verification (user side).
+	if r.kycH != nil {
+		prot.POST("/kyc/submit", r.kycH.Submit)
+		prot.GET("/kyc/status", r.kycH.Status)
+	}
 
 	prot.GET("/account", r.accountH.GetAccount)
 	prot.GET("/account/profile", r.accountH.GetProfile)
@@ -212,13 +233,26 @@ func (r *Router) Setup() *gin.Engine {
 	admin.POST("/users/:id/addresses", r.adminH.AddAddress)
 	admin.POST("/users/:id/limits", r.adminH.SetDailyLimit)
 	admin.GET("/risk/pairs", r.adminH.ListPairRisk)
-	admin.GET("/risk/pairs/:pair", r.adminH.GetPairRisk)
-	admin.PUT("/risk/pairs/:pair", r.adminH.UpdatePairRisk)
+	// Per-pair admin routes use the *pair catch-all (like the market-data
+	// routes) because clients URL-encode the pair and "BTC%2FUSDT" decodes
+	// to two path segments, which a :param segment can never match.
+	admin.GET("/risk/pairs/*pair", r.adminH.GetPairRisk)
+	admin.PUT("/risk/pairs/*pair", r.adminH.UpdatePairRisk)
 	admin.GET("/risk/users/:id", r.adminH.GetUserRisk)
 	admin.PUT("/risk/users/:id", r.adminH.UpdateUserRisk)
-	admin.POST("/pairs/:pair/pause", r.adminH.PausePair)
-	admin.POST("/pairs/:pair/resume", r.adminH.ResumePair)
+	// The catch-all carries "<pair>/pause" or "<pair>/resume"; a catch-all
+	// cannot have child segments, so one dispatcher routes both actions.
+	admin.POST("/pairs/*pair", r.adminH.PairControl)
 	admin.POST("/snapshots", r.adminH.TriggerSnapshot)
+	// KYC review queue + decisions.
+	admin.GET("/kyc", r.adminH.ListKyc)
+	admin.POST("/kyc/:id/review", r.adminH.ReviewKyc)
+	// Identity-document images (stored on disk; the list endpoint only
+	// carries the path, so the review UI fetches the bytes here).
+	admin.GET("/kyc/:id/documents", r.adminH.GetKycDocument)
+	// Operator price adjustments (displayed prices only).
+	admin.GET("/price-adjust/*pair", r.adminH.GetPriceAdjust)
+	admin.PUT("/price-adjust/*pair", r.adminH.UpdatePriceAdjust)
 
 	// WebSocket endpoint: per-IP connection-attempt rate limit (cache-backed,
 	// in-memory fallback) plus the hub's global connection cap.
