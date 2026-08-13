@@ -46,6 +46,7 @@ func main() {
 	var apiKeyStore auth.APIKeyStore
 	var walletStore wallet.WalletStore
 	var kycStore api.KycStore
+	var claimStore api.DepositClaimStore
 	var limitLoader wallet.PlatformLimitLoader
 	if cfg.PostgresDSN != "" {
 		var err error
@@ -59,11 +60,13 @@ func main() {
 			pgWallet := store.NewPGWalletStore(db)
 			pgAPIKey := store.NewPGAPIKeyStore(db)
 			pgKyc := store.NewPGKycStore(db)
+			pgClaims := store.NewPGDepositClaimStore(db)
 			orderStore = pgOrder
 			userStore = pgUser
 			walletStore = pgWallet
 			apiKeyStore = pgAPIKey
 			kycStore = pgKyc
+			claimStore = pgClaims
 			limitLoader = pgKyc
 			slog.Info("postgres connected")
 		}
@@ -329,6 +332,11 @@ func main() {
 	if kl, ok := userStore.(wallet.KycLevelLookup); ok {
 		kycH.SetKycLevelLookup(kl)
 	}
+	// Manual deposit claims: users file txid + optional screenshot, admins
+	// review; approval credits the spot wallet atomically with the status
+	// change. Without Postgres the endpoints degrade to 503.
+	dcH := api.NewDepositClaimHandler(claimStore, "")
+	dcH.SetAuditLogger(auditLog)
 
 	// ── Shared cache (Redis with in-memory fallback) ──
 	// Backs the login lockout counters, the JWT token blacklist and the WS
@@ -404,6 +412,7 @@ func main() {
 		authH.AuthMiddleware(), api.APIKeyMiddleware(apiKeyStore), cfg, health)
 	router.SetCache(sharedCache)
 	router.SetKycHandler(kycH)
+	router.SetDepositClaimHandler(dcH)
 	// Global per-IP HTTP rate limit. ENABLE_REDIS_RATE_LIMIT=true uses the
 	// distributed Redis limiter (only when Redis actually connected; a closed
 	// client would refuse every request); otherwise the in-memory limiter.

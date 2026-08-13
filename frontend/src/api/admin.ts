@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { WithdrawalReviewItem, AddressBookEntry, PairRiskConfig, KycSubmission, PriceAdjustConfig } from '@/types';
+import type { WithdrawalReviewItem, AddressBookEntry, PairRiskConfig, KycSubmission, DepositClaimAdmin, PriceAdjustConfig } from '@/types';
 
 export async function listWithdrawals(status?: string): Promise<{ withdrawals: WithdrawalReviewItem[]; limit: number; offset: number }> {
   const params = status ? `?status=${encodeURIComponent(status)}` : '';
@@ -120,6 +120,33 @@ export async function reviewKyc(id: string, action: 'approve' | 'reject', reason
 export async function fetchKycDoc(id: string, type: 'front' | 'back'): Promise<string> {
   const res = await api.get(`/admin/kyc/${id}/documents`, {
     params: { type },
+    responseType: 'blob',
+  });
+  return URL.createObjectURL(res.data as Blob);
+}
+
+// ── Deposit claim review ──
+
+/** GET /admin/deposit/claims — list deposit claims, optionally filtered by status. */
+export async function getDepositClaimsAdmin(status?: string, limit = 100, offset = 0): Promise<{ claims: DepositClaimAdmin[] }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (status) params.set('status', status);
+  const res = await api.get(`/admin/deposit/claims?${params.toString()}`);
+  return res.data;
+}
+
+/** POST /admin/deposit/claims/:id/review — approve or reject a deposit claim. */
+export async function reviewDepositClaim(id: string, action: 'approve' | 'reject', reason?: string): Promise<{ ok: boolean }> {
+  const res = await api.post(`/admin/deposit/claims/${id}/review`, { action, reason: reason || '' });
+  return res.data;
+}
+
+/**
+ * GET /admin/deposit/claims/:id/screenshot — fetch the stored payment
+ * screenshot bytes as an object URL. 404 when the user submitted none.
+ */
+export async function fetchDepositScreenshot(id: string): Promise<string> {
+  const res = await api.get(`/admin/deposit/claims/${id}/screenshot`, {
     responseType: 'blob',
   });
   return URL.createObjectURL(res.data as Blob);

@@ -5,11 +5,14 @@ import { Tabs } from '@/components/common/Tabs';
 import { Button } from '@/components/common/Button';
 import { Badge } from '@/components/common/Badge';
 import { Input } from '@/components/common/Input';
+import { Select } from '@/components/common/Select';
 import {
   listWithdrawals, approveWithdrawal, rejectWithdrawal,
   listPairRisk, updatePairRisk, setUserDailyLimit, adminDeposit,
   seedAmmPools, startAmmSimulator, stopAmmSimulator, getAmmSimulatorStatus,
-  listKyc, reviewKyc, fetchKycDoc, getPriceAdjust, setPriceAdjust,
+  listKyc, reviewKyc, fetchKycDoc,
+  getDepositClaimsAdmin, reviewDepositClaim, fetchDepositScreenshot,
+  getPriceAdjust, setPriceAdjust,
   type AmmSimulatorStatus,
 } from '@/api/admin';
 import { getAmmPools } from '@/api/amm';
@@ -18,7 +21,7 @@ import { usePolling } from '@/hooks/usePolling';
 import { formatPrice, formatDate, formatQty } from '@/utils/format';
 import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { toast } from '@/store/toastStore';
-import type { WithdrawalReviewItem, PairRiskConfig, KycSubmission, PriceAdjustConfig } from '@/types';
+import type { WithdrawalReviewItem, PairRiskConfig, KycSubmission, DepositClaimAdmin, DepositClaimStatus, PriceAdjustConfig } from '@/types';
 
 /** Backend timestamps here are Unix nanoseconds; formatDate auto-detects ns. */
 const nanoDate = (ts?: number) => (ts ? formatDate(ts) : '--');
@@ -132,6 +135,11 @@ export function AdminPage() {
               id: 'kyc',
               label: t('admin.kycReview'),
               content: <KycReviewPanel />,
+            },
+            {
+              id: 'depositReview',
+              label: t('admin.depositReview'),
+              content: <DepositReviewPanel />,
             },
             {
               id: 'priceAdjust',
@@ -438,6 +446,222 @@ function KycReviewPanel() {
       {lightbox && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" onClick={() => setLightbox('')}>
           <img src={lightbox} alt="doc" className="max-h-full max-w-full rounded object-contain" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// DepositReviewPanel reviews real-deposit claims (txid + optional payment
+// screenshot). Mirrors the KYC panel: list + detail + lightbox preview,
+// approve / reject-with-reason. Screenshots load lazily from the admin
+// blob endpoint (404 → "no screenshot provided").
+function DepositReviewPanel() {
+  const { t } = useTranslation();
+  const [filter, setFilter] = useState<'pending' | 'approved' | 'rejected' | 'all'>('pending');
+  const { data, refetch } = useFetch(
+    () => getDepositClaimsAdmin(filter === 'all' ? undefined : filter),
+    [filter]
+  );
+  usePolling(refetch, 10000);
+
+  const [selectedId, setSelectedId] = useState('');
+  const [shot, setShot] = useState<{ url: string; missing: boolean } | null>(null);
+  const [shotLoading, setShotLoading] = useState(false);
+  const [busyId, setBusyId] = useState('');
+  const [rejecting, setRejecting] = useState<DepositClaimAdmin | null>(null);
+  const [reason, setReason] = useState('');
+  const [lightbox, setLightbox] = useState('');
+
+  const rows = data?.claims || [];
+  const selected = rows.find((c) => c.id === selectedId) || null;
+
+  // Lazily load the screenshot of the selected claim (404 → missing).
+  useEffect(() => {
+    if (!selectedId) { setShot(null); return; }
+    let cancelled = false;
+    setShot(null);
+    setShotLoading(true);
+    fetchDepositScreenshot(selectedId)
+      .then((url) => { if (!cancelled) setShot({ url, missing: false }); })
+      .catch(() => { if (!cancelled) setShot({ url: '', missing: true }); })
+      .finally(() => { if (!cancelled) setShotLoading(false); });
+    return () => {
+      cancelled = true;
+      setShot((prev) => {
+        if (prev?.url) URL.revokeObjectURL(prev.url);
+        return null;
+      });
+    };
+  }, [selectedId]);
+
+  const statusBadge = (status: DepositClaimStatus) => {
+    const map: Record<DepositClaimStatus, { color: 'warning' | 'up' | 'down'; label: string }> = {
+      pending: { color: 'warning', label: t('wallet.claimStatusPending') },
+      approved: { color: 'up', label: t('wallet.claimStatusApproved') },
+      rejected: { color: 'down', label: t('wallet.claimStatusRejected') },
+    };
+    const m = map[status];
+    return <Badge color={m.color}>{m.label}</Badge>;
+  };
+
+  const act = async (id: string, action: 'approve' | 'reject', r?: string) => {
+    setBusyId(id);
+    try {
+      await reviewDepositClaim(id, action, r);
+      toast.success(action === 'approve' ? t('admin.depApproved') : t('admin.depRejected'));
+      refetch();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      toast.error(msg || (err instanceof Error ? err.message : t('admin.depActionFailed')));
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Status filter (default: pending) */}
+      <div className="flex items-center gap-3">
+        <Select label="" value={filter} onChange={(e) => { setFilter(e.target.value as typeof filter); setSelectedId(''); }} className="w-40">
+          <option value="pending">{t('wallet.claimStatusPending')}</option>
+          <option value="approved">{t('wallet.claimStatusApproved')}</option>
+          <option value="rejected">{t('wallet.claimStatusRejected')}</option>
+          <option value="all">{t('common.all')}</option>
+        </Select>
+        <span className="text-xs text-nexa-500">{rows.length} {t('admin.depCount')}</span>
+      </div>
+
+      {rows.length === 0 && (
+        <div className="rounded border border-nexa-700 bg-nexa-900 p-6 text-center text-sm text-nexa-500">
+          {t('admin.depEmpty')}
+        </div>
+      )}
+      {rows.length > 0 && (
+        <div className="overflow-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-nexa-400">
+              <tr>
+                <th className="py-2">UID</th>
+                <th className="py-2">{t('account.email')}</th>
+                <th className="py-2">{t('admin.asset')}</th>
+                <th className="py-2">{t('wallet.amount')}</th>
+                <th className="py-2">TxID</th>
+                <th className="py-2">{t('trading.status')}</th>
+                <th className="py-2">{t('kyc.submittedAt')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((c) => (
+                <tr
+                  key={c.id}
+                  className={`cursor-pointer border-b border-nexa-700/50 transition-colors hover:bg-nexa-800/40 ${selectedId === c.id ? 'bg-nexa-800/60' : ''}`}
+                  onClick={() => setSelectedId(c.id)}
+                >
+                  <td className="py-2 font-mono text-xs">{c.uid || '--'}</td>
+                  <td className="py-2">{c.email}</td>
+                  <td className="py-2 font-medium text-nexa-100">{c.asset}</td>
+                  <td className="py-2 font-mono">{formatQty(c.amount, 8)}</td>
+                  <td className="py-2 font-mono text-xs text-nexa-300" title={c.txid}>{c.txid.slice(0, 14)}…</td>
+                  <td className="py-2">{statusBadge(c.status)}</td>
+                  <td className="py-2 text-nexa-400">{nanoDate(c.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Detail of the selected claim */}
+      {selected && (
+        <div className="rounded border border-nexa-700 bg-nexa-900 p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-medium text-nexa-100">
+              {t('admin.depDetail')} · <span className="font-mono text-xs">{selected.id.slice(0, 16)}…</span>
+            </h3>
+            {statusBadge(selected.status)}
+          </div>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm md:grid-cols-3">
+            <div><div className="text-xs text-nexa-500">UID</div><div className="font-mono">{selected.uid || '--'}</div></div>
+            <div><div className="text-xs text-nexa-500">{t('account.email')}</div><div>{selected.email}</div></div>
+            <div><div className="text-xs text-nexa-500">{t('admin.asset')}</div><div className="font-medium text-nexa-100">{selected.asset}</div></div>
+            <div><div className="text-xs text-nexa-500">{t('wallet.amount')}</div><div className="font-mono">{formatQty(selected.amount, 8)}</div></div>
+            <div className="col-span-2">
+              <div className="text-xs text-nexa-500">TxID</div>
+              <div className="break-all font-mono text-xs text-nexa-200">{selected.txid}</div>
+            </div>
+            <div><div className="text-xs text-nexa-500">{t('kyc.submittedAt')}</div><div className="text-nexa-300">{nanoDate(selected.created_at)}</div></div>
+            {selected.reviewed_at ? (
+              <div><div className="text-xs text-nexa-500">{t('kyc.reviewedAt')}</div><div className="text-nexa-300">{nanoDate(selected.reviewed_at)}</div></div>
+            ) : null}
+            {selected.status === 'rejected' && selected.reject_reason && (
+              <div className="col-span-2 md:col-span-3">
+                <div className="text-xs text-nexa-500">{t('kyc.rejectReason')}</div>
+                <div className="text-down">{selected.reject_reason}</div>
+              </div>
+            )}
+          </div>
+
+          {/* Screenshot preview */}
+          <div className="mt-4">
+            <div className="mb-2 text-xs text-nexa-500">{t('admin.depScreenshot')}</div>
+            {shotLoading && <div className="text-sm text-nexa-500">{t('common.loading')}</div>}
+            {!shotLoading && shot?.url && (
+              <img
+                src={shot.url}
+                alt="screenshot"
+                className="h-32 cursor-zoom-in rounded border border-nexa-700 object-contain"
+                onClick={() => setLightbox(shot.url)}
+              />
+            )}
+            {!shotLoading && (!shot || shot.missing) && (
+              <div className="inline-block rounded border border-dashed border-nexa-600 px-4 py-3 text-xs text-nexa-500">
+                {t('admin.depNoScreenshot')}
+              </div>
+            )}
+          </div>
+
+          {/* Review actions (pending only) */}
+          {selected.status === 'pending' && (
+            <div className="mt-4 flex gap-2">
+              <Button size="sm" variant="success" disabled={busyId === selected.id} onClick={() => act(selected.id, 'approve')}>
+                {t('admin.approve')}
+              </Button>
+              <Button size="sm" variant="danger" disabled={busyId === selected.id} onClick={() => { setRejecting(selected); setReason(''); }}>
+                {t('admin.reject')}
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Reject-reason modal */}
+      {rejecting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setRejecting(null)}>
+          <div className="w-full max-w-md rounded-lg border border-nexa-700 bg-nexa-900 p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="mb-3 text-sm font-medium text-nexa-100">{t('admin.depRejectTitle')}</h3>
+            <Input label={t('admin.depRejectReason')} value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setRejecting(null)}>{t('common.cancel')}</Button>
+              <Button
+                variant="danger"
+                disabled={!reason.trim()}
+                onClick={async () => {
+                  await act(rejecting.id, 'reject', reason.trim());
+                  setRejecting(null);
+                }}
+              >
+                {t('admin.reject')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Screenshot lightbox */}
+      {lightbox && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6" onClick={() => setLightbox('')}>
+          <img src={lightbox} alt="screenshot" className="max-h-full max-w-full rounded object-contain" />
         </div>
       )}
     </div>

@@ -173,7 +173,18 @@
     "priceSaved": "Price adjustment saved",
     "priceSaveFailed": "Failed to save price adjustment",
     "priceMultiplierRange": "Multiplier must be between 0.1 and 10",
-    "priceOffsetInvalid": "Offset must be a valid number"
+    "priceOffsetInvalid": "Offset must be a valid number",
+    "depositReview": "Deposit Review",
+    "depDetail": "Deposit Detail",
+    "depScreenshot": "Payment Screenshot",
+    "depNoScreenshot": "No screenshot provided",
+    "depEmpty": "No deposit claims to review",
+    "depCount": "claims",
+    "depApproved": "Deposit approved",
+    "depRejected": "Deposit rejected",
+    "depActionFailed": "Review action failed",
+    "depRejectTitle": "Reject Deposit",
+    "depRejectReason": "Rejection reason"
   },
   "wallet": {
     "title": "Wallet",
@@ -216,7 +227,20 @@
     "allStatus": "All Status",
     "noMatchingTx": "No matching transactions",
     "kycWithdrawNotice": "Unverified accounts are limited to 1,000 USDT in daily withdrawals. Verify your identity to raise the limit to 50,000 USDT.",
-    "kycVerifiedNote": "Identity verified — your daily withdrawal limit is 50,000 USDT."
+    "kycVerifiedNote": "Identity verified — your daily withdrawal limit is 50,000 USDT.",
+    "claimTitle": "Submit Deposit Proof",
+    "claimAmount": "Deposit Amount",
+    "claimTxid": "On-chain Transaction ID (TxID)",
+    "claimScreenshot": "Transfer Screenshot (optional)",
+    "claimRemove": "Remove screenshot",
+    "claimSubmit": "Submit Proof",
+    "claimSubmitted": "Deposit proof submitted — awaiting review",
+    "claimSubmitFailed": "Failed to submit deposit proof",
+    "claimRecords": "Deposit Records",
+    "claimEmpty": "No deposit records yet",
+    "claimStatusPending": "Pending Review",
+    "claimStatusApproved": "Credited",
+    "claimStatusRejected": "Rejected"
   },
   "transfer": {
     "title": "Transfer",

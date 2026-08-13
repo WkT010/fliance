@@ -1,5 +1,5 @@
 import { api } from './client';
-import type { AccountType, Balance, Transaction, WithdrawReq } from '@/types';
+import type { AccountType, Balance, DepositClaim, DepositClaimReq, Transaction, WithdrawReq } from '@/types';
 
 /** Balance row as the wire format may omit account_type on older builds. */
 type RawBalance = Omit<Balance, 'account_type'> & { account_type?: AccountType };
@@ -36,6 +36,22 @@ export async function getDepositAddress(asset: string): Promise<{ address: strin
 export async function getSupportedAssets(): Promise<string[]> {
   const res = await api.get<{ assets: string[] }>('/wallet/assets');
   return res.data.assets || [];
+}
+
+/**
+ * POST /wallet/deposit/claim — submit an on-chain deposit proof (txid
+ * required, screenshot optional). 201 → { id, status: 'pending' };
+ * 409 → duplicate txid, 400 → { error }.
+ */
+export async function submitDepositClaim(req: DepositClaimReq): Promise<{ id: string; status: string }> {
+  const res = await api.post('/wallet/deposit/claim', req);
+  return res.data;
+}
+
+/** GET /wallet/deposit/claims — the caller's own deposit claim history. */
+export async function getDepositClaims(): Promise<DepositClaim[]> {
+  const res = await api.get<{ claims: DepositClaim[] }>('/wallet/deposit/claims');
+  return res.data.claims || [];
 }
 
 /** Internal transfer between sub-accounts. 400 → { error } (e.g. "insufficient balance"). */

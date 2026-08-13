@@ -26,6 +26,9 @@ func (s *PGWalletStore) GetWalletForAccount(userID, asset, accountType string) (
 	row := s.db.QueryRow(
 		`SELECT id,user_id,asset,balance,locked,COALESCE(address,''),created_at,updated_at,account_type FROM wallets WHERE user_id=$1 AND asset=$2 AND account_type=$3`, userID, asset, accountType)
 	if err := row.Scan(&w.ID, &w.UserID, &w.Asset, &b, &l, &w.Address, &w.CreatedAt, &w.UpdatedAt, &w.AccountType); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, wallet.ErrWalletNotFound
+		}
 		return nil, fmt.Errorf("get wallet: %w", err)
 	}
 	w.Balance.Parse(b, 10)

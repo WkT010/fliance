@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
@@ -10,7 +10,7 @@ import { Badge } from '@/components/common/Badge';
 import { Select } from '@/components/common/Select';
 import { StatCard } from '@/components/common/StatCard';
 import { EmptyState } from '@/components/common/EmptyState';
-import { getBalances, getTransactions, withdraw, getDepositAddress, getSupportedAssets } from '@/api/wallet';
+import { getBalances, getTransactions, withdraw, getDepositAddress, getSupportedAssets, submitDepositClaim, getDepositClaims } from '@/api/wallet';
 import { TransferModal, ACCOUNT_TYPES } from '@/components/common/TransferModal';
 import { getKycStatus } from '@/api/kyc';
 import { getTickers } from '@/api/market';
@@ -19,10 +19,14 @@ import { usePolling } from '@/hooks/usePolling';
 import { formatUsd, formatQty, formatDate, changeColorClass, cls } from '@/utils/format';
 import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { toast } from '@/store/toastStore';
-import type { AccountType, Ticker } from '@/types';
+import type { AccountType, DepositClaim, DepositClaimStatus, Ticker } from '@/types';
 
 // Stablecoins that are always treated as 1 USD for valuation.
 const STABLECOINS = new Set(['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'FRAX']);
+
+// Deposit-claim screenshot constraints (same rules as KYC document uploads).
+const MAX_SHOT_BYTES = 5 * 1024 * 1024;
+const ACCEPTED_SHOT_TYPES = ['image/jpeg', 'image/png'];
 
 /**
  * Best-effort USD valuation of a balance row using the latest known ticker
@@ -76,6 +80,196 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
+/**
+ * Real-deposit proof form: asset + amount + on-chain txid (required) +
+ * optional transfer screenshot (jpg/png ≤5 MB). Submits to
+ * POST /wallet/deposit/claim and reports backend errors verbatim
+ * (e.g. 409 duplicate txid).
+ */
+function DepositClaimForm({ assets, asset, onAssetChange, onSubmitted }: {
+  assets: string[];
+  asset: string;
+  onAssetChange: (a: string) => void;
+  onSubmitted: () => void;
+}) {
+  const { t } = useTranslation();
+  const [amount, setAmount] = useState('');
+  const [txid, setTxid] = useState('');
+  const [screenshot, setScreenshot] = useState('');
+  const [shotError, setShotError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const pick = (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > MAX_SHOT_BYTES) {
+      setShotError(t('kyc.fileTooLarge'));
+      setScreenshot('');
+      return;
+    }
+    if (!ACCEPTED_SHOT_TYPES.includes(file.type)) {
+      setShotError(t('kyc.fileTypeInvalid'));
+      setScreenshot('');
+      return;
+    }
+    setShotError('');
+    const reader = new FileReader();
+    reader.onload = () => setScreenshot(typeof reader.result === 'string' ? reader.result : '');
+    reader.readAsDataURL(file);
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    try {
+      await submitDepositClaim({ asset, amount, txid: txid.trim(), screenshot: screenshot || undefined });
+      toast.success(t('wallet.claimSubmitted'));
+      setAmount('');
+      setTxid('');
+      setScreenshot('');
+      setShotError('');
+      onSubmitted();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      toast.error(msg || (err instanceof Error ? err.message : t('wallet.claimSubmitFailed')));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3 rounded-lg border border-nexa-700/70 bg-nexa-900/60 p-3">
+      <div className="text-xs font-medium text-nexa-200">{t('wallet.claimTitle')}</div>
+      <Select label={t('wallet.asset')} value={asset} onChange={(e) => onAssetChange(e.target.value)}>
+        {assets.map((a) => <option key={a} value={a}>{a}</option>)}
+      </Select>
+      <Input
+        label={t('wallet.claimAmount')}
+        type="number"
+        step="0.000001"
+        min="0"
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+        required
+        suffix={asset}
+      />
+      <Input
+        label={t('wallet.claimTxid')}
+        value={txid}
+        onChange={(e) => setTxid(e.target.value)}
+        required
+        placeholder="0x…"
+      />
+      {/* Optional transfer screenshot */}
+      <div>
+        <div className="mb-1 block text-xs font-medium text-nexa-300">{t('wallet.claimScreenshot')}</div>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/jpeg,image/png"
+          className="hidden"
+          onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ''; }}
+        />
+        {screenshot ? (
+          <div className="relative inline-block">
+            <img src={screenshot} alt="screenshot" className="h-24 rounded-lg border border-nexa-700 object-contain" />
+            <button
+              type="button"
+              onClick={() => { setScreenshot(''); setShotError(''); }}
+              aria-label={t('wallet.claimRemove')}
+              className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full bg-nexa-700 text-nexa-200 transition-colors hover:bg-down hover:text-white"
+            >
+              <svg viewBox="0 0 24 24" fill="none" className="h-3 w-3">
+                <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="flex h-24 w-full items-center justify-center rounded-lg border border-dashed border-nexa-600 bg-nexa-900 text-xs text-nexa-500 transition-colors hover:border-accent"
+          >
+            {t('kyc.uploadHint')}
+          </button>
+        )}
+        {shotError && <p className="mt-1 text-xs text-down">{shotError}</p>}
+        <p className="mt-1 text-xs text-nexa-500">{t('kyc.uploadRules')}</p>
+      </div>
+      <Button type="submit" isLoading={busy} block>
+        {t('wallet.claimSubmit')}
+      </Button>
+    </form>
+  );
+}
+
+/** Status badge for a deposit claim: pending=黄 / approved=绿 / rejected=红. */
+function ClaimStatusBadge({ status }: { status: DepositClaimStatus }) {
+  const { t } = useTranslation();
+  const map: Record<DepositClaimStatus, { color: 'warning' | 'up' | 'down'; label: string }> = {
+    pending: { color: 'warning', label: t('wallet.claimStatusPending') },
+    approved: { color: 'up', label: t('wallet.claimStatusApproved') },
+    rejected: { color: 'down', label: t('wallet.claimStatusRejected') },
+  };
+  const m = map[status] || map.pending;
+  return <Badge color={m.color}>{m.label}</Badge>;
+}
+
+/** The caller's own deposit-claim history, polled like the balance lists. */
+function DepositClaimRecords({ claims }: { claims: DepositClaim[] }) {
+  const { t } = useTranslation();
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-sm">
+        <thead className="text-nexa-400">
+          <tr>
+            <th className="px-3 py-2">{t('wallet.asset')}</th>
+            <th className="px-3 py-2 text-right">{t('wallet.amount')}</th>
+            <th className="px-3 py-2">{t('wallet.claimTxid')}</th>
+            <th className="px-3 py-2">{t('trading.status')}</th>
+            <th className="px-3 py-2">{t('kyc.submittedAt')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {claims.length === 0 && (
+            <tr>
+              <td colSpan={5}>
+                <EmptyState title={t('wallet.claimEmpty')} compact />
+              </td>
+            </tr>
+          )}
+          {claims.map((c) => (
+            <tr key={c.id} className="border-b border-nexa-800/50 transition-colors hover:bg-nexa-800/30">
+              <td className="px-3 py-2.5 font-medium">{c.asset}</td>
+              <td className="px-3 py-2.5 text-right font-mono text-up">+{formatQty(c.amount, 8)}</td>
+              <td className="px-3 py-2.5">
+                <div className="flex items-center gap-1">
+                  <span className="font-mono text-xs text-nexa-300" title={c.txid}>
+                    {c.txid.slice(0, 10)}…{c.txid.length > 14 ? c.txid.slice(-4) : ''}
+                  </span>
+                  <CopyButton text={c.txid} />
+                </div>
+              </td>
+              <td className="px-3 py-2.5">
+                <div className="flex flex-col items-start gap-0.5">
+                  <ClaimStatusBadge status={c.status} />
+                  {c.status === 'rejected' && c.reject_reason && (
+                    <span className="max-w-[16rem] truncate text-xs text-down" title={c.reject_reason}>
+                      {c.reject_reason}
+                    </span>
+                  )}
+                </div>
+              </td>
+              <td className="px-3 py-2.5 text-nexa-400">{formatDate(c.created_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function WalletPage() {
   const { t } = useTranslation();
   const { data: balances, refetch: refetchBalances } = useFetch(getBalances, []);
@@ -83,10 +277,11 @@ export function WalletPage() {
   const { data: supportedAssets } = useFetch(getSupportedAssets, []);
   const { data: tickersData } = useFetch(getTickers, []);
   const { data: kycStatus } = useFetch(getKycStatus, []);
+  const { data: depositClaims, refetch: refetchClaims } = useFetch(getDepositClaims, []);
   const kycVerified = (kycStatus?.kyc_level || 0) > 0 || kycStatus?.submission?.status === 'approved';
   const tickers: Ticker[] = tickersData?.tickers || [];
 
-  usePolling(() => { refetchBalances(); refetchTxs(); }, 5000);
+  usePolling(() => { refetchBalances(); refetchTxs(); refetchClaims(); }, 5000);
 
   const assets = useMemo(() => {
     const set = new Set<string>(supportedAssets || []);
@@ -345,6 +540,14 @@ export function WalletPage() {
                         )}
                       </div>
 
+                      {/* Real-deposit proof submission (txid + optional screenshot) */}
+                      <DepositClaimForm
+                        assets={assets}
+                        asset={asset}
+                        onAssetChange={setAsset}
+                        onSubmitted={refetchClaims}
+                      />
+
                       {/* Self-service simulated credits were removed: the
                           deposit endpoint is admin-only now (privilege
                           escalation fix). Deposits arrive via on-chain
@@ -408,6 +611,13 @@ export function WalletPage() {
                 },
               ]}
             />
+          </div>
+        </Card>
+
+        {/* Deposit claim history (凭证提交后的审核进度) */}
+        <Card className="lg:col-span-3" title={t('wallet.claimRecords')}>
+          <div className="p-4">
+            <DepositClaimRecords claims={depositClaims || []} />
           </div>
         </Card>
 

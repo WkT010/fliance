@@ -26,6 +26,7 @@ type Router struct {
 	futuresH  *FuturesHandler
 	ammH      *AmmHandler
 	kycH      *KycHandler
+	dcH       *DepositClaimHandler
 	authMW    gin.HandlerFunc
 	apiKeyMW  gin.HandlerFunc
 	rateMW    gin.HandlerFunc
@@ -76,6 +77,11 @@ func (r *Router) SetStaticDir(dir string) { r.staticDir = dir }
 // the KYC routes stay unregistered.
 func (r *Router) SetKycHandler(h *KycHandler) { r.kycH = h }
 
+// SetDepositClaimHandler wires the manual deposit-claim endpoints (user
+// submission + admin review). Optional: without it the routes stay
+// unregistered.
+func (r *Router) SetDepositClaimHandler(h *DepositClaimHandler) { r.dcH = h }
+
 // SetRateLimiter wires the global per-IP HTTP rate limiter. Callers choose
 // between the in-memory RateLimiter and the distributed RedisRateLimiter
 // based on cfg.EnableRedisRateLimit; without it the gateway runs unlimited
@@ -110,7 +116,11 @@ func (r *Router) Setup() *gin.Engine {
 	kycBodyCap := int64(16 << 20)
 	globalBodyCap := int64(r.config.MaxRequestBodyBytes)
 	r.engine.Use(func(c *gin.Context) {
-		if c.Request.URL.Path == "/api/v2/kyc/submit" {
+		// The KYC document upload carries two base64 images (2x5MB -> ~14MB)
+		// and a deposit claim carries one (~7MB base64); both get their own
+		// larger cap instead of being rejected by the global limit.
+		switch c.Request.URL.Path {
+		case "/api/v2/kyc/submit", "/api/v2/wallet/deposit/claim":
 			RequestBodyLimit(kycBodyCap)(c)
 			return
 		}
@@ -157,6 +167,14 @@ func (r *Router) Setup() *gin.Engine {
 	prot.POST("/wallet/transfer", r.walletH.Transfer)
 	prot.GET("/wallet/transactions", r.walletH.ListTransactions)
 	prot.GET("/wallet/assets", r.walletH.ListSupportedAssets)
+
+	// Manual deposit claims (user side): submit an on-chain txid + optional
+	// screenshot as deposit proof, list one's own claims. Crediting only
+	// happens on admin approval (admin group below).
+	if r.dcH != nil {
+		prot.POST("/wallet/deposit/claim", r.dcH.Submit)
+		prot.GET("/wallet/deposit/claims", r.dcH.List)
+	}
 
 	// KYC identity verification (user side).
 	if r.kycH != nil {
@@ -251,6 +269,12 @@ func (r *Router) Setup() *gin.Engine {
 	// Identity-document images (stored on disk; the list endpoint only
 	// carries the path, so the review UI fetches the bytes here).
 	admin.GET("/kyc/:id/documents", r.adminH.GetKycDocument)
+	// Deposit-claim review queue, screenshots and decisions.
+	if r.dcH != nil {
+		admin.GET("/deposit/claims", r.dcH.AdminList)
+		admin.GET("/deposit/claims/:id/screenshot", r.dcH.AdminScreenshot)
+		admin.POST("/deposit/claims/:id/review", r.dcH.AdminReview)
+	}
 	// Operator price adjustments (displayed prices only).
 	admin.GET("/price-adjust/*pair", r.adminH.GetPriceAdjust)
 	admin.PUT("/price-adjust/*pair", r.adminH.UpdatePriceAdjust)

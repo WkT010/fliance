@@ -172,6 +172,41 @@ export interface KycStatusResponse {
   } | null;
 }
 
+// ── Real deposit claims (凭证提交 + 人工审核) ──
+
+export type DepositClaimStatus = 'pending' | 'approved' | 'rejected';
+
+/** User-side deposit claim (GET /wallet/deposit/claims). */
+export interface DepositClaim {
+  id: string;
+  asset: string;
+  /** Decimal string. */
+  amount: string;
+  /** On-chain transaction hash. */
+  txid: string;
+  status: DepositClaimStatus;
+  reject_reason: string;
+  /** Unix nanoseconds. */
+  created_at: number;
+  reviewed_at?: number;
+}
+
+/** Admin-side deposit claim (GET /admin/deposit/claims). */
+export interface DepositClaimAdmin extends DepositClaim {
+  user_id: string;
+  uid: string;
+  email: string;
+  reviewer_id?: string;
+}
+
+export interface DepositClaimReq {
+  asset: string;
+  amount: string;
+  txid: string;
+  /** Optional data URL (jpg/png, ≤5 MB). */
+  screenshot?: string;
+}
+
 // ── Operator price adjustment ──
 
 export interface PriceAdjustConfig {

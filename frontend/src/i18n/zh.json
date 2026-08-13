@@ -173,7 +173,18 @@
     "priceSaved": "价格调控已保存",
     "priceSaveFailed": "保存价格调控失败",
     "priceMultiplierRange": "系数必须在 0.1 到 10 之间",
-    "priceOffsetInvalid": "偏移必须为有效数字"
+    "priceOffsetInvalid": "偏移必须为有效数字",
+    "depositReview": "充值审核",
+    "depDetail": "充值详情",
+    "depScreenshot": "转账截图",
+    "depNoScreenshot": "未提供截图",
+    "depEmpty": "暂无充值审核记录",
+    "depCount": "条记录",
+    "depApproved": "充值已通过",
+    "depRejected": "充值已驳回",
+    "depActionFailed": "审核操作失败",
+    "depRejectTitle": "驳回充值",
+    "depRejectReason": "驳回原因"
   },
   "wallet": {
     "title": "钱包",
@@ -216,7 +227,20 @@
     "allStatus": "全部状态",
     "noMatchingTx": "暂无匹配的交易记录",
     "kycWithdrawNotice": "未认证用户日提币限额为 1,000 USDT，完成认证后提升至 50,000 USDT。",
-    "kycVerifiedNote": "已完成实名认证，每日提币限额：50,000 USDT。"
+    "kycVerifiedNote": "已完成实名认证，每日提币限额：50,000 USDT。",
+    "claimTitle": "提交充值凭证",
+    "claimAmount": "充值金额",
+    "claimTxid": "链上交易号 (TxID)",
+    "claimScreenshot": "转账截图（可选）",
+    "claimRemove": "移除截图",
+    "claimSubmit": "提交凭证",
+    "claimSubmitted": "充值凭证已提交，等待审核",
+    "claimSubmitFailed": "充值凭证提交失败",
+    "claimRecords": "充值记录",
+    "claimEmpty": "暂无充值记录",
+    "claimStatusPending": "待审核",
+    "claimStatusApproved": "已到账",
+    "claimStatusRejected": "已拒绝"
   },
   "transfer": {
     "title": "划转",
