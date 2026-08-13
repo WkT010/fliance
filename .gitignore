@@ -41,3 +41,5 @@ data/
 # IDE/agent workspace metadata
 .qoder/
 .agents/
+.claude/
+skills-lock.json
