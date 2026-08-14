@@ -50,7 +50,7 @@ export function Hero({ market }: { market: LandingMarketData }) {
         </div>
 
         {/* H1 — the hero statement */}
-        <h1 className="mt-8 max-w-4xl text-4xl font-semibold uppercase leading-[1.12] tracking-tight text-pri sm:text-5xl lg:text-[56px]">
+        <h1 className="mt-8 max-w-4xl font-condensed text-4xl font-bold uppercase leading-[1.12] tracking-tight text-pri sm:text-5xl lg:text-[56px]">
           {t('landing.heroTitle')}
         </h1>
 
@@ -84,21 +84,21 @@ export function Hero({ market }: { market: LandingMarketData }) {
         {/* Live stats strip (money stats count up from 0 on mount) */}
         <div className="mt-16 grid grid-cols-2 gap-x-6 gap-y-10 border-t border-line pt-10 md:grid-cols-4 md:gap-x-8">
           <div>
-            <div className="text-2xl font-medium text-pri lg:text-[28px]">
+            <div className="font-condensed text-2xl font-semibold text-pri lg:text-[28px]">
               {loading ? '--' : moneyStat(totalQuoteVolume)}
             </div>
             <StatLabel labelKey="landing.stat24hVolume" />
           </div>
           <div>
-            <div className="text-2xl font-medium text-pri lg:text-[28px]">{tickers.length || 5}+</div>
+            <div className="font-condensed text-2xl font-semibold text-pri lg:text-[28px]">{tickers.length || 5}+</div>
             <StatLabel labelKey="landing.statPairs" />
           </div>
           <div>
-            <div className="text-2xl font-medium text-pri lg:text-[28px]">99.99%</div>
+            <div className="font-condensed text-2xl font-semibold text-pri lg:text-[28px]">99.99%</div>
             <StatLabel labelKey="landing.statUptime" />
           </div>
           <div>
-            <div className="text-2xl font-medium text-pri lg:text-[28px]">
+            <div className="font-condensed text-2xl font-semibold text-pri lg:text-[28px]">
               {loading ? '--' : moneyStat(ammTvl)}
             </div>
             <StatLabel labelKey="landing.statSecured" />

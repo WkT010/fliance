@@ -16,8 +16,8 @@ export function OrderbookPanel({ pair, compact }: { pair: string; compact?: bool
     return (
       <div className="relative flex justify-between py-0.5 text-xs">
         <div className="absolute inset-y-0 right-0 opacity-10" style={{ width, backgroundColor: side === 'bid' ? '#0ecb81' : '#f6465d' }} />
-        <span className={side === 'bid' ? 'text-up' : 'text-down'}>{formatPrice(level.price, 2)}</span>
-        <span className="text-nexa-300">{formatQty(level.quantity, 6)}</span>
+        <span className={'font-mono ' + (side === 'bid' ? 'text-up' : 'text-down')}>{formatPrice(level.price, 2)}</span>
+        <span className="font-mono text-nexa-300">{formatQty(level.quantity, 6)}</span>
       </div>
     );
   };

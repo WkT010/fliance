@@ -31,6 +31,10 @@ var (
 	// ErrSameAccountTransfer is returned when a transfer's source and
 	// destination accounts are identical.
 	ErrSameAccountTransfer = errors.New("source and destination accounts must differ")
+	// ErrWithdrawalAddressNotWhitelisted is returned when a withdrawal
+	// targets an address outside the user's whitelist. The HTTP layer maps
+	// it to 400 and the frontend matches this exact message text.
+	ErrWithdrawalAddressNotWhitelisted = errors.New("withdrawal address not whitelisted")
 )
 
 const (

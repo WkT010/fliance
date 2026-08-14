@@ -24,8 +24,48 @@ type Service struct {
 }
 
 func NewService(store Store, wallet WalletService) *Service {
+	if store == nil {
+		// Degrade instead of panicking: when Postgres is unreachable at boot
+		// the gateway still constructs the AMM service, but every store
+		// operation reports ErrStoreUnavailable. Callers (bootstrap, admin
+		// endpoints, HTTP handlers) then surface a clean error rather than
+		// dereferencing a nil store.
+		store = disabledStore{}
+	}
 	return &Service{store: store, wallet: wallet}
 }
+
+// disabledStore is a no-op Store stand-in used when AMM persistence is
+// unavailable (e.g. the database connection failed during startup). Every
+// method returns ErrStoreUnavailable so AMM features degrade gracefully
+// instead of panicking on a nil interface.
+type disabledStore struct{}
+
+func (disabledStore) SavePool(*Pool) error                { return ErrStoreUnavailable }
+func (disabledStore) GetPool(string) (*Pool, error)       { return nil, ErrStoreUnavailable }
+func (disabledStore) GetPoolByPair(string) (*Pool, error) { return nil, ErrStoreUnavailable }
+func (disabledStore) ListPools() ([]*Pool, error)         { return nil, ErrStoreUnavailable }
+func (disabledStore) UpdatePoolReserves(string, string, string, string) error {
+	return ErrStoreUnavailable
+}
+func (disabledStore) UpdatePoolProtocolFees(string, string, string) error {
+	return ErrStoreUnavailable
+}
+func (disabledStore) SavePosition(*LPPosition) error { return ErrStoreUnavailable }
+func (disabledStore) GetPosition(string, string) (*LPPosition, error) {
+	return nil, ErrStoreUnavailable
+}
+func (disabledStore) GetPositionByPool(string, string) (*LPPosition, error) {
+	return nil, ErrStoreUnavailable
+}
+func (disabledStore) ListPositionsByUser(string) ([]*LPPosition, error) {
+	return nil, ErrStoreUnavailable
+}
+func (disabledStore) ListPositionsByPool(string) ([]*LPPosition, error) {
+	return nil, ErrStoreUnavailable
+}
+func (disabledStore) SaveSwap(*Swap) error                        { return ErrStoreUnavailable }
+func (disabledStore) ListSwaps(string, int, int) ([]*Swap, error) { return nil, ErrStoreUnavailable }
 
 // CreatePool initializes a new AMM pool. Admin only in production.
 func (s *Service) CreatePool(pair, token0, token1 string, feeRate *big.Float) (*Pool, error) {

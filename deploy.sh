@@ -114,6 +114,7 @@ export POSTGRES_DSN="${POSTGRES_DSN:-postgres://nexa:nexa_dev@localhost:5432/nex
 export REDIS_ADDR="${REDIS_ADDR:-localhost:6379}"
 export REDIS_PASSWORD="${REDIS_PASSWORD:-}"
 export KAFKA_BROKERS="${KAFKA_BROKERS:-localhost:9092}"
+export KAFKA_TOPIC="${KAFKA_TOPIC:-fliance-exchange}"
 export TRADING_PAIRS="${TRADING_PAIRS:-BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT}"
 export LOG_LEVEL="${LOG_LEVEL:-info}"
 export LOG_FORMAT="${LOG_FORMAT:-text}"
@@ -208,9 +209,10 @@ start_services() {
 
 health_check() {
     echo ""; log_info "Running health checks..."; sleep 3
-    local ok=0
-    for ep in "http://localhost:8080/health:API Gateway" "http://localhost:8082/health:Wallet Service"; do
-        local url="${ep%%:*}"; local name="${ep##*:}"
+    local ok=0 url name ep
+    # 用 | 做分隔符（URL 内含 :，不能用 : 切分）
+    for ep in "http://localhost:8080/health|API Gateway" "http://localhost:8082/health|Wallet Service"; do
+        url="${ep%%|*}"; name="${ep##*|}"
         if curl -sf "$url" &>/dev/null; then log_ok "$name — $url"; else log_warn "$name — not ready"; ok=1; fi
     done
     if [ -f /tmp/fliance-engine.pid ] && kill -0 "$(cat /tmp/fliance-engine.pid)" 2>/dev/null; then log_ok "Matching Engine — running"; else log_warn "Matching Engine — check logs"; ok=1; fi

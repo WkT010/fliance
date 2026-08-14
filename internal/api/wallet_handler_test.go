@@ -290,3 +290,90 @@ func TestGetDepositAddressLegacyBehaviourWithoutStore(t *testing.T) {
 		t.Fatalf("address = %v, want BTC_legacy", body["address"])
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Withdraw — error-to-status-code mapping.
+//
+// User-input rejections (whitelist miss, bad amount, bad address, unsupported
+// asset, daily limit) must surface as 4xx; only genuine server faults may 500.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// errWithdrawService reuses the shared fake but lets the test pick the error
+// the Withdraw call returns.
+type errWithdrawService struct {
+	fakeWalletService
+	withdrawErr error
+}
+
+func (f *errWithdrawService) Withdraw(userID, asset, address string, amount *big.Float) error {
+	return f.withdrawErr
+}
+
+func withdrawRouter(svc WalletService) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	h := NewWalletHandler(svc, nil)
+	r := gin.New()
+	mw := func(c *gin.Context) {
+		c.Set("user_id", c.GetHeader("X-User"))
+		c.Next()
+	}
+	r.POST("/api/v2/wallet/withdraw", mw, h.Withdraw)
+	return r
+}
+
+func postWithdraw(t *testing.T, r *gin.Engine, body string) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v2/wallet/withdraw", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User", "usr_alice")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	var parsed map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("invalid JSON response: %v (body=%s)", err, w.Body.String())
+	}
+	return w, parsed
+}
+
+// TestWithdrawErrorCodeMapping pins the status code for every user-input
+// rejection and keeps internal failures on 500.
+func TestWithdrawErrorCodeMapping(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantMsg  string
+	}{
+		{"not whitelisted", wallet.ErrWithdrawalAddressNotWhitelisted, http.StatusBadRequest, "withdrawal address not whitelisted"},
+		{"negative amount", wallet.ErrNegativeAmount, http.StatusBadRequest, "invalid amount"},
+		{"invalid address", wallet.ErrInvalidAddress, http.StatusBadRequest, "invalid address"},
+		{"unsupported asset", wallet.ErrUnsupportedAsset, http.StatusBadRequest, "unsupported asset"},
+		{"daily limit", wallet.ErrDailyLimitExceeded, http.StatusBadRequest, "daily withdrawal limit exceeded"},
+		{"insufficient balance", wallet.ErrInsufficientBalance, http.StatusPaymentRequired, "insufficient balance"},
+		{"internal error", errors.New("db connection refused"), http.StatusInternalServerError, "db connection refused"},
+	}
+	payload := `{"asset":"BTC","address":"1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2","amount":"0.5"}`
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := withdrawRouter(&errWithdrawService{withdrawErr: tc.err})
+			w, body := postWithdraw(t, r, payload)
+			if w.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d (body=%s)", w.Code, tc.wantCode, w.Body.String())
+			}
+			if body["error"] != tc.wantMsg {
+				t.Fatalf("error = %v, want %q", body["error"], tc.wantMsg)
+			}
+		})
+	}
+}
+
+// TestWithdrawWrappedWhitelistErrorIs400: wrapped sentinel errors (the way
+// fmt.Errorf("%w") propagates them from deeper layers) still map to 400.
+func TestWithdrawWrappedWhitelistErrorIs400(t *testing.T) {
+	wrapped := errors.Join(errors.New("context"), wallet.ErrWithdrawalAddressNotWhitelisted)
+	r := withdrawRouter(&errWithdrawService{withdrawErr: wrapped})
+	w, _ := postWithdraw(t, r, `{"asset":"BTC","address":"1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2","amount":"0.5"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for wrapped sentinel (body=%s)", w.Code, w.Body.String())
+	}
+}

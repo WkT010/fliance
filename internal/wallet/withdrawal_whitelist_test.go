@@ -145,9 +145,14 @@ func TestWhitelistStoreBackedWithdrawal(t *testing.T) {
 
 	addr := validTestBTCAddr
 
-	// Outside the whitelist: refused.
-	if _, err := ws.RequestWithdrawal("u", "BTC", addr, big.NewFloat(1)); err == nil {
-		t.Fatal("unlisted withdrawal accepted")
+	// Outside the whitelist: refused with the sentinel error the HTTP layer
+	// maps to 400 (message text is a frontend contract).
+	_, err := ws.RequestWithdrawal("u", "BTC", addr, big.NewFloat(1))
+	if !errors.Is(err, ErrWithdrawalAddressNotWhitelisted) {
+		t.Fatalf("unlisted withdrawal: got %v, want ErrWithdrawalAddressNotWhitelisted", err)
+	}
+	if err.Error() != "withdrawal address not whitelisted" {
+		t.Fatalf("error message = %q, want %q (frontend depends on it)", err.Error(), "withdrawal address not whitelisted")
 	}
 
 	if _, err := ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: addr}, "admin1"); err != nil {

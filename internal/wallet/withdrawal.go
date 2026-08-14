@@ -407,7 +407,7 @@ func (ws *WithdrawalService) RequestWithdrawal(userID, asset, address string, am
 		return nil, fmt.Errorf("address whitelist check failed (fail-closed): %w", err)
 	}
 	if !ok {
-		return nil, errors.New("withdrawal address not whitelisted")
+		return nil, ErrWithdrawalAddressNotWhitelisted
 	}
 
 	// Fund reservation + daily-limit accounting. When the store supports it

@@ -57,7 +57,7 @@ export function TradingPage() {
               options={SUPPORTED_PAIRS.map((p) => ({ value: p, label: p }))}
             />
             <div className="flex items-center gap-3">
-              <div className="font-mono text-2xl font-bold tabular-nums">
+              <div className="font-condensed text-2xl font-bold tabular-nums">
                 <span className={changeColorClass(ticker?.change_pct_24h)}>
                   {formatPrice(ticker?.last, 2)}
                 </span>

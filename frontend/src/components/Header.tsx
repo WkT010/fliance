@@ -173,7 +173,7 @@ export function Header() {
       <div className="flex items-center gap-6">
         <Link to="/" className="flex items-center gap-2">
           <img src="/fliance-logo.png" alt="Fliance" className="h-7 w-7 rounded" />
-          <span className="text-lg font-semibold tracking-wide text-pri">
+          <span className="font-condensed text-xl font-semibold tracking-wide text-pri">
             Fliance<span className="ml-1 text-xs font-medium text-third">梵响</span>
           </span>
         </Link>

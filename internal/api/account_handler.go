@@ -73,6 +73,14 @@ func (h *AccountHandler) GetAccount(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
 		return
 	}
+	// The gateway starts in best-effort mode when Postgres is unreachable
+	// (userStore stays nil); a nil-store method call would panic and
+	// gin.Recovery would surface that as an opaque 500. Report the real
+	// condition instead: the backing store is not ready yet.
+	if h.users == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account service unavailable"})
+		return
+	}
 	u, err := h.users.GetByID(userID)
 	if err != nil || u == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
@@ -102,6 +110,10 @@ func (h *AccountHandler) GetAccount(c *gin.Context) {
 func (h *AccountHandler) GetProfile(c *gin.Context) {
 	uid, _ := c.Get("user_id")
 	userID, _ := uid.(string)
+	if h.users == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account service unavailable"})
+		return
+	}
 	u, err := h.users.GetByID(userID)
 	if err != nil || u == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})

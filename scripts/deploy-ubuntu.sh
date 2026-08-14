@@ -1,12 +1,23 @@
 #!/bin/bash
-# Fliance（梵响） v4.0.402 - Ubuntu one-click deploy script
-# Run as root: sudo bash deploy-ubuntu.sh
-# Debug mode: sudo bash -x deploy-ubuntu.sh
+# ============================================================================
+# Fliance（梵响） — Ubuntu 生产环境一键部署脚本
+# ----------------------------------------------------------------------------
+# 用法（root 执行，DOMAIN 必填，用于 CORS 白名单/提示）：
+#   sudo DOMAIN=exchange.example.com bash scripts/deploy-ubuntu.sh
+#   sudo DOMAIN=exchange.example.com bash -x scripts/deploy-ubuntu.sh   # 调试
+#
+# 流程：系统依赖 → Go/Node → PostgreSQL → 源码准备 → 前端构建 →
+#       三服务构建（matching-engine/wallet-service/api-gateway）→
+#       建库 → 数据库迁移（scripts/migrate，001-015）→
+#       三个 systemd 服务 → 健康检查（:8080 /:8082 /health、:50051 TCP）
+#
+# 端口：matching-engine gRPC :50051 + 监控 :8081；wallet-service :8082；
+#       api-gateway :8080（对外由 nginx/反代暴露）。
+# ============================================================================
 
 set -euo pipefail
 
 REPO="https://github.com/WkT010/nexa-exchange.git"
-VERSION="v4.0.402"
 
 # Default to the repo root (parent directory of this script).
 # Can be overridden by passing APP_DIR as environment variable.
@@ -14,15 +25,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_DIR="${APP_DIR:-$DEFAULT_APP_DIR}"
 
+# 版本优先读仓库根 VERSION 文件（与发布流程对齐），缺省回退 v5.0.0
+VERSION="$(cat "$APP_DIR/VERSION" 2>/dev/null || echo v5.0.0)"
+
 APP_USER="nexa"
-SERVICE="fliance-exchange"
 # 与 go.mod 的 go 1.25.0 对齐
 GO_VERSION="1.25.3"
 LOG_FILE="${APP_DIR}/deploy.log"
 
+# 三个服务的 systemd 单元名
+ENGINE_UNIT="fliance-matching-engine"
+WALLET_UNIT="fliance-wallet-service"
+GATEWAY_UNIT="fliance-api-gateway"
+
 # DOMAIN 必填：ENVIRONMENT=production 下 CORS 禁止通配符，
 # 白名单必须为真实对外域名（不含 scheme），否则 api-gateway 启动失败。
-# 用法：sudo DOMAIN=exchange.example.com bash deploy-ubuntu.sh
 DOMAIN="${DOMAIN:-}"
 
 DB_NAME="nexa"
@@ -83,7 +100,6 @@ GO_BIN="$(find_binary go \
     /usr/lib/go*/bin/go \
     /root/.local/share/mise/shims/go \
     /home/*/.local/share/mise/shims/go \
-    /root/.nvm/versions/node/*/bin/go \
     /usr/local/bin/go \
     /usr/bin/go)"
 
@@ -145,6 +161,7 @@ if [ "$GO_OK" != true ]; then
     GO_BIN="/usr/local/go/bin/go"
 fi
 export PATH="$(dirname "$GO_BIN"):$PATH"
+export GOTOOLCHAIN=auto
 
 # --- 3. Install Node.js 20 ---
 NODE_OK=false
@@ -206,24 +223,32 @@ fi
 # --- 6. Build frontend ---
 log "[Fliance] Building frontend..."
 cd "$APP_DIR/frontend"
-npm ci || fail "npm ci failed"
+npm ci || npm install || fail "npm install failed"
 npm run build || fail "npm run build failed"
 
-# --- 7. Build backend ---
-log "[Fliance] Building backend..."
+# --- 7. Build backend（三服务全部构建，输出到 build/） ---
+log "[Fliance] Building backend (api-gateway / matching-engine / wallet-service)..."
 cd "$APP_DIR"
-go build -o fliance-api ./cmd/api-gateway || fail "go build failed"
+mkdir -p "$APP_DIR/build"
+CGO_ENABLED=0 "$GO_BIN" build -ldflags='-s -w' -o "$APP_DIR/build/api-gateway" ./cmd/api-gateway || fail "go build api-gateway failed"
+CGO_ENABLED=0 "$GO_BIN" build -ldflags='-s -w' -o "$APP_DIR/build/matching-engine" ./cmd/matching-engine || fail "go build matching-engine failed"
+CGO_ENABLED=0 "$GO_BIN" build -ldflags='-s -w' -o "$APP_DIR/build/wallet-service" ./cmd/wallet-service || fail "go build wallet-service failed"
 
 # --- 8. Setup PostgreSQL database and user ---
 log "[Fliance] Configuring PostgreSQL..."
 sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" 2>/dev/null || true
 sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};" 2>/dev/null || true
 
+# --- 8.5 数据库迁移（001-015；重复执行自动跳过已应用版本） ---
+log "[Fliance] Running database migrations..."
+POSTGRES_DSN="postgres://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}?sslmode=disable" \
+    "$GO_BIN" run ./scripts/migrate || fail "database migration failed"
+log "[Fliance] Migrations complete"
+
 # --- 9. Create application user ---
 if ! id "$APP_USER" &>/dev/null; then
     useradd -r -s /bin/false -d "$APP_DIR" "$APP_USER" || fail "Failed to create user $APP_USER"
 fi
-chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 # --- 10. Environment file ---
 log "[Fliance] Writing environment file..."
@@ -231,8 +256,9 @@ cat > "$APP_DIR/.env" <<EOF
 JWT_SECRET=${JWT_SECRET}
 JWT_ISSUER=fliance-exchange
 LISTEN_ADDR=:8080
-POSTGRES_DSN=postgres://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}?sslmode=disable
+GRPC_ADDR=:50051
 ENVIRONMENT=production
+POSTGRES_DSN=postgres://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}?sslmode=disable
 DOMAIN=${DOMAIN}
 GRPC_SHARED_TOKEN=${GRPC_SHARED_TOKEN}
 CORS_ALLOW_ORIGINS=https://${DOMAIN}
@@ -240,15 +266,20 @@ ALCHEMY_API_KEY=your_alchemy_key_here
 STATIC_DIR=${APP_DIR}/frontend/dist
 EOF
 chmod 600 "$APP_DIR/.env"
-chown "$APP_USER:$APP_USER" "$APP_DIR/.env"
+
+# WAL/快照目录：独立引擎与 gateway 内嵌引擎各用一套，避免互相踩踏
+mkdir -p "$APP_DIR/data/engine-wal" "$APP_DIR/data/engine-snapshots" \
+         "$APP_DIR/data/wal" "$APP_DIR/data/snapshots"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 log "[Fliance] IMPORTANT: edit $APP_DIR/.env and replace 'your_alchemy_key_here' with a real Alchemy API key."
 
-# --- 11. systemd service ---
-log "[Fliance] Registering systemd service..."
-cat > "/etc/systemd/system/${SERVICE}.service" <<EOF
+# --- 11. systemd services（三服务各一个单元） ---
+log "[Fliance] Registering systemd services..."
+
+cat > "/etc/systemd/system/${ENGINE_UNIT}.service" <<EOF
 [Unit]
-Description=Fliance（梵响） API gateway and web frontend
+Description=Fliance（梵响） matching engine (gRPC :50051, monitor :8081)
 After=network.target postgresql.service
 Wants=postgresql.service
 
@@ -258,25 +289,115 @@ User=${APP_USER}
 Group=${APP_USER}
 WorkingDirectory=${APP_DIR}
 EnvironmentFile=${APP_DIR}/.env
-ExecStart=${APP_DIR}/fliance-api
+Environment=WAL_DIR=${APP_DIR}/data/engine-wal
+Environment=SNAPSHOT_DIR=${APP_DIR}/data/engine-snapshots
+ExecStart=${APP_DIR}/build/matching-engine
 Restart=always
 RestartSec=5
-StandardOutput=append:${APP_DIR}/fliance.log
-StandardError=append:${APP_DIR}/fliance.log
+StandardOutput=append:${APP_DIR}/matching-engine.log
+StandardError=append:${APP_DIR}/matching-engine.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "/etc/systemd/system/${WALLET_UNIT}.service" <<EOF
+[Unit]
+Description=Fliance（梵响） wallet service (HTTP :8082)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=${APP_DIR}/.env
+Environment=LISTEN_ADDR=:8082
+Environment=WAL_DIR=${APP_DIR}/data/wal
+Environment=SNAPSHOT_DIR=${APP_DIR}/data/snapshots
+ExecStart=${APP_DIR}/build/wallet-service
+Restart=always
+RestartSec=5
+StandardOutput=append:${APP_DIR}/wallet-service.log
+StandardError=append:${APP_DIR}/wallet-service.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > "/etc/systemd/system/${GATEWAY_UNIT}.service" <<EOF
+[Unit]
+Description=Fliance（梵响） API gateway and web frontend (HTTP :8080)
+After=network.target postgresql.service ${ENGINE_UNIT}.service ${WALLET_UNIT}.service
+Wants=postgresql.service ${ENGINE_UNIT}.service ${WALLET_UNIT}.service
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+WorkingDirectory=${APP_DIR}
+EnvironmentFile=${APP_DIR}/.env
+Environment=LISTEN_ADDR=:8080
+ExecStart=${APP_DIR}/build/api-gateway
+Restart=always
+RestartSec=5
+StandardOutput=append:${APP_DIR}/api-gateway.log
+StandardError=append:${APP_DIR}/api-gateway.log
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload || fail "systemctl daemon-reload failed"
-systemctl enable "$SERVICE" || fail "systemctl enable failed"
-systemctl restart "$SERVICE" || fail "systemctl restart failed"
+systemctl enable "$ENGINE_UNIT" "$WALLET_UNIT" "$GATEWAY_UNIT" || fail "systemctl enable failed"
+systemctl restart "$ENGINE_UNIT" || fail "systemctl restart ${ENGINE_UNIT} failed"
+sleep 2
+systemctl restart "$WALLET_UNIT" || fail "systemctl restart ${WALLET_UNIT} failed"
+sleep 2
+systemctl restart "$GATEWAY_UNIT" || fail "systemctl restart ${GATEWAY_UNIT} failed"
+
+# --- 12. Health checks（重试等待服务就绪） ---
+log "[Fliance] Running health checks..."
+check_http() {
+    local url="$1" name="$2" i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
+            log "[Fliance] [OK] $name -> $url"
+            return 0
+        fi
+        sleep 3
+    done
+    log "[Fliance] [WARN] $name not healthy at $url (check journalctl -u and $APP_DIR/*.log)"
+    return 1
+}
+check_tcp() {
+    local port="$1" name="$2" i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        if (exec 3<>"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then
+            exec 3>&- 3<&- || true
+            log "[Fliance] [OK] $name -> tcp :${port}"
+            return 0
+        fi
+        sleep 3
+    done
+    log "[Fliance] [WARN] $name not listening on :${port} (check journalctl -u ${ENGINE_UNIT})"
+    return 1
+}
+HEALTH_OK=true
+check_http "http://localhost:8080/health" "api-gateway" || HEALTH_OK=false
+check_http "http://localhost:8082/health" "wallet-service" || HEALTH_OK=false
+check_tcp 50051 "matching-engine gRPC" || HEALTH_OK=false
 
 IP=$(hostname -I | awk '{print $1}')
 
 log ""
-log "[Fliance] Deployment complete!"
-log "[Fliance] Open http://${IP}:8080 in your browser."
-log "[Fliance] Service: sudo systemctl status ${SERVICE}"
-log "[Fliance] Logs:   sudo tail -f ${APP_DIR}/fliance.log"
-log "[Fliance] Env:    ${APP_DIR}/.env"
+if [ "$HEALTH_OK" = true ]; then
+    log "[Fliance] Deployment complete — all health checks passed!"
+else
+    log "[Fliance] Deployment finished with health warnings — inspect logs below."
+fi
+log "[Fliance] Open http://${IP}:8080 in your browser (production should front this with nginx/TLS)."
+log "[Fliance] Services: sudo systemctl status ${ENGINE_UNIT} ${WALLET_UNIT} ${GATEWAY_UNIT}"
+log "[Fliance] Logs:     ${APP_DIR}/matching-engine.log / wallet-service.log / api-gateway.log"
+log "[Fliance] Env:      ${APP_DIR}/.env"

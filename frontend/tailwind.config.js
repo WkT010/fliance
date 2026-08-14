@@ -60,6 +60,10 @@ export default {
       fontFamily: {
         sans: ['IBM Plex Sans', 'Inter', 'system-ui', 'sans-serif'],
         mono: ['IBM Plex Mono', 'JetBrains Mono', 'ui-monospace', 'monospace'],
+        // Self-hosted display face (see @font-face in src/index.css).
+        // Reserved for display elements — headings, hero numbers,
+        // big ticker prices, brand wordmark. Never for body/forms.
+        condensed: ['Barlow Condensed', 'IBM Plex Sans', 'Inter', 'system-ui', 'sans-serif'],
       },
     },
   },

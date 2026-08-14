@@ -12,4 +12,5 @@ var (
 	ErrPositionNotFound      = errors.New("liquidity position not found")
 	ErrInsufficientBalance   = errors.New("insufficient wallet balance")
 	ErrSlippageExceeded      = errors.New("slippage exceeded: output below min_amount_out")
+	ErrStoreUnavailable      = errors.New("amm store unavailable (database not connected)")
 )

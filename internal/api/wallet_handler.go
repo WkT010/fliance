@@ -334,6 +334,12 @@ func (h *WalletHandler) Withdraw(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid address"})
 		case errors.Is(err, wallet.ErrUnsupportedAsset):
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported asset"})
+		case errors.Is(err, wallet.ErrNegativeAmount):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount"})
+		case errors.Is(err, wallet.ErrWithdrawalAddressNotWhitelisted):
+			// Business-rule rejection, not a server fault. The message text is
+			// contract-stable: the frontend matches it verbatim.
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		case errors.Is(err, wallet.ErrDailyLimitExceeded):
 			// Business-rule rejection, not a server fault: surface as 4xx so
 			// clients can show the limit message instead of a generic 500.
