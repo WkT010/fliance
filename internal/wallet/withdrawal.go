@@ -365,32 +365,89 @@ func (ws *WithdrawalService) RequestWithdrawal(userID, asset, address string, am
 	return tx, nil
 }
 
-// ApproveWithdrawal moves a reviewing withdrawal to approved. Only call after
-// manual KYC/AML review.
-func (ws *WithdrawalService) ApproveWithdrawal(txID string) error {
-	// In a real system this would update the DB; here we rely on the caller
-	// persisting the status change via the store.
-	return ws.updateWithdrawalStatus(txID, WithdrawalApproved)
-}
+// Review-lifecycle errors surfaced to the admin API. They make repeated
+// approve/reject calls idempotent-friendly: instead of silently re-applying
+// a decision, the caller gets a clear, actionable message.
+var (
+	ErrWithdrawalAlreadyApproved = errors.New("withdrawal already approved")
+	ErrWithdrawalAlreadyRejected = errors.New("withdrawal already rejected")
+	ErrWithdrawalNotApprovable   = errors.New("withdrawal cannot be approved in its current state")
+	ErrWithdrawalNotRejectable   = errors.New("withdrawal cannot be rejected in its current state")
+)
 
-// RejectWithdrawal cancels a withdrawal and releases reserved funds.
-func (ws *WithdrawalService) RejectWithdrawal(txID string) error {
+// ApproveWithdrawal moves a pending/reviewing withdrawal to approved.
+// Only call after manual KYC/AML review. Idempotent-safe: a tx that has
+// already been reviewed (or is beyond review) yields a descriptive error
+// instead of a silent re-apply.
+func (ws *WithdrawalService) ApproveWithdrawal(txID string) error {
 	tx, err := ws.store.GetTx(txID)
 	if err != nil {
-		return err
+		return fmt.Errorf("withdrawal %s not found", txID)
 	}
 	if tx.Type != Withdrawal {
 		return errors.New("not a withdrawal")
 	}
+	switch tx.Status {
+	case WithdrawalPending, WithdrawalReviewing:
+		// Reviewable.
+	case WithdrawalApproved, WithdrawalBroadcast, WithdrawalConfirming,
+		WithdrawalCompleted, WithdrawalColdSigning, WithdrawalColdSigned:
+		return ErrWithdrawalAlreadyApproved
+	case WithdrawalRejected:
+		return ErrWithdrawalAlreadyRejected
+	default:
+		return ErrWithdrawalNotApprovable
+	}
+	// Conditional flip: only applies while the row is still pending/reviewing,
+	// so concurrent admins or retries cannot double-approve.
+	ok, err := ws.store.UpdateTxStatusFrom(txID, []TxStatus{WithdrawalPending, WithdrawalReviewing}, WithdrawalApproved)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrWithdrawalNotApprovable
+	}
+	return nil
+}
+
+// RejectWithdrawal cancels a withdrawal and releases reserved funds. The
+// status flip is conditional and happens BEFORE the fund release, so the
+// unlock runs exactly once even under concurrent/duplicate calls; if the
+// release itself fails the status is rolled back so the admin can retry.
+func (ws *WithdrawalService) RejectWithdrawal(txID string) error {
+	tx, err := ws.store.GetTx(txID)
+	if err != nil {
+		return fmt.Errorf("withdrawal %s not found", txID)
+	}
+	if tx.Type != Withdrawal {
+		return errors.New("not a withdrawal")
+	}
+	if tx.Status == WithdrawalRejected {
+		return ErrWithdrawalAlreadyRejected
+	}
 	if tx.Status != WithdrawalPending && tx.Status != WithdrawalReviewing && tx.Status != WithdrawalColdSigning {
-		return errors.New("withdrawal cannot be rejected")
+		return ErrWithdrawalNotRejectable
+	}
+	prevStatus := tx.Status
+	ok, err := ws.store.UpdateTxStatusFrom(txID,
+		[]TxStatus{WithdrawalPending, WithdrawalReviewing, WithdrawalColdSigning}, WithdrawalRejected)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrWithdrawalNotRejectable
 	}
 	if err := ws.store.Settle([]SettleOp{{UserID: tx.UserID, Asset: tx.Asset, Unlock: tx.Amount}}, nil); err != nil {
+		// Roll the status back: the funds are still locked and the admin
+		// must be able to retry the rejection.
+		if rbErr := ws.store.UpdateTxStatus(txID, prevStatus); rbErr != nil {
+			slog.Error("withdrawal reject rollback failed", "tx_id", txID, "err", rbErr)
+		}
 		return fmt.Errorf("release withdrawal funds: %w", err)
 	}
 	// Credit the daily-usage meter back (best effort; the meter resets daily).
 	ws.releaseDailyUsageBestEffort(tx.UserID, tx.Asset, tx.Amount)
-	return ws.updateWithdrawalStatus(txID, WithdrawalRejected)
+	return nil
 }
 
 // GetWithdrawal loads a single withdrawal transaction.
@@ -840,7 +897,7 @@ func (ws *WithdrawalService) checkDailyLimit(userID, asset string, amount *big.F
 	newTotal := new(big.Float).Add(used, amount)
 	ws.mu.Unlock()
 	if newTotal.Cmp(limit.DailyLimit) > 0 {
-		return errors.New("daily withdrawal limit exceeded")
+		return ErrDailyLimitExceeded
 	}
 	return nil
 }

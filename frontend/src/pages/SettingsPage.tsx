@@ -7,6 +7,7 @@ import { Button } from '@/components/common/Button';
 import { Input } from '@/components/common/Input';
 import { Badge } from '@/components/common/Badge';
 import { changePassword } from '@/api/auth';
+import { getApiErrorMessage } from '@/api/client';
 import { getKycStatus } from '@/api/kyc';
 import { useFetch } from '@/hooks/useFetch';
 import { useAuthStore } from '@/store/authStore';
@@ -43,7 +44,7 @@ export function SettingsPage() {
       setNext('');
       setConfirm('');
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('settings.updateFailed'));
+      toast.error(getApiErrorMessage(err, t('settings.updateFailed')));
     } finally {
       setLoading(false);
     }

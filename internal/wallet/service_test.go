@@ -182,6 +182,22 @@ func (m *memWalletStore) UpdateTxStatus(id string, status TxStatus) error {
 	return nil
 }
 
+func (m *memWalletStore) UpdateTxStatusFrom(id string, from []TxStatus, to TxStatus) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tx, ok := m.txs[id]
+	if !ok {
+		return false, nil
+	}
+	for _, st := range from {
+		if tx.Status == st {
+			tx.Status = to
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *memWalletStore) ListTxByStatus(status TxStatus, limit, offset int) ([]*Transaction, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

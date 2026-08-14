@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { listOrders, cancelOrder } from '@/api/order';
+import { getApiErrorMessage } from '@/api/client';
 import { useMarketStore } from '@/store/marketStore';
 import { EmptyState } from '@/components/common/EmptyState';
 import { Button } from '@/components/common/Button';
@@ -32,7 +33,7 @@ export function OrdersPanel({ pair }: { pair: string }) {
       toast.success(t('trading.cancel'));
       await load();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setCancellingId(null);
     }

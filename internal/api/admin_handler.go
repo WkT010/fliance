@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"math/big"
 	"net/http"
 	"os"
@@ -146,6 +147,21 @@ func listByStatus(m WithdrawalManager, status wallet.TxStatus, limit, offset int
 	return m.ListByStatus(status, limit, offset)
 }
 
+// withdrawalReviewStatus maps a review error to the HTTP status it should
+// surface as: state conflicts (already reviewed / not reviewable) are 409 so
+// the admin UI can distinguish "nothing to do here" from a malformed request.
+func withdrawalReviewStatus(err error) int {
+	switch {
+	case errors.Is(err, wallet.ErrWithdrawalAlreadyApproved),
+		errors.Is(err, wallet.ErrWithdrawalAlreadyRejected),
+		errors.Is(err, wallet.ErrWithdrawalNotApprovable),
+		errors.Is(err, wallet.ErrWithdrawalNotRejectable):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
+}
+
 // ApproveWithdrawal moves a reviewing withdrawal to approved.
 // POST /api/v2/admin/withdrawals/:id/approve
 func (h *AdminHandler) ApproveWithdrawal(c *gin.Context) {
@@ -157,7 +173,7 @@ func (h *AdminHandler) ApproveWithdrawal(c *gin.Context) {
 	err := h.withdrawals.ApproveWithdrawal(id)
 	h.audit.Log(c, "admin.withdrawal.approve", "withdrawal", id, nil, err)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(withdrawalReviewStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "approved", "id": id})
@@ -174,7 +190,7 @@ func (h *AdminHandler) RejectWithdrawal(c *gin.Context) {
 	err := h.withdrawals.RejectWithdrawal(id)
 	h.audit.Log(c, "admin.withdrawal.reject", "withdrawal", id, nil, err)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(withdrawalReviewStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "rejected", "id": id})

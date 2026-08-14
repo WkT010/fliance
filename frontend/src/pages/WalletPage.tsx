@@ -11,6 +11,7 @@ import { Select } from '@/components/common/Select';
 import { StatCard } from '@/components/common/StatCard';
 import { EmptyState } from '@/components/common/EmptyState';
 import { getBalances, getTransactions, withdraw, getDepositAddress, getSupportedAssets, submitDepositClaim, getDepositClaims } from '@/api/wallet';
+import { getApiErrorMessage } from '@/api/client';
 import { TransferModal, ACCOUNT_TYPES } from '@/components/common/TransferModal';
 import { getKycStatus } from '@/api/kyc';
 import { getTickers } from '@/api/market';
@@ -410,7 +411,7 @@ export function WalletPage() {
       refetchTxs();
       refetchBalances();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('wallet.withdrawalFailed'));
+      toast.error(getApiErrorMessage(err, t('wallet.withdrawalFailed')));
     }
   };
 
@@ -421,7 +422,7 @@ export function WalletPage() {
       setDepositAddress(res.address || '');
       if (!res.address) toast.info(t('wallet.manualOnly'));
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setDepositLoading(false);
     }

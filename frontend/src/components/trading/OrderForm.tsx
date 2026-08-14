@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { placeOrder } from '@/api/order';
+import { getApiErrorMessage } from '@/api/client';
 import { Button } from '../common/Button';
 import { Input } from '../common/Input';
 import { Select } from '../common/Select';
@@ -69,7 +70,7 @@ export function OrderForm({ pair, maxNotional = 10000, markPrice }: OrderFormPro
       setSlPrice('');
       setTpSlEnabled(false);
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('trading.failed'), t('trading.failed'));
+      toast.error(getApiErrorMessage(err, t('trading.failed')), t('trading.failed'));
     } finally {
       setLoading(false);
     }

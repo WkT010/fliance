@@ -66,6 +66,11 @@ type WalletStore interface {
 	ListTx(userID string, limit, offset int) ([]*Transaction, error)
 	// UpdateTxStatus updates the status of a transaction.
 	UpdateTxStatus(id string, status TxStatus) error
+	// UpdateTxStatusFrom atomically flips a transaction's status only when
+	// the current status is one of from. It reports whether the update was
+	// applied (false = the row no longer has an acceptable status, i.e. a
+	// concurrent or repeated review), which makes review actions idempotent.
+	UpdateTxStatusFrom(id string, from []TxStatus, to TxStatus) (bool, error)
 	// ListTxByStatus returns transactions filtered by status.
 	ListTxByStatus(status TxStatus, limit, offset int) ([]*Transaction, error)
 

@@ -16,6 +16,7 @@ import {
   type AmmSimulatorStatus,
 } from '@/api/admin';
 import { getAmmPools } from '@/api/amm';
+import { getApiErrorMessage } from '@/api/client';
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
 import { formatPrice, formatDate, formatQty } from '@/utils/format';
@@ -36,6 +37,26 @@ export function AdminPage() {
   const [userId, setUserId] = useState('');
   const [limitAsset, setLimitAsset] = useState('BTC');
   const [limitValue, setLimitValue] = useState('');
+  const [wdBusyId, setWdBusyId] = useState('');
+
+  // Withdrawal review action. Errors MUST surface as a toast — the previous
+  // fire-and-forget .then() swallowed backend failures, which read to admins
+  // as "clicking approve/reject does nothing".
+  const reviewWd = async (id: string, action: 'approve' | 'reject') => {
+    setWdBusyId(id);
+    try {
+      if (action === 'approve') await approveWithdrawal(id);
+      else await rejectWithdrawal(id);
+      toast.success(action === 'approve' ? t('admin.wdApproved') : t('admin.wdRejected'));
+      refetchW();
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      toast.error(msg || (err instanceof Error ? err.message : t('admin.wdActionFailed')));
+      refetchW();
+    } finally {
+      setWdBusyId('');
+    }
+  };
 
   const updateRisk = async (pair: string, patch: Partial<PairRiskConfig>) => {
     await updatePairRisk(pair, patch);
@@ -68,8 +89,8 @@ export function AdminPage() {
                           <td className="py-2 text-nexa-400">{formatDate(w.created_at)}</td>
                           <td className="py-2">
                             <div className="flex gap-2">
-                              <Button size="sm" variant="success" onClick={() => approveWithdrawal(w.id).then(refetchW)}>{t('admin.approve')}</Button>
-                              <Button size="sm" variant="danger" onClick={() => rejectWithdrawal(w.id).then(refetchW)}>{t('admin.reject')}</Button>
+                              <Button size="sm" variant="success" disabled={wdBusyId === w.id} onClick={() => reviewWd(w.id, 'approve')}>{t('admin.approve')}</Button>
+                              <Button size="sm" variant="danger" disabled={wdBusyId === w.id} onClick={() => reviewWd(w.id, 'reject')}>{t('admin.reject')}</Button>
                             </div>
                           </td>
                         </tr>
@@ -172,7 +193,7 @@ function ManualDepositPanel() {
       setAmount('');
       setTxHash('');
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('wallet.depositFailed'));
+      toast.error(getApiErrorMessage(err, t('wallet.depositFailed')));
     } finally {
       setBusy(false);
     }
@@ -214,7 +235,7 @@ function AmmAdminPanel() {
       refetchSim();
       refetchPools();
     } catch (err: unknown) {
-      setMsg({ text: err instanceof Error ? err.message : String(err), type: 'error' });
+      setMsg({ text: getApiErrorMessage(err, t('common.failed')), type: 'error' });
     } finally {
       setBusy(null);
     }
@@ -346,7 +367,7 @@ function KycReviewPanel() {
       toast.success(action === 'approve' ? t('admin.kycApproved') : t('admin.kycRejected'));
       refetch();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('admin.kycActionFailed'));
+      toast.error(getApiErrorMessage(err, t('admin.kycActionFailed')));
     } finally {
       setBusyId('');
     }

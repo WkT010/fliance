@@ -531,7 +531,7 @@ function LiquidityPanel({
       setAmount1('');
       onUpdate();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('amm.addLiquidity'));
+      toast.error(apiErrorMessage(err) || t('amm.addLiquidity'));
     } finally {
       setAdding(false);
     }
@@ -550,7 +550,7 @@ function LiquidityPanel({
       setRemoveShares('');
       onUpdate();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('amm.removeLiquidity'));
+      toast.error(apiErrorMessage(err) || t('amm.removeLiquidity'));
     } finally {
       setRemoving(false);
     }
@@ -632,7 +632,7 @@ function CreatePoolPanel({
       setToken1('');
       onUpdate();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('amm.createPool'));
+      toast.error(apiErrorMessage(err) || t('amm.createPool'));
     } finally {
       setCreating(false);
     }

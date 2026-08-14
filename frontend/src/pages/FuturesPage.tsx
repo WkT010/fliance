@@ -9,6 +9,7 @@ import { useMarket } from '@/hooks/useMarket';
 import { usePolling } from '@/hooks/usePolling';
 import { useFetch } from '@/hooks/useFetch';
 import { getBalances } from '@/api/wallet';
+import { getApiErrorMessage } from '@/api/client';
 import { TransferModal } from '@/components/common/TransferModal';
 import { SUPPORTED_PAIRS } from '@/utils/constants';
 import { Select } from '@/components/common/Select';
@@ -217,7 +218,7 @@ export function FuturesPage() {
       resetForm();
       await loadData();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setSubmitting(false);
     }
@@ -233,7 +234,7 @@ export function FuturesPage() {
       toast.success(t('futures.close'));
       await loadData();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setClosingId(null);
     }
@@ -245,7 +246,7 @@ export function FuturesPage() {
       toast.info(t('futures.cancel'));
       await loadData();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     }
   };
 
@@ -270,7 +271,7 @@ export function FuturesPage() {
       toast.success(t('futures.add'));
       await loadData();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setMarginLoading(false);
     }
@@ -287,7 +288,7 @@ export function FuturesPage() {
       toast.success(t('futures.reduce'));
       await loadData();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setMarginLoading(false);
     }
@@ -304,7 +305,7 @@ export function FuturesPage() {
       toast.success(t('futures.partialClose'), closeQty);
       await loadData();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setClosing(false);
     }

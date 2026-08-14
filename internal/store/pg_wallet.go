@@ -348,8 +348,14 @@ func (s *PGWalletStore) Settle(ops []wallet.SettleOp, txns []*wallet.Transaction
 }
 
 func (s *PGWalletStore) SaveTx(tx *wallet.Transaction) error {
+	// ON CONFLICT DO UPDATE (not DO NOTHING): SaveTx doubles as the
+	// lifecycle-update path (approve/broadcast/confirm reuse it on an
+	// existing row), so a silent no-op would strand withdrawals in their
+	// old status. Only the mutable lifecycle fields are refreshed; the
+	// immutable identity/amount columns of the original row win on replay.
 	_, err := s.db.Exec(
-		`INSERT INTO transactions (id,user_id,wallet_id,type,asset,amount,fee,status,tx_hash,confirmations,created_at,to_address) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO NOTHING`,
+		`INSERT INTO transactions (id,user_id,wallet_id,type,asset,amount,fee,status,tx_hash,confirmations,created_at,to_address) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		 ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status, tx_hash=EXCLUDED.tx_hash, confirmations=EXCLUDED.confirmations`,
 		tx.ID, tx.UserID, tx.WalletID, tx.Type, tx.Asset,
 		tx.Amount.Text('f', 18), tx.Fee.Text('f', 18),
 		tx.Status, tx.TxHash, tx.Confirmations, tx.CreatedAt, tx.ToAddress)
@@ -394,11 +400,47 @@ func (s *PGWalletStore) ListTx(userID string, limit, offset int) ([]*wallet.Tran
 	return txs, nil
 }
 
-// UpdateTxStatus updates the status of a transaction row.
+// UpdateTxStatus updates the status of a transaction row. The transactions
+// table has no updated_at column (see 001_init.sql), so only status is
+// written. Missing rows are reported as an error instead of a silent no-op.
 func (s *PGWalletStore) UpdateTxStatus(id string, status wallet.TxStatus) error {
-	_, err := s.db.Exec(`UPDATE transactions SET status=$1, updated_at=$2 WHERE id=$3`,
-		status, time.Now().UnixNano(), id)
-	return err
+	res, err := s.db.Exec(`UPDATE transactions SET status=$1 WHERE id=$2`, status, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("transaction %s not found", id)
+	}
+	return nil
+}
+
+// UpdateTxStatusFrom flips a transaction's status in a single statement,
+// guarded by the current status: the UPDATE applies only while the row is
+// still in one of the from states, so concurrent or repeated review actions
+// cannot double-apply. Returns false when the guard matched no row.
+func (s *PGWalletStore) UpdateTxStatusFrom(id string, from []wallet.TxStatus, to wallet.TxStatus) (bool, error) {
+	if len(from) == 0 {
+		return false, fmt.Errorf("UpdateTxStatusFrom: empty source-status set")
+	}
+	query := `UPDATE transactions SET status=$1 WHERE id=$2 AND status IN (`
+	args := []interface{}{to, id}
+	for i, st := range from {
+		if i > 0 {
+			query += ","
+		}
+		query += fmt.Sprintf("$%d", i+3)
+		args = append(args, st)
+	}
+	query += `)`
+	res, err := s.db.Exec(query, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 // ListTxByStatus returns transactions with the given status, newest first.

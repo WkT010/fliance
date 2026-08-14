@@ -46,6 +46,24 @@ function forceLogout() {
   window.location.href = '/login';
 }
 
+/**
+ * Extract a user-facing message from any API error. Prefers the backend's
+ * error body ({"error": "..."} per internal/api/errors.go) over axios's
+ * generic "Request failed with status code 400" text, so users see the real
+ * reason (bad address, daily limit exceeded, …). Use in every user-visible
+ * catch instead of `err.message` alone.
+ */
+export function getApiErrorMessage(err: unknown, fallback: string): string {
+  const data = (err as { response?: { data?: unknown } } | null)?.response?.data;
+  if (data && typeof data === 'object') {
+    const body = data as { error?: unknown; message?: unknown };
+    if (typeof body.error === 'string' && body.error.trim()) return body.error;
+    if (typeof body.message === 'string' && body.message.trim()) return body.message;
+  }
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
 api.interceptors.response.use(
   (res) => res,
   async (err: AxiosError) => {

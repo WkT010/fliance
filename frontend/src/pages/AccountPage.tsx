@@ -8,6 +8,7 @@ import { Badge } from '@/components/common/Badge';
 import { StatCard } from '@/components/common/StatCard';
 import { EmptyState } from '@/components/common/EmptyState';
 import { listAPIKeys, createAPIKey, revokeAPIKey, getPnL, getPnLHistory } from '@/api/account';
+import { getApiErrorMessage } from '@/api/client';
 import { useAuthStore } from '@/store/authStore';
 import { useFetch } from '@/hooks/useFetch';
 import { usePolling } from '@/hooks/usePolling';
@@ -50,7 +51,7 @@ export function AccountPage() {
       refetch();
       toast.success(t('account.create'));
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setCreating(false);
     }
@@ -64,7 +65,7 @@ export function AccountPage() {
       refetch();
       toast.info(t('account.revoke'));
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : t('common.failed'));
+      toast.error(getApiErrorMessage(err, t('common.failed')));
     } finally {
       setRevokingId(null);
     }
