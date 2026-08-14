@@ -250,6 +250,7 @@ func (r *Router) Setup() *gin.Engine {
 	admin.GET("/users/:id/withdrawals", r.adminH.ListUserWithdrawals)
 	admin.GET("/users/:id/addresses", r.adminH.ListAddresses)
 	admin.POST("/users/:id/addresses", r.adminH.AddAddress)
+	admin.DELETE("/users/:id/addresses", r.adminH.RemoveAddress)
 	admin.POST("/users/:id/limits", r.adminH.SetDailyLimit)
 	admin.GET("/risk/pairs", r.adminH.ListPairRisk)
 	// Per-pair admin routes use the *pair catch-all (like the market-data

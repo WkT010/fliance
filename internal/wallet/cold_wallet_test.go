@@ -156,7 +156,7 @@ func newColdFlowFixture(t *testing.T, threshold float64) (*WithdrawalService, *c
 	cli := &coldBroadcastClient{confirmations: 12}
 	svc := NewService(store, map[string]BlockchainClient{"BTC": cli}, nil)
 	ws := NewWithdrawalService(svc)
-	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: validTestBTCAddr})
+	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: validTestBTCAddr}, "admin")
 	policy := NewColdWalletPolicy()
 	policy.SetThreshold("BTC", big.NewFloat(threshold))
 	pending := filepath.Join(t.TempDir(), "pending")
@@ -312,7 +312,7 @@ func TestNoColdSignerKeepsHotPath(t *testing.T) {
 	cli := &coldBroadcastClient{confirmations: 12}
 	svc := NewService(store, map[string]BlockchainClient{"BTC": cli}, nil)
 	ws := NewWithdrawalService(svc)
-	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: validTestBTCAddr})
+	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: validTestBTCAddr}, "admin")
 
 	tx, err := ws.RequestWithdrawal("u", "BTC", validTestBTCAddr, big.NewFloat(500))
 	if err != nil {
@@ -358,7 +358,7 @@ func TestColdBroadcastRequiresBroadcaster(t *testing.T) {
 	store.seed("u", "BTC", 1000)
 	svc := NewService(store, map[string]BlockchainClient{"BTC": permissiveClient{}}, nil)
 	ws := NewWithdrawalService(svc)
-	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: validTestBTCAddr})
+	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: validTestBTCAddr}, "admin")
 	policy := NewColdWalletPolicy()
 	policy.SetThreshold("BTC", big.NewFloat(50))
 	signedDir := filepath.Join(t.TempDir(), "s")

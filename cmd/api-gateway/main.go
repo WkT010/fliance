@@ -98,6 +98,12 @@ func main() {
 	withdrawalSvc := wallet.NewWithdrawalService(walletSvc)
 	// Production defaults: require address whitelisting and daily limits.
 	withdrawalSvc.SetReviewThreshold(big.NewFloat(10000))
+	// Persist the withdrawal address whitelist in Postgres (migration 015)
+	// so entries survive gateway restarts. Without a database the service
+	// keeps its legacy in-memory whitelist.
+	if db != nil {
+		withdrawalSvc.SetAddressWhitelistStore(store.NewPGAddressWhitelistStore(db))
+	}
 
 	// ── Risk engine ──
 	riskEng := risk.NewEngine()

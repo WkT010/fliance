@@ -39,6 +39,21 @@ type AddressBookEntry struct {
 	CreatedAt int64
 }
 
+// AddressWhitelistStore persists the withdrawal address whitelist (migration
+// 015). When wired, whitelist CRUD and withdrawal checks read/write the
+// database so entries survive gateway restarts; writes hit the database
+// synchronously (no stale-cache window). When nil the service falls back to
+// its in-process map (tests and DB-less mode).
+type AddressWhitelistStore interface {
+	ListWhitelistAddresses(userID, asset string) ([]AddressBookEntry, error)
+	// AddWhitelistAddress returns true when the entry was newly added and
+	// false (without error) when it was already whitelisted.
+	AddWhitelistAddress(entry AddressBookEntry, createdBy string) (bool, error)
+	// RemoveWhitelistAddress returns false when the address was not listed.
+	RemoveWhitelistAddress(userID, asset, address string) (bool, error)
+	ContainsWhitelistedAddress(userID, asset, address string) (bool, error)
+}
+
 // WithdrawalLimit is the per-user per-asset daily withdrawal limit.
 type WithdrawalLimit struct {
 	UserID      string
@@ -91,8 +106,12 @@ type WithdrawalService struct {
 	*Service
 	mu sync.RWMutex
 
-	// addressBook maps userID:asset -> list of allowed addresses.
+	// addressBook maps userID:asset -> list of allowed addresses. Only used
+	// when no AddressWhitelistStore is wired (in-memory fallback).
 	addressBook map[string][]AddressBookEntry
+
+	// whitelistStore persists the whitelist in the database (migration 015).
+	whitelistStore AddressWhitelistStore
 
 	// limits maps userID:asset -> limit.
 	limits map[string]*WithdrawalLimit
@@ -192,6 +211,15 @@ func (ws *WithdrawalService) InvalidateKycLevelCache(userID string) {
 	ws.mu.Unlock()
 }
 
+// SetAddressWhitelistStore wires the database persistence for the address
+// whitelist. Writes are applied synchronously, so every admin change is
+// visible to subsequent withdrawal checks and survives restarts.
+func (ws *WithdrawalService) SetAddressWhitelistStore(s AddressWhitelistStore) {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.whitelistStore = s
+}
+
 // SetColdSigner enables hot/cold wallet separation. Withdrawals whose amount
 // reaches the policy threshold for their asset are queued to the cold signer
 // after approval instead of being broadcast from the hot wallet. Pass a nil
@@ -229,41 +257,123 @@ func (ws *WithdrawalService) SetLimit(limit *WithdrawalLimit) {
 	ws.limits[key] = limit
 }
 
-// AddAddress whitelists a withdrawal address for a user/asset.
-func (ws *WithdrawalService) AddAddress(entry AddressBookEntry) {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
+// AddAddress whitelists a withdrawal address for a user/asset. The entry is
+// persisted to the database when an AddressWhitelistStore is wired.
+// It returns false (without error) when the address is already whitelisted,
+// so callers can answer duplicates with a friendly message instead of a 500.
+func (ws *WithdrawalService) AddAddress(entry AddressBookEntry, createdBy string) (bool, error) {
+	entry.Asset = strings.ToUpper(strings.TrimSpace(entry.Asset))
+	entry.Address = strings.TrimSpace(entry.Address)
 	if entry.ID == "" {
 		entry.ID = uuid.NewString()
 	}
 	if entry.CreatedAt == 0 {
 		entry.CreatedAt = time.Now().UnixNano()
 	}
+	ws.mu.RLock()
+	store := ws.whitelistStore
+	ws.mu.RUnlock()
+	if store != nil {
+		return store.AddWhitelistAddress(entry, createdBy)
+	}
+	// In-memory fallback (tests / DB-less mode): dedupe case-insensitively.
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
 	key := entry.UserID + ":" + entry.Asset
+	for _, e := range ws.addressBook[key] {
+		if strings.EqualFold(e.Address, entry.Address) {
+			return false, nil
+		}
+	}
 	ws.addressBook[key] = append(ws.addressBook[key], entry)
+	return true, nil
+}
+
+// RemoveAddress deletes a whitelisted address for a user/asset and returns
+// whether an entry was removed. Already-submitted withdrawals are unaffected:
+// each transaction carries its own address snapshot.
+func (ws *WithdrawalService) RemoveAddress(userID, asset, address string) (bool, error) {
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	address = strings.TrimSpace(address)
+	ws.mu.RLock()
+	store := ws.whitelistStore
+	ws.mu.RUnlock()
+	if store != nil {
+		return store.RemoveWhitelistAddress(userID, asset, address)
+	}
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	key := userID + ":" + asset
+	entries := ws.addressBook[key]
+	for i, e := range entries {
+		if strings.EqualFold(e.Address, address) {
+			ws.addressBook[key] = append(entries[:i:i], entries[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// whitelisted reports whether the address is in the user's whitelist,
+// checking the database when a store is wired. Lookup errors propagate to
+// the caller so withdrawals fail closed instead of bypassing the whitelist.
+func (ws *WithdrawalService) whitelisted(userID, asset, address string) (bool, error) {
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	address = strings.TrimSpace(address)
+	ws.mu.RLock()
+	store := ws.whitelistStore
+	ws.mu.RUnlock()
+	if store != nil {
+		return store.ContainsWhitelistedAddress(userID, asset, address)
+	}
+	ws.mu.RLock()
+	defer ws.mu.RUnlock()
+	for _, e := range ws.addressBook[userID+":"+asset] {
+		if strings.EqualFold(e.Address, address) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // IsWhitelisted reports whether an address is in the user's whitelist.
+// Lookup errors fail closed (reported as not whitelisted).
 func (ws *WithdrawalService) IsWhitelisted(userID, asset, address string) bool {
-	ws.mu.RLock()
-	defer ws.mu.RUnlock()
-	key := userID + ":" + asset
-	for _, e := range ws.addressBook[key] {
-		if e.Address == address {
-			return true
-		}
+	ok, err := ws.whitelisted(userID, asset, address)
+	if err != nil {
+		slog.Warn("address whitelist lookup failed; failing closed", "user_id", userID, "asset", asset, "err", err)
+		return false
 	}
-	return false
+	return ok
 }
 
-// ListAddresses returns the whitelisted withdrawal addresses for a user/asset.
-func (ws *WithdrawalService) ListAddresses(userID, asset string) []AddressBookEntry {
+// ListAddresses returns the whitelisted withdrawal addresses for a user,
+// optionally filtered by asset (empty asset returns all of the user's
+// entries). Reads go to the database when a store is wired.
+func (ws *WithdrawalService) ListAddresses(userID, asset string) ([]AddressBookEntry, error) {
+	asset = strings.ToUpper(strings.TrimSpace(asset))
+	ws.mu.RLock()
+	store := ws.whitelistStore
+	ws.mu.RUnlock()
+	if store != nil {
+		return store.ListWhitelistAddresses(userID, asset)
+	}
 	ws.mu.RLock()
 	defer ws.mu.RUnlock()
-	key := userID + ":" + asset
-	out := make([]AddressBookEntry, len(ws.addressBook[key]))
-	copy(out, ws.addressBook[key])
-	return out
+	if asset == "" {
+		var out []AddressBookEntry
+		prefix := userID + ":"
+		for key, entries := range ws.addressBook {
+			if strings.HasPrefix(key, prefix) {
+				out = append(out, entries...)
+			}
+		}
+		return out, nil
+	}
+	entries := ws.addressBook[userID+":"+asset]
+	out := make([]AddressBookEntry, len(entries))
+	copy(out, entries)
+	return out, nil
 }
 
 // Withdraw is a convenience wrapper around RequestWithdrawal so that
@@ -292,7 +402,11 @@ func (ws *WithdrawalService) RequestWithdrawal(userID, asset, address string, am
 	if !c.IsValidAddress(address) {
 		return nil, ErrInvalidAddress
 	}
-	if !ws.IsWhitelisted(userID, asset, address) {
+	ok, err := ws.whitelisted(userID, asset, address)
+	if err != nil {
+		return nil, fmt.Errorf("address whitelist check failed (fail-closed): %w", err)
+	}
+	if !ok {
 		return nil, errors.New("withdrawal address not whitelisted")
 	}
 

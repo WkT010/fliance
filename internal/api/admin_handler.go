@@ -25,8 +25,9 @@ type WithdrawalManager interface {
 	GetWithdrawal(txID string) (*wallet.Transaction, error)
 	ApproveWithdrawal(txID string) error
 	RejectWithdrawal(txID string) error
-	AddAddress(entry wallet.AddressBookEntry)
-	ListAddresses(userID, asset string) []wallet.AddressBookEntry
+	AddAddress(entry wallet.AddressBookEntry, createdBy string) (bool, error)
+	ListAddresses(userID, asset string) ([]wallet.AddressBookEntry, error)
+	RemoveAddress(userID, asset, address string) (bool, error)
 	SetLimit(limit *wallet.WithdrawalLimit)
 }
 
@@ -228,7 +229,11 @@ func (h *AdminHandler) ListUserWithdrawals(c *gin.Context) {
 func (h *AdminHandler) ListAddresses(c *gin.Context) {
 	userID := c.Param("id")
 	asset := c.Query("asset")
-	entries := h.withdrawals.ListAddresses(userID, asset)
+	entries, err := h.withdrawals.ListAddresses(userID, asset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list addresses", "detail": err.Error()})
+		return
+	}
 	out := make([]gin.H, len(entries))
 	for i, e := range entries {
 		out[i] = gin.H{"id": e.ID, "asset": e.Asset, "address": e.Address, "label": e.Label, "created_at": e.CreatedAt}
@@ -236,7 +241,10 @@ func (h *AdminHandler) ListAddresses(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"addresses": out})
 }
 
-// AddAddress whitelists a withdrawal address for a user.
+// AddAddress whitelists a withdrawal address for a user. The entry is
+// persisted to the database, so it survives gateway restarts. Re-adding an
+// already-whitelisted address answers 200 with a friendly "exists" status
+// instead of an error.
 // POST /api/v2/admin/users/:id/addresses { "asset":"BTC","address":"...","label":"cold" }
 func (h *AdminHandler) AddAddress(c *gin.Context) {
 	userID := c.Param("id")
@@ -249,16 +257,72 @@ func (h *AdminHandler) AddAddress(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "asset and address required"})
 		return
 	}
-	h.withdrawals.AddAddress(wallet.AddressBookEntry{
+	createdBy := c.GetString("user_id")
+	added, err := h.withdrawals.AddAddress(wallet.AddressBookEntry{
 		UserID:  userID,
 		Asset:   r.Asset,
 		Address: r.Address,
 		Label:   r.Label,
-	})
+	}, createdBy)
+	if err != nil {
+		h.audit.Log(c, "admin.user.address.add", "user_address", userID, gin.H{
+			"asset": r.Asset, "address": r.Address, "label": r.Label,
+		}, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add address", "detail": err.Error()})
+		return
+	}
+	if !added {
+		h.audit.Log(c, "admin.user.address.add", "user_address", userID, gin.H{
+			"asset": r.Asset, "address": r.Address, "result": "already_exists",
+		}, nil)
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "exists",
+			"message": "address already whitelisted",
+			"user_id": userID, "asset": r.Asset, "address": r.Address,
+		})
+		return
+	}
 	h.audit.Log(c, "admin.user.address.add", "user_address", userID, gin.H{
 		"asset": r.Asset, "address": r.Address, "label": r.Label,
 	}, nil)
 	c.JSON(http.StatusCreated, gin.H{"status": "added", "user_id": userID, "asset": r.Asset, "address": r.Address})
+}
+
+// RemoveAddress deletes a whitelisted address. Already-submitted withdrawals
+// keep their own address snapshot and are unaffected. Accepts a JSON body or
+// query parameters (asset + address).
+// DELETE /api/v2/admin/users/:id/addresses { "asset":"BTC","address":"..." }
+func (h *AdminHandler) RemoveAddress(c *gin.Context) {
+	userID := c.Param("id")
+	var r struct {
+		Asset   string `json:"asset"`
+		Address string `json:"address"`
+	}
+	// Body is optional: DELETE requests may carry the pair as query params.
+	_ = c.ShouldBindJSON(&r)
+	if r.Asset == "" {
+		r.Asset = c.Query("asset")
+	}
+	if r.Address == "" {
+		r.Address = c.Query("address")
+	}
+	if r.Asset == "" || r.Address == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "asset and address required"})
+		return
+	}
+	removed, err := h.withdrawals.RemoveAddress(userID, r.Asset, r.Address)
+	h.audit.Log(c, "admin.user.address.remove", "user_address", userID, gin.H{
+		"asset": r.Asset, "address": r.Address,
+	}, err)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove address", "detail": err.Error()})
+		return
+	}
+	if !removed {
+		c.JSON(http.StatusNotFound, gin.H{"error": "address not in whitelist"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "removed", "user_id": userID, "asset": r.Asset, "address": r.Address})
 }
 
 // SetDailyLimit sets a per-user per-asset daily withdrawal limit.

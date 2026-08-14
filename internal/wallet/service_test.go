@@ -649,13 +649,13 @@ func TestRequestWithdrawalValidatesAddress(t *testing.T) {
 	ws := NewWithdrawalService(svc)
 
 	bad := "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3"
-	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: bad})
+	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: bad}, "admin")
 	if _, err := ws.RequestWithdrawal("u", "BTC", bad, big.NewFloat(1)); !errors.Is(err, ErrInvalidAddress) {
 		t.Fatalf("whitelisted malformed address: got %v, want ErrInvalidAddress", err)
 	}
 
 	good := "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
-	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: good})
+	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: good}, "admin")
 	tx, err := ws.RequestWithdrawal("u", "BTC", good, big.NewFloat(1))
 	if err != nil {
 		t.Fatalf("valid whitelisted withdrawal: %v", err)

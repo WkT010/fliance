@@ -102,7 +102,7 @@ func newLimitFixture(t *testing.T) (*WithdrawalService, *fakeLimitStore) {
 	svc := NewService(store, map[string]BlockchainClient{"BTC": NewMockBlockchainClient("BTC")}, nil)
 	ws := NewWithdrawalService(svc)
 	ws.SetReviewThreshold(big.NewFloat(1e9)) // keep requests in pending
-	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: validTestBTCAddr})
+	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "BTC", Address: validTestBTCAddr}, "admin")
 	ws.SetPriceGetter(fixedPriceGetter{"BTC/USDT": 10000})
 	ws.SetPlatformLimitLoader(fixedLimitLoader{0: 30000})
 	if err := ws.ReloadPlatformLimits(); err != nil {
@@ -189,7 +189,7 @@ func TestDailyLimitFailClosedOnMissingPrice(t *testing.T) {
 	ws := NewWithdrawalService(svc)
 	ws.SetReviewThreshold(big.NewFloat(1e9))
 	addr := "0x71c7656ec7ab88b098defb751b7401b5f6d8976f"
-	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "ETH", Address: addr})
+	ws.AddAddress(AddressBookEntry{UserID: "u", Asset: "ETH", Address: addr}, "admin")
 	ws.SetPriceGetter(fixedPriceGetter{}) // no prices at all
 	ws.SetPlatformLimitLoader(fixedLimitLoader{0: 30000})
 	if err := ws.ReloadPlatformLimits(); err != nil {
